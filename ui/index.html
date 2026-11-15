@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en" data-palette="original" data-spacing="regular" data-text-size="regular">
+<html lang="en" data-accent="sage" data-tone="slate" data-density="cozy" data-text-size="regular">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Keel</title>
+    <title>Keel Desktop</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -15,7 +15,7 @@
           </div>
           <span class="brand-title">Keel</span>
           <div class="spacer"></div>
-          <button id="open-customize-btn" class="icon-btn" title="Customize &amp; Settings" aria-label="Customize">
+          <button id="open-customize-btn" class="icon-btn" title="Customize &amp; Appearance" aria-label="Customize">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="3"></circle>
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.79 1.02 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
@@ -23,35 +23,58 @@
           </button>
         </div>
 
+        <button id="new-agent-btn" class="sidebar-new-thread">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+          <span>New thread</span>
+        </button>
+
+        <nav class="mode-nav" aria-label="Primary Views">
+          <button class="mode-nav-item active" data-view="chat">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+            <span>Chat</span>
+          </button>
+          <button class="mode-nav-item" data-view="code">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
+            <span>Code</span>
+          </button>
+          <button id="open-models-btn" class="mode-nav-item" data-view="models">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+            <span>Models</span>
+          </button>
+          <button id="open-mcp-btn" class="mode-nav-item" data-view="connectors">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
+            <span>Connectors</span>
+          </button>
+        </nav>
+
         <div id="apps-list" class="apps-circle-grid" aria-label="Workspace Apps"></div>
 
         <div class="sidebar-scroll">
           <div class="sidebar-section-header">
             <span class="sidebar-section-label">Recent</span>
-            <button id="new-agent-btn" class="sidebar-inline-link" title="Start general chat">+ New</button>
           </div>
           <div id="sessions-list" class="recent-list"></div>
         </div>
 
-        <div class="sidebar-connected">
-          <div class="sidebar-section-label">Connected</div>
-          <div id="connected-list" class="connected-list"></div>
-        </div>
-
-        <div class="sidebar-footer">
-          <button id="open-models-btn" class="sidebar-foot-btn">Models</button>
-          <button id="open-mcp-btn" class="sidebar-foot-btn">MCP</button>
-        </div>
+        <div id="sidebar-runtime-box" class="sidebar-runtime-box"></div>
       </aside>
 
       <div class="main-area">
         <header class="topbar">
           <div class="topbar-left">
             <button id="toggle-sidebar-btn" class="icon-btn" title="Toggle sidebar" aria-label="Toggle sidebar">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-                <line x1="4" y1="8" x2="20" y2="8"></line>
-                <line x1="4" y1="16" x2="16" y2="16"></line>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="4" width="18" height="16" rx="2"></rect>
+                <line x1="9" y1="4" x2="9" y2="20"></line>
               </svg>
+            </button>
+            <button id="model-pill-btn" class="model-pill-center" title="Switch or inspect local models">
+              <span id="runtime-dot" class="status-dot"></span>
+              <span id="model-pill-label">Select model</span>
+              <svg class="pill-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
             </button>
             <button id="workspace-pill-btn" class="pill-btn pill-subtle" title="Choose workspace folder">
               <svg class="pill-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -64,22 +87,17 @@
             </button>
           </div>
 
-          <button id="model-pill-btn" class="model-pill-center" title="Switch or manage local models">
-            <span id="runtime-dot" class="status-dot"></span>
-            <span id="model-pill-label">Select model</span>
-          </button>
-
           <div class="topbar-right">
             <button id="diffs-pill-btn" class="pill-btn pill-subtle" title="Review staged file edits">
-              <span id="diffs-pill-label">0 pending</span>
+              <span id="diffs-pill-label">Local only</span>
             </button>
-            <button id="toggle-viewer-btn" class="icon-btn" title="Toggle workspace viewer" aria-label="Toggle workspace viewer">
+            <button id="toggle-viewer-btn" class="icon-btn" title="Toggle workspace inspector" aria-label="Toggle workspace inspector">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                 <rect x="3" y="4" width="18" height="16" rx="2"></rect>
-                <line x1="14" y1="4" x2="14" y2="20"></line>
+                <line x1="15" y1="4" x2="15" y2="20"></line>
               </svg>
             </button>
-            <button id="new-chat-btn" class="icon-btn" title="New chat" aria-label="New chat">
+            <button id="new-chat-btn" class="icon-btn" title="New thread" aria-label="New thread">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
                 <line x1="12" y1="5" x2="12" y2="19"></line>
                 <line x1="5" y1="12" x2="19" y2="12"></line>
@@ -88,33 +106,38 @@
           </div>
         </header>
 
-        <div class="workspace-body">
+        <!-- Chat / Code Split View -->
+        <div id="view-chat-code" class="workspace-body">
           <section class="chat-column">
             <div id="chat-scroll" class="chat-scroll"></div>
             <div id="approval-slot"></div>
 
             <div class="composer-wrap">
-              <div class="composer-pill">
+              <div class="composer-box">
                 <textarea
                   id="prompt-input"
                   rows="1"
-                  placeholder="Ask Keel..."
+                  placeholder="Ask anything... (or type a file / SQL task)"
                 ></textarea>
-                <label class="think-chip" title="Toggle model reasoning tokens">
-                  <input id="thinking-toggle" type="checkbox" checked />
-                  <span>Think</span>
-                </label>
-                <button id="stop-btn" class="composer-circle-btn composer-stop hidden" title="Stop generation" aria-label="Stop generation">
-                  <svg viewBox="0 0 24 24" fill="currentColor">
-                    <rect x="7" y="7" width="10" height="10" rx="2"></rect>
-                  </svg>
-                </button>
-                <button id="send-btn" class="composer-circle-btn composer-send" title="Send message" aria-label="Send message">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                    <line x1="12" y1="19" x2="12" y2="5"></line>
-                    <polyline points="6 11 12 5 18 11"></polyline>
-                  </svg>
-                </button>
+                <div class="composer-bottom-row">
+                  <span id="composer-ws-chip" class="composer-chip mono">Workspace</span>
+                  <label class="think-chip" title="Toggle model reasoning tokens">
+                    <input id="thinking-toggle" type="checkbox" checked />
+                    <span>Think</span>
+                  </label>
+                  <div class="spacer"></div>
+                  <button id="stop-btn" class="composer-circle-btn composer-stop hidden" title="Stop generation" aria-label="Stop generation">
+                    <svg viewBox="0 0 24 24" fill="currentColor">
+                      <rect x="7" y="7" width="10" height="10" rx="2"></rect>
+                    </svg>
+                  </button>
+                  <button id="send-btn" class="composer-circle-btn composer-send" title="Send message" aria-label="Send message">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                      <line x1="12" y1="19" x2="12" y2="5"></line>
+                      <polyline points="6 11 12 5 18 11"></polyline>
+                    </svg>
+                  </button>
+                </div>
               </div>
               <div class="telemetry-strip">
                 <span id="telemetry-left">Local · Zero cloud lock-in</span>
@@ -125,13 +148,29 @@
 
           <aside id="viewer-pane" class="viewer-pane hidden">
             <div class="viewer-header">
+              <div class="viewer-tabs" role="tablist">
+                <button class="viewer-tab active" data-viewer-tab="diff">Diff</button>
+                <button class="viewer-tab" data-viewer-tab="code">Code</button>
+                <button class="viewer-tab" data-viewer-tab="preview">Preview</button>
+              </div>
               <select id="viewer-file-select"></select>
               <button id="refresh-viewer-btn" class="btn btn-ghost btn-sm">Refresh</button>
-              <button id="close-viewer-btn" class="btn btn-ghost btn-sm">Close</button>
+              <button id="close-viewer-btn" class="icon-btn" aria-label="Close inspector">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                </svg>
+              </button>
             </div>
             <div id="viewer-content" class="viewer-content"></div>
           </aside>
         </div>
+
+        <!-- Full Models Workspace View -->
+        <div id="view-models" class="models-workspace hidden"></div>
+
+        <!-- Full Connectors Workspace View -->
+        <div id="view-connectors" class="connectors-workspace hidden"></div>
       </div>
     </div>
 
@@ -150,25 +189,27 @@
       </div>
     </div>
 
-    <div id="welcome-overlay" class="welcome-overlay hidden" role="dialog" aria-modal="true" aria-label="Welcome to Keel">
-      <svg class="welcome-sail-bg" viewBox="0 0 512 512" aria-hidden="true">
-        <path fill="currentColor" class="sail-jade" d="M86 426L426 86V252C426 328 304 324 203 367C157 386 118 408 86 426Z"></path>
-        <path fill="currentColor" class="sail-rust" d="M86 426C214 357 316 367 426 391V252C418 337 231 336 86 426Z"></path>
+    <!-- Desktop Asymmetric 2-Step Welcome Overlay -->
+    <div id="welcome-overlay" class="welcome-overlay hidden" role="dialog" aria-modal="true" aria-label="Welcome to Keel Desktop">
+      <svg class="welcome-sail-bg" viewBox="0 0 512 512" preserveAspectRatio="xMaxYMax slice" aria-hidden="true">
+        <path class="sail-jade" d="M86 460L500 56V312C500 382 320 370 198 418C152 436 116 450 86 460Z"></path>
+        <path class="sail-rust" d="M86 460C226 392 346 394 500 426V294C488 378 242 368 86 460Z"></path>
       </svg>
 
-      <div id="welcome-step-1" class="welcome-card">
+      <div id="welcome-step-1" class="welcome-desktop-left">
         <div class="welcome-eyebrow">KEEL</div>
         <h1 class="welcome-headline">Local models that actually do the work.</h1>
         <p class="welcome-sub">
-          Files, code, MCP tools, and SQL — on your machine, with your approval.
+          Chat, code, and run models — on your machine, with your approval.
         </p>
-        <div class="welcome-actions">
+        <div class="welcome-desktop-actions">
           <button id="welcome-next-btn" class="welcome-btn-white">Get started</button>
           <button id="welcome-skip-btn" class="btn btn-ghost btn-sm">Skip</button>
         </div>
+        <div class="welcome-desktop-foot">Nothing leaves this machine.</div>
       </div>
 
-      <div id="welcome-step-2" class="welcome-card hidden">
+      <div id="welcome-step-2" class="welcome-desktop-left hidden">
         <div class="brand-mark-wrap welcome-badge">
           <img src="assets/mark.svg" alt="Keel mark" />
         </div>
@@ -209,7 +250,7 @@
             </span>
             <div>
               <div class="wf-title">Connectors &amp; MCP</div>
-              <div class="wf-sub">Local stdio servers · custom harnesses</div>
+              <div class="wf-sub">Stdio servers · local workspace config</div>
             </div>
           </div>
           <div class="welcome-feature-row">
@@ -225,7 +266,6 @@
           </div>
         </div>
         <button id="welcome-done-btn" class="welcome-btn-mint">Continue</button>
-        <div class="welcome-footnote">Everything runs locally on your machine.</div>
       </div>
     </div>
 

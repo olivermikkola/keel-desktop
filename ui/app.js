@@ -1,23 +1,25 @@
 import { escapeHtml, renderMarkdown } from "./markdown.js";
 import {
+  ACCENT_MODES,
   APPEARANCE_DEFAULTS,
-  SPACING_MODES,
+  DENSITY_MODES,
   TEXT_SIZES,
-  THEME_PALETTES,
+  TONE_MODES,
   computeWelcomeVisible,
   countStagedEdits,
   detectViewerForPreset,
+  filterModels,
   formatBytes,
   formatRelativeTime,
   normalizeAppearance,
   shortPath,
 } from "./state.js";
-import { renderViewer } from "./viewers.js";
+import { renderCodeView, renderDiffHtml, renderDiffView, renderViewer } from "./viewers.js";
 
 const tauri = window.__TAURI__?.core;
 const events = window.__TAURI__?.event;
 
-const APPEARANCE_STORAGE_KEY = "keel_appearance_v1";
+const APPEARANCE_STORAGE_KEY = "keel_appearance_v2";
 const WELCOME_STORAGE_KEY = "keel_welcome_done";
 
 const appState = {
@@ -25,8 +27,16 @@ const appState = {
   session: null,
   workspacePath: null,
   workspaceFiles: [],
+  activeView: "chat", // "chat" | "code" | "models" | "connectors"
   viewerOpen: false,
+  viewerTab: "diff", // "diff" | "code" | "preview"
   viewerFile: null,
+  selectedEditId: null,
+  selectedModelInspectorId: null,
+  modelSearchQuery: "",
+  modelFilter: "all", // "all" | "installed" | "gguf"
+  inspectorContextLen: 8192,
+  inspectorTemp: 0.7,
   streaming: false,
   streamingText: "",
   streamingThinking: "",
@@ -39,7 +49,7 @@ const els = {
   sidebar: document.getElementById("sidebar"),
   appsList: document.getElementById("apps-list"),
   sessionsList: document.getElementById("sessions-list"),
-  connectedList: document.getElementById("connected-list"),
+  sidebarRuntimeBox: document.getElementById("sidebar-runtime-box"),
   newChatBtn: document.getElementById("new-chat-btn"),
   newAgentBtn: document.getElementById("new-agent-btn"),
   toggleSidebarBtn: document.getElementById("toggle-sidebar-btn"),
@@ -53,9 +63,13 @@ const els = {
   diffsPillBtn: document.getElementById("diffs-pill-btn"),
   diffsPillLabel: document.getElementById("diffs-pill-label"),
   toggleViewerBtn: document.getElementById("toggle-viewer-btn"),
+  viewChatCode: document.getElementById("view-chat-code"),
+  viewModels: document.getElementById("view-models"),
+  viewConnectors: document.getElementById("view-connectors"),
   chatScroll: document.getElementById("chat-scroll"),
   approvalSlot: document.getElementById("approval-slot"),
   promptInput: document.getElementById("prompt-input"),
+  composerWsChip: document.getElementById("composer-ws-chip"),
   thinkingToggle: document.getElementById("thinking-toggle"),
   sendBtn: document.getElementById("send-btn"),
   stopBtn: document.getElementById("stop-btn"),
@@ -88,13 +102,15 @@ function loadAppearance() {
 
 function applyAppearance(next) {
   appState.appearance = normalizeAppearance(next);
-  document.documentElement.dataset.palette = appState.appearance.palette;
-  document.documentElement.dataset.spacing = appState.appearance.spacing;
+  document.documentElement.dataset.accent = appState.appearance.accent;
+  document.documentElement.dataset.tone = appState.appearance.tone;
+  document.documentElement.dataset.density = appState.appearance.density;
   document.documentElement.dataset.textSize = appState.appearance.textSize;
+  els.sidebar.classList.toggle("collapsed", !appState.appearance.sidebar);
   try {
     localStorage.setItem(APPEARANCE_STORAGE_KEY, JSON.stringify(appState.appearance));
   } catch {
-    // Ignore storage failures in restricted contexts.
+    // Ignore storage errors.
   }
 }
 
@@ -192,7 +208,7 @@ function renderToolOrEditHtml(tool) {
          </div>`;
 
     return `
-      <details class="inline-edit-card">
+      <details class="inline-edit-card" ${isPending ? "open" : ""}>
         <summary class="inline-edit-head">
           ${renderEditFileSvg()}
           <span class="inline-edit-title">${escapeHtml(staged.summary)}</span>
@@ -201,7 +217,7 @@ function renderToolOrEditHtml(tool) {
             ${minus > 0 ? `<span class="diff-minus">-${minus}</span>` : ""}
           </span>
         </summary>
-        <pre class="inline-edit-diff">${escapeHtml(staged.diff || "")}</pre>
+        <div class="inline-edit-diff-wrap">${renderDiffHtml(staged.diff || "")}</div>
         ${footer}
       </details>
     `;
@@ -221,6 +237,15 @@ function renderToolOrEditHtml(tool) {
       ${tool.result ? `<pre class="tool-inline-output">${escapeHtml(tool.result)}</pre>` : ""}
     </details>
   `;
+}
+
+function setActiveView(view) {
+  appState.activeView = view;
+  if (view === "code") {
+    appState.viewerOpen = true;
+    appState.viewerTab = (appState.session?.staged_edits?.length || 0) > 0 ? "diff" : "code";
+  }
+  renderAll();
 }
 
 async function init() {
@@ -265,6 +290,12 @@ async function refreshBootstrap() {
       workspacePath: appState.workspacePath,
     });
   }
+  if (!appState.selectedModelInspectorId && appState.bootstrap?.models?.length > 0) {
+    appState.selectedModelInspectorId =
+      appState.bootstrap.runtime.active_model_id ||
+      appState.bootstrap.config.selected_model_id ||
+      appState.bootstrap.models[0].id;
+  }
   await refreshWorkspaceFiles();
 }
 
@@ -273,6 +304,14 @@ async function createNewSession(preset = "general") {
     preset,
     workspacePath: appState.workspacePath,
   });
+  appState.selectedEditId = null;
+  if (preset !== "general") {
+    appState.activeView = "code";
+    appState.viewerOpen = true;
+    appState.viewerTab = "preview";
+  } else if (appState.activeView === "models" || appState.activeView === "connectors") {
+    appState.activeView = "chat";
+  }
   await refreshBootstrap();
   renderAll();
 }
@@ -285,10 +324,14 @@ async function loadSession(id) {
   }
   if (appState.session.app_preset !== "general") {
     appState.viewerOpen = true;
+    appState.viewerTab = "preview";
     const picked = detectViewerForPreset(appState.session.app_preset, appState.workspaceFiles);
     if (picked) {
       appState.viewerFile = picked;
     }
+  }
+  if (appState.activeView === "models" || appState.activeView === "connectors") {
+    appState.activeView = "chat";
   }
   renderAll();
 }
@@ -311,8 +354,25 @@ async function refreshWorkspaceFiles() {
 function renderAll() {
   renderSidebar();
   renderHeader();
-  renderChat();
-  renderViewerPane();
+  renderViewVisibility();
+  if (appState.activeView === "models") {
+    renderModelsWorkspace();
+  } else if (appState.activeView === "connectors") {
+    renderConnectorsWorkspace();
+  } else {
+    renderChat();
+    renderViewerPane();
+  }
+}
+
+function renderViewVisibility() {
+  document.querySelectorAll(".mode-nav-item").forEach((btn) => {
+    btn.classList.toggle("active", btn.getAttribute("data-view") === appState.activeView);
+  });
+  const isChatOrCode = appState.activeView === "chat" || appState.activeView === "code";
+  els.viewChatCode.classList.toggle("hidden", !isChatOrCode);
+  els.viewModels.classList.toggle("hidden", appState.activeView !== "models");
+  els.viewConnectors.classList.toggle("hidden", appState.activeView !== "connectors");
 }
 
 function renderSidebar() {
@@ -343,7 +403,7 @@ function renderSidebar() {
     row.innerHTML = `
       <span class="recent-title">${escapeHtml(s.title)}</span>
       <span class="recent-age">${escapeHtml(formatRelativeTime(s.updated_at))}</span>
-      <button class="recent-del" title="Delete chat" aria-label="Delete chat">&times;</button>
+      <button class="recent-del" title="Delete thread" aria-label="Delete thread">&times;</button>
     `;
     row.onclick = (e) => {
       if (e.target.closest(".recent-del")) return;
@@ -366,30 +426,21 @@ function renderSidebar() {
     els.sessionsList.appendChild(row);
   }
 
-  const mcpCount = b.mcp_servers?.length || 0;
-  els.connectedList.innerHTML = `
-    <button id="conn-ws-btn" class="connected-row">
-      <svg class="connected-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg>
-      <span class="connected-label">Workspace</span>
-      <span class="connected-sub mono">${escapeHtml(appState.workspacePath ? shortPath(appState.workspacePath) : "Unset")}</span>
-      <span class="status-dot ${appState.workspacePath ? "ready" : ""}"></span>
-    </button>
-    <button id="conn-mcp-btn" class="connected-row">
-      <svg class="connected-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83"></path><path d="M4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83"></path></svg>
-      <span class="connected-label">MCP</span>
-      <span class="connected-sub">${mcpCount ? `${mcpCount} stdio` : "Ready"}</span>
-      <span class="status-dot ${mcpCount ? "ready" : ""}"></span>
-    </button>
-    <button id="conn-sql-btn" class="connected-row">
-      <svg class="connected-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>
-      <span class="connected-label">SQL sandbox</span>
-      <span class="connected-sub">In-memory</span>
-      <span class="status-dot ready"></span>
-    </button>
+  const rt = b.runtime;
+  const activeModel = b.models.find((m) => m.id === (rt.active_model_id || b.config.selected_model_id));
+  const runningLabel =
+    rt.state === "external"
+      ? b.config.external_model_name || "External API"
+      : activeModel?.name || "No model loaded";
+  const isLive = rt.state === "ready" || rt.state === "external" || rt.state === "starting";
+  els.sidebarRuntimeBox.innerHTML = `
+    <span class="status-dot ${rt.state}"></span>
+    <div class="sidebar-runtime-meta">
+      <div class="sidebar-runtime-name">${escapeHtml(runningLabel)}</div>
+      <div class="sidebar-runtime-bar"><div class="sidebar-runtime-fill ${isLive ? "active" : ""}"></div></div>
+    </div>
+    <span class="mono" style="font-size:11px">${escapeHtml(rt.state)}</span>
   `;
-  document.getElementById("conn-ws-btn").onclick = () => els.workspacePillBtn.click();
-  document.getElementById("conn-mcp-btn").onclick = openMcpModal;
-  document.getElementById("conn-sql-btn").onclick = () => createNewSession("sheets");
 }
 
 function renderHeader() {
@@ -404,10 +455,13 @@ function renderHeader() {
     rt.state === "external"
       ? b.config.external_model_name || "External endpoint"
       : selected
-        ? selected.name
+        ? `${selected.name} ${selected.quantization}`
         : b.config.selected_model_id || "Select model";
 
-  els.workspacePillLabel.textContent = shortPath(appState.workspacePath);
+  const shortWs = shortPath(appState.workspacePath);
+  els.workspacePillLabel.textContent = shortWs;
+  els.composerWsChip.textContent = appState.workspacePath ? shortWs : "No folder";
+
   const harness = b.harnesses.find((h) => h.id === b.config.harness_mode);
   els.harnessPillLabel.textContent = harness ? harness.name.replace(" Harness", "") : "Keel";
 
@@ -417,7 +471,7 @@ function renderHeader() {
       ? `${counts.pending} pending`
       : counts.applied > 0
         ? `${counts.applied} applied`
-        : "0 pending";
+        : "Local only";
   els.diffsPillBtn.classList.toggle("has-pending", counts.pending > 0);
   els.telemetryRight.textContent = `Keel v${b.version}`;
 }
@@ -508,6 +562,8 @@ function handleAgentEvent(ev) {
   } else if (ev.type === "staged_edit_added") {
     if (appState.session) {
       appState.session.staged_edits.push(ev.edit);
+      appState.selectedEditId = ev.edit.id;
+      appState.viewerFile = ev.edit.path;
       renderHeader();
     }
   } else if (ev.type === "tool_call_result") {
@@ -525,6 +581,9 @@ function handleAgentEvent(ev) {
     els.telemetryLeft.textContent = `${ev.prompt_tokens} prompt · ${ev.completion_tokens} completion · ${ev.tokens_per_sec.toFixed(1)} tok/s`;
   }
   renderChat();
+  if (appState.viewerOpen) {
+    renderViewerPane();
+  }
 }
 
 function renderApprovalCard(req) {
@@ -581,9 +640,10 @@ async function sendCurrentPrompt() {
       },
     });
     await refreshBootstrap();
-    if (appState.session.staged_edits?.length > 0 && !appState.viewerFile) {
-      const firstFile = appState.session.staged_edits[0].path;
-      appState.viewerFile = firstFile;
+    if (appState.session.staged_edits?.length > 0) {
+      const latest = appState.session.staged_edits[appState.session.staged_edits.length - 1];
+      appState.selectedEditId = latest.id;
+      appState.viewerFile = latest.path;
     }
   } catch (err) {
     appState.session.messages.push({
@@ -605,9 +665,12 @@ async function sendCurrentPrompt() {
 
 function renderViewerPane() {
   els.viewerPane.classList.toggle("hidden", !appState.viewerOpen);
+  document.querySelectorAll("[data-viewer-tab]").forEach((tab) => {
+    tab.classList.toggle("active", tab.getAttribute("data-viewer-tab") === appState.viewerTab);
+  });
   if (!appState.viewerOpen) return;
   renderViewerOptions();
-  loadViewerFile();
+  loadViewerContent();
 }
 
 function renderViewerOptions() {
@@ -624,7 +687,18 @@ function renderViewerOptions() {
     .join("");
 }
 
-async function loadViewerFile() {
+async function loadViewerContent() {
+  if (appState.viewerTab === "diff") {
+    const edits = appState.session?.staged_edits || [];
+    const activeEdit =
+      edits.find((e) => e.id === appState.selectedEditId) ||
+      edits.find((e) => e.path === appState.viewerFile) ||
+      edits[edits.length - 1] ||
+      null;
+    renderDiffView(els.viewerContent, activeEdit);
+    return;
+  }
+
   if (!appState.workspacePath || !appState.viewerFile) {
     renderViewer(els.viewerContent, null, "");
     return;
@@ -634,10 +708,293 @@ async function loadViewerFile() {
       workspacePath: appState.workspacePath,
       relPath: appState.viewerFile,
     });
-    renderViewer(els.viewerContent, appState.viewerFile, content);
+    if (appState.viewerTab === "code") {
+      renderCodeView(els.viewerContent, appState.viewerFile, content);
+    } else {
+      renderViewer(els.viewerContent, appState.viewerFile, content);
+    }
   } catch (err) {
     els.viewerContent.innerHTML = `<div class="viewer-empty">${escapeHtml(String(err))}</div>`;
   }
+}
+
+function renderModelsWorkspace() {
+  const b = appState.bootstrap;
+  if (!b) return;
+  const rt = b.runtime;
+  const filtered = filterModels(b.models, appState.modelSearchQuery, appState.modelFilter);
+  const inspected =
+    b.models.find((m) => m.id === appState.selectedModelInspectorId) ||
+    b.models.find((m) => m.id === rt.active_model_id) ||
+    b.models[0];
+
+  const rowsHtml = filtered
+    .map((m) => {
+      const isRunning = rt.active_model_id === m.id && (rt.state === "ready" || rt.state === "starting");
+      const isSelected = inspected?.id === m.id;
+      return `
+        <div class="model-clean-row ${isSelected ? "active" : ""}" data-select-model="${escapeHtml(m.id)}">
+          <div>
+            <div class="model-clean-title">
+              <span>${escapeHtml(m.name)}</span>
+              <span class="model-clean-quant">${escapeHtml(m.quantization)}</span>
+            </div>
+            <div class="model-clean-sub">
+              ${escapeHtml(m.detail)} · ${formatBytes(m.bytes)}
+              <span id="dl-prog-${escapeHtml(m.id)}" style="color:var(--accent);margin-left:6px"></span>
+            </div>
+          </div>
+          ${
+            m.installed
+              ? `<button class="pill-action-use" data-start-model="${escapeHtml(m.id)}">${isRunning ? "• Loaded" : "Load"}</button>`
+              : `<button class="pill-action-get" data-dl-model="${escapeHtml(m.id)}">Get</button>`
+          }
+        </div>
+      `;
+    })
+    .join("");
+
+  const isRunningExternal = rt.state === "external";
+  const isRunningLocal = rt.state === "ready" || rt.state === "starting";
+  const serverUrl = rt.base_url || b.config.external_base_url || "http://127.0.0.1:8080/v1";
+
+  els.viewModels.innerHTML = `
+    <div class="models-main-col">
+      <div class="models-search-bar">
+        <input id="models-search-in" class="input grow" value="${escapeHtml(appState.modelSearchQuery)}" placeholder="Search local & catalog GGUF models..." />
+        <div class="models-filter-pills">
+          ${["all", "installed", "gguf"]
+            .map(
+              (f) =>
+                `<button class="viewer-tab ${appState.modelFilter === f ? "active" : ""}" data-mfilter="${f}">${f.toUpperCase()}</button>`,
+            )
+            .join("")}
+        </div>
+      </div>
+
+      <div class="model-list-clean">
+        ${rowsHtml || `<div class="card">No models match "${escapeHtml(appState.modelSearchQuery)}".</div>`}
+      </div>
+
+      <details class="card">
+        <summary class="import-gguf-toggle">+ Import .gguf or external OpenAI-compatible server</summary>
+        <div class="row" style="margin-top:8px">
+          <input id="ws-hf-url" class="input grow" placeholder="Hugging Face URL or repo:owner/repo" />
+          <button id="ws-hf-dl" class="btn btn-sm">Download</button>
+        </div>
+        <div class="row">
+          <input id="ws-local-gguf" class="input grow mono" placeholder="/path/to/model.gguf" />
+          <button id="ws-local-imp" class="btn btn-sm">Import</button>
+        </div>
+        <div class="row">
+          <input id="ws-ext-url" class="input grow mono" value="${escapeHtml(b.config.external_base_url || "")}" placeholder="http://127.0.0.1:8080/v1" />
+          <input id="ws-ext-name" class="input" style="max-width:160px" value="${escapeHtml(b.config.external_model_name || "")}" placeholder="Model name" />
+          <button id="ws-ext-use" class="btn btn-primary btn-sm">Use Endpoint</button>
+        </div>
+      </details>
+    </div>
+
+    <aside class="models-inspector-col">
+      <div>
+        <div class="sidebar-section-label">INSPECTOR</div>
+        <h3 style="margin:6px 0 2px;font-size:17px">${escapeHtml(inspected ? inspected.name : "Local Runtime")}</h3>
+        <div style="font-size:12px;color:var(--muted)">${inspected ? `${escapeHtml(inspected.quantization)} · ${formatBytes(inspected.bytes)}` : "Configure runtime"}</div>
+      </div>
+
+      <div class="inspector-control">
+        <div class="inspector-label-row">
+          <span>Context length</span>
+          <span id="insp-ctx-val" class="mono">${appState.inspectorContextLen}</span>
+        </div>
+        <input id="insp-ctx" class="inspector-range" type="range" min="2048" max="32768" step="2048" value="${appState.inspectorContextLen}" />
+      </div>
+
+      <div class="inspector-control">
+        <div class="inspector-label-row">
+          <span>Temperature</span>
+          <span id="insp-temp-val" class="mono">${appState.inspectorTemp.toFixed(1)}</span>
+        </div>
+        <input id="insp-temp" class="inspector-range" type="range" min="0" max="1.2" step="0.1" value="${appState.inspectorTemp}" />
+      </div>
+
+      <div class="card">
+        <div style="font-size:12px;color:var(--muted)">Local server</div>
+        <div class="mono" style="font-size:12px;word-break:break-all">${escapeHtml(serverUrl)}</div>
+        <div class="row" style="font-size:12px;color:var(--accent)">
+          <span class="status-dot ${rt.state}"></span>
+          <span>${isRunningLocal ? "Serving OpenAI-compatible API" : isRunningExternal ? "Connected to external API" : "Stopped"}</span>
+        </div>
+        <div class="row" style="margin-top:4px">
+          ${
+            isRunningLocal || isRunningExternal
+              ? `<button id="insp-stop-rt" class="btn btn-sm grow">Stop server</button>`
+              : inspected?.installed
+                ? `<button id="insp-start-rt" class="btn btn-primary btn-sm grow">Load &amp; Serve</button>`
+                : ""
+          }
+        </div>
+      </div>
+    </aside>
+  `;
+
+  const searchIn = document.getElementById("models-search-in");
+  searchIn.oninput = () => {
+    appState.modelSearchQuery = searchIn.value;
+    renderModelsWorkspace();
+    const reFocus = document.getElementById("models-search-in");
+    reFocus?.focus();
+    reFocus?.setSelectionRange(reFocus.value.length, reFocus.value.length);
+  };
+  els.viewModels.querySelectorAll("[data-mfilter]").forEach((btn) => {
+    btn.onclick = () => {
+      appState.modelFilter = btn.getAttribute("data-mfilter");
+      renderModelsWorkspace();
+    };
+  });
+  els.viewModels.querySelectorAll("[data-select-model]").forEach((row) => {
+    row.onclick = (e) => {
+      if (e.target.closest("button")) return;
+      appState.selectedModelInspectorId = row.getAttribute("data-select-model");
+      renderModelsWorkspace();
+    };
+  });
+  els.viewModels.querySelectorAll("[data-start-model]").forEach((btn) => {
+    btn.onclick = async () => {
+      await invoke("start_model", { modelId: btn.getAttribute("data-start-model") });
+      await refreshBootstrap();
+      renderAll();
+    };
+  });
+  els.viewModels.querySelectorAll("[data-dl-model]").forEach((btn) => {
+    btn.onclick = async () => {
+      await invoke("download_catalog_model", { modelId: btn.getAttribute("data-dl-model") });
+      await refreshBootstrap();
+      renderAll();
+    };
+  });
+
+  document.getElementById("insp-ctx").oninput = (e) => {
+    appState.inspectorContextLen = Number(e.target.value);
+    document.getElementById("insp-ctx-val").textContent = String(appState.inspectorContextLen);
+  };
+  document.getElementById("insp-temp").oninput = (e) => {
+    appState.inspectorTemp = Number(e.target.value);
+    document.getElementById("insp-temp-val").textContent = appState.inspectorTemp.toFixed(1);
+  };
+  document.getElementById("insp-stop-rt")?.addEventListener("click", async () => {
+    await invoke("stop_runtime");
+    await refreshBootstrap();
+    renderAll();
+  });
+  document.getElementById("insp-start-rt")?.addEventListener("click", async () => {
+    if (!inspected) return;
+    await invoke("start_model", { modelId: inspected.id });
+    await refreshBootstrap();
+    renderAll();
+  });
+
+  document.getElementById("ws-hf-dl").onclick = async () => {
+    await invoke("download_huggingface_gguf", { url: document.getElementById("ws-hf-url").value });
+    await refreshBootstrap();
+    renderAll();
+  };
+  document.getElementById("ws-local-imp").onclick = async () => {
+    await invoke("import_local_gguf", { path: document.getElementById("ws-local-gguf").value });
+    await refreshBootstrap();
+    renderAll();
+  };
+  document.getElementById("ws-ext-use").onclick = async () => {
+    await invoke("set_external_endpoint", {
+      baseUrl: document.getElementById("ws-ext-url").value,
+      modelName: document.getElementById("ws-ext-name").value || null,
+    });
+    await refreshBootstrap();
+    renderAll();
+  };
+}
+
+function renderConnectorsWorkspace() {
+  const b = appState.bootstrap;
+  if (!b) return;
+  const serversHtml = (b.mcp_servers || [])
+    .map(
+      (srv) => `
+      <div class="card">
+        <div class="row">
+          <strong class="grow">${escapeHtml(srv.name)}</strong>
+          <span class="mono" style="font-size:12px;color:var(--muted)">${escapeHtml(srv.command)} ${escapeHtml(srv.args.join(" "))}</span>
+          <button class="btn btn-ghost btn-sm" data-rm-mcp="${escapeHtml(srv.name)}">Remove</button>
+        </div>
+      </div>
+    `,
+    )
+    .join("");
+
+  els.viewConnectors.innerHTML = `
+    <div class="connectors-inner">
+      <div class="card">
+        <div class="row">
+          <strong class="grow">Workspace Sandbox</strong>
+          <span class="status-dot ${appState.workspacePath ? "ready" : ""}"></span>
+          <button id="conn-pick-ws" class="btn btn-sm">Change folder</button>
+        </div>
+        <div class="mono" style="font-size:12.5px;color:var(--muted)">${escapeHtml(appState.workspacePath || "No folder selected")}</div>
+      </div>
+
+      <div class="card">
+        <div class="row">
+          <strong class="grow">In-Memory SQLite Sandbox</strong>
+          <span class="status-dot ready"></span>
+          <span style="font-size:12px;color:var(--accent)">Active</span>
+        </div>
+        <div style="font-size:12.5px;color:var(--muted)">Auto-mounts workspace CSV files as SQL tables during agent runs.</div>
+      </div>
+
+      <div class="card">
+        <strong>Add Stdio MCP Server</strong>
+        <div class="row">
+          <input id="mcp-name" class="input" placeholder="name (e.g. filesystem)" />
+          <input id="mcp-cmd" class="input mono" placeholder="command (e.g. npx)" />
+        </div>
+        <input id="mcp-args" class="input mono" placeholder="space-separated args" />
+        <div class="row">
+          <select id="mcp-scope" class="select-field grow">
+            <option value="global">Global (~/.config/keel-desktop/mcp.json)</option>
+            <option value="workspace">Workspace (.keel/mcp.json)</option>
+          </select>
+          <button id="mcp-add-btn" class="btn btn-primary btn-sm">Add</button>
+        </div>
+      </div>
+
+      ${serversHtml}
+    </div>
+  `;
+
+  document.getElementById("conn-pick-ws").onclick = () => els.workspacePillBtn.click();
+  document.getElementById("mcp-add-btn").onclick = async () => {
+    const args = document.getElementById("mcp-args").value.trim().split(/\s+/).filter(Boolean);
+    await invoke("save_mcp_server", {
+      input: {
+        name: document.getElementById("mcp-name").value,
+        command: document.getElementById("mcp-cmd").value,
+        args,
+        scope: document.getElementById("mcp-scope").value,
+        workspace_path: appState.workspacePath,
+      },
+    });
+    await refreshBootstrap();
+    renderConnectorsWorkspace();
+  };
+  els.viewConnectors.querySelectorAll("[data-rm-mcp]").forEach((btn) => {
+    btn.onclick = async () => {
+      await invoke("remove_mcp_server", {
+        name: btn.getAttribute("data-rm-mcp"),
+        workspacePath: appState.workspacePath,
+      });
+      await refreshBootstrap();
+      renderConnectorsWorkspace();
+    };
+  });
 }
 
 function openModal(title, builder) {
@@ -649,133 +1006,6 @@ function openModal(title, builder) {
 
 function closeModal() {
   els.modalBackdrop.classList.add("hidden");
-}
-
-function openModelsModal() {
-  const b = appState.bootstrap;
-  openModal("Models", (body) => {
-    const rt = b.runtime;
-    const activeModel = b.models.find((m) => m.id === rt.active_model_id);
-
-    if (rt.state === "ready" || rt.state === "starting" || rt.state === "external") {
-      const running = document.createElement("div");
-      running.className = "running-now-card";
-      const runningTitle =
-        rt.state === "external"
-          ? b.config.external_model_name || "External OpenAI Endpoint"
-          : activeModel?.name || rt.active_model_id || "Local Model";
-      const runningMeta =
-        rt.state === "external"
-          ? rt.base_url || "Custom endpoint"
-          : `${activeModel ? `${formatBytes(activeModel.bytes)} · ${activeModel.quantization}` : "GGUF"} · llama.cpp`;
-      running.innerHTML = `
-        <div>
-          <div class="running-eyebrow">${rt.state === "starting" ? "STARTING RUNTIME" : "RUNNING NOW"}</div>
-          <div class="running-title">${escapeHtml(runningTitle)}</div>
-          <div class="running-meta">${escapeHtml(runningMeta)}</div>
-        </div>
-        <button id="stop-runtime-btn" class="pill-action-use">Stop</button>
-      `;
-      running.querySelector("#stop-runtime-btn").onclick = async () => {
-        await invoke("stop_runtime");
-        await refreshBootstrap();
-        renderHeader();
-        openModelsModal();
-      };
-      body.appendChild(running);
-    }
-
-    const list = document.createElement("div");
-    list.className = "model-list-clean";
-    for (const m of b.models) {
-      const isRunning = rt.active_model_id === m.id && (rt.state === "ready" || rt.state === "starting");
-      const row = document.createElement("div");
-      row.className = "model-clean-row";
-      row.innerHTML = `
-        <div>
-          <div class="model-clean-title">
-            <span>${escapeHtml(m.name)}</span>
-            <span class="model-clean-quant">${escapeHtml(m.quantization)}</span>
-          </div>
-          <div class="model-clean-sub">
-            ${escapeHtml(m.detail)} · ${formatBytes(m.bytes)}
-            <span id="dl-prog-${escapeHtml(m.id)}" style="color:var(--accent);margin-left:6px"></span>
-          </div>
-        </div>
-        ${
-          m.installed
-            ? `<button class="pill-action-use" data-start="${escapeHtml(m.id)}">${isRunning ? "Reload" : "Use"}</button>`
-            : `<button class="pill-action-get" data-dl="${escapeHtml(m.id)}">Get</button>`
-        }
-      `;
-      row.querySelector("[data-start]")?.addEventListener("click", async () => {
-        await invoke("start_model", { modelId: m.id });
-        await refreshBootstrap();
-        renderHeader();
-        closeModal();
-      });
-      row.querySelector("[data-dl]")?.addEventListener("click", async () => {
-        await invoke("download_catalog_model", { modelId: m.id });
-        await refreshBootstrap();
-        openModelsModal();
-      });
-      list.appendChild(row);
-    }
-    body.appendChild(list);
-
-    const toggleBtn = document.createElement("button");
-    toggleBtn.className = "import-gguf-toggle";
-    toggleBtn.textContent = "+ Import your own .gguf or external endpoint";
-    const impPanel = document.createElement("div");
-    impPanel.className = "hidden";
-    impPanel.style.display = "flex";
-    impPanel.style.flexDirection = "column";
-    impPanel.style.gap = "10px";
-    impPanel.innerHTML = `
-      <div class="card">
-        <strong>Import GGUF</strong>
-        <div class="row">
-          <input id="hf-url" class="input grow" placeholder="Hugging Face URL or repo:owner/repo" />
-          <button id="hf-dl-btn" class="btn btn-sm">Download</button>
-        </div>
-        <div class="row">
-          <input id="local-gguf" class="input grow mono" placeholder="/path/to/local-model.gguf" />
-          <button id="local-imp-btn" class="btn btn-sm">Import</button>
-        </div>
-      </div>
-      <div class="card">
-        <strong>External OpenAI-compatible Endpoint</strong>
-        <input id="ext-url" class="input mono" value="${escapeHtml(b.config.external_base_url || "")}" placeholder="http://127.0.0.1:8080/v1" />
-        <div class="row">
-          <input id="ext-model" class="input grow" value="${escapeHtml(b.config.external_model_name || "")}" placeholder="Model name (optional)" />
-          <button id="ext-save-btn" class="btn btn-primary btn-sm">Use Endpoint</button>
-        </div>
-      </div>
-    `;
-    toggleBtn.onclick = () => impPanel.classList.toggle("hidden");
-    body.appendChild(toggleBtn);
-    body.appendChild(impPanel);
-
-    impPanel.querySelector("#hf-dl-btn").onclick = async () => {
-      await invoke("download_huggingface_gguf", { url: impPanel.querySelector("#hf-url").value });
-      await refreshBootstrap();
-      openModelsModal();
-    };
-    impPanel.querySelector("#local-imp-btn").onclick = async () => {
-      await invoke("import_local_gguf", { path: impPanel.querySelector("#local-gguf").value });
-      await refreshBootstrap();
-      openModelsModal();
-    };
-    impPanel.querySelector("#ext-save-btn").onclick = async () => {
-      await invoke("set_external_endpoint", {
-        baseUrl: impPanel.querySelector("#ext-url").value,
-        modelName: impPanel.querySelector("#ext-model").value || null,
-      });
-      await refreshBootstrap();
-      renderHeader();
-      closeModal();
-    };
-  });
 }
 
 function openDiffsModal() {
@@ -813,7 +1043,7 @@ function openDiffsModal() {
           ${counts ? `<span class="mono" style="font-size:12px;color:var(--accent)">${escapeHtml(counts)}</span>` : ""}
           <span class="pill-btn">${escapeHtml(edit.status)}</span>
         </div>
-        <pre class="diff-pre">${escapeHtml(edit.diff)}</pre>
+        <div class="inline-edit-diff-wrap">${renderDiffHtml(edit.diff)}</div>
       `;
       if (edit.status === "pending") {
         const actions = document.createElement("div");
@@ -850,107 +1080,70 @@ function openDiffsModal() {
   });
 }
 
-function openMcpModal() {
-  const b = appState.bootstrap;
-  openModal("Connections (Stdio MCP)", (body) => {
-    const form = document.createElement("div");
-    form.className = "card";
-    form.innerHTML = `
-      <strong>Add Stdio MCP Server</strong>
-      <div class="row">
-        <input id="mcp-name" class="input" placeholder="name (e.g. filesystem)" />
-        <input id="mcp-cmd" class="input mono" placeholder="command (e.g. npx)" />
-      </div>
-      <input id="mcp-args" class="input mono" placeholder="space-separated args" />
-      <div class="row">
-        <select id="mcp-scope" class="select-field grow">
-          <option value="global">Global (~/.config/keel-desktop/mcp.json)</option>
-          <option value="workspace">Workspace (.keel/mcp.json)</option>
-        </select>
-        <button id="mcp-add-btn" class="btn btn-primary btn-sm">Add</button>
-      </div>
-    `;
-    form.querySelector("#mcp-add-btn").onclick = async () => {
-      const args = form.querySelector("#mcp-args").value.trim().split(/\s+/).filter(Boolean);
-      await invoke("save_mcp_server", {
-        input: {
-          name: form.querySelector("#mcp-name").value,
-          command: form.querySelector("#mcp-cmd").value,
-          args,
-          scope: form.querySelector("#mcp-scope").value,
-          workspace_path: appState.workspacePath,
-        },
-      });
-      await refreshBootstrap();
-      renderSidebar();
-      openMcpModal();
-    };
-    body.appendChild(form);
-
-    for (const srv of b.mcp_servers) {
-      const card = document.createElement("div");
-      card.className = "card";
-      card.innerHTML = `
-        <div class="row">
-          <strong class="grow">${escapeHtml(srv.name)}</strong>
-          <span class="mono" style="font-size:12px;color:var(--muted)">${escapeHtml(srv.command)} ${escapeHtml(srv.args.join(" "))}</span>
-          <button class="btn btn-ghost btn-sm" data-rm="${escapeHtml(srv.name)}">Remove</button>
-        </div>
-      `;
-      card.querySelector("[data-rm]").onclick = async () => {
-        await invoke("remove_mcp_server", {
-          name: srv.name,
-          workspacePath: appState.workspacePath,
-        });
-        await refreshBootstrap();
-        renderSidebar();
-        openMcpModal();
-      };
-      body.appendChild(card);
-    }
-  });
-}
-
 function openCustomizeModal() {
   const b = appState.bootstrap;
   openModal("Customize", (body) => {
     const ap = appState.appearance;
     const appearanceCard = document.createElement("div");
     appearanceCard.className = "card";
-    const palettesHtml = THEME_PALETTES.map(
-      (p) => `
-      <button type="button" class="palette-chip ${ap.palette === p.id ? "active" : ""}" data-palette-pick="${p.id}">
-        <span class="palette-swatch" style="background:linear-gradient(135deg, ${p.ink} 50%, ${p.accent} 50%)"></span>
-        <span>${escapeHtml(p.label)}</span>
-      </button>
-    `,
+
+    const accentButtons = ACCENT_MODES.map(
+      (a) =>
+        `<button type="button" class="seg-btn ${ap.accent === a ? "active" : ""}" data-accent-pick="${a}">${a[0].toUpperCase() + a.slice(1)}</button>`,
     ).join("");
-    const spacingHtml = SPACING_MODES.map(
-      (sp) =>
-        `<button type="button" class="seg-btn ${ap.spacing === sp ? "active" : ""}" data-spacing-pick="${sp}">${sp[0].toUpperCase() + sp.slice(1)}</button>`,
+    const toneButtons = TONE_MODES.map(
+      (t) =>
+        `<button type="button" class="seg-btn ${ap.tone === t ? "active" : ""}" data-tone-pick="${t}">${t[0].toUpperCase() + t.slice(1)}</button>`,
     ).join("");
-    const textSizeHtml = TEXT_SIZES.map(
+    const densityButtons = DENSITY_MODES.map(
+      (d) =>
+        `<button type="button" class="seg-btn ${ap.density === d ? "active" : ""}" data-density-pick="${d}">${d[0].toUpperCase() + d.slice(1)}</button>`,
+    ).join("");
+    const textButtons = TEXT_SIZES.map(
       (sz) =>
         `<button type="button" class="seg-btn ${ap.textSize === sz ? "active" : ""}" data-size-pick="${sz}">${sz[0].toUpperCase() + sz.slice(1)}</button>`,
     ).join("");
 
     appearanceCard.innerHTML = `
-      <strong>Palette</strong>
-      <div class="palette-grid">${palettesHtml}</div>
-      <strong>Message spacing</strong>
-      <div class="seg-group">${spacingHtml}</div>
+      <strong>Accent</strong>
+      <div class="seg-group">${accentButtons}</div>
+      <strong>Tone</strong>
+      <div class="seg-group cols-2">${toneButtons}</div>
+      <strong>Density</strong>
+      <div class="seg-group cols-2">${densityButtons}</div>
+      <strong>Sidebar</strong>
+      <div class="seg-group cols-2">
+        <button type="button" class="seg-btn ${ap.sidebar ? "active" : ""}" data-sidebar-pick="true">On</button>
+        <button type="button" class="seg-btn ${!ap.sidebar ? "active" : ""}" data-sidebar-pick="false">Off</button>
+      </div>
       <strong>Text size</strong>
-      <div class="seg-group">${textSizeHtml}</div>
+      <div class="seg-group">${textButtons}</div>
     `;
-    appearanceCard.querySelectorAll("[data-palette-pick]").forEach((btn) => {
+
+    appearanceCard.querySelectorAll("[data-accent-pick]").forEach((btn) => {
       btn.onclick = () => {
-        applyAppearance({ ...appState.appearance, palette: btn.getAttribute("data-palette-pick") });
+        applyAppearance({ ...appState.appearance, accent: btn.getAttribute("data-accent-pick") });
         openCustomizeModal();
       };
     });
-    appearanceCard.querySelectorAll("[data-spacing-pick]").forEach((btn) => {
+    appearanceCard.querySelectorAll("[data-tone-pick]").forEach((btn) => {
       btn.onclick = () => {
-        applyAppearance({ ...appState.appearance, spacing: btn.getAttribute("data-spacing-pick") });
+        applyAppearance({ ...appState.appearance, tone: btn.getAttribute("data-tone-pick") });
+        openCustomizeModal();
+      };
+    });
+    appearanceCard.querySelectorAll("[data-density-pick]").forEach((btn) => {
+      btn.onclick = () => {
+        applyAppearance({ ...appState.appearance, density: btn.getAttribute("data-density-pick") });
+        openCustomizeModal();
+      };
+    });
+    appearanceCard.querySelectorAll("[data-sidebar-pick]").forEach((btn) => {
+      btn.onclick = () => {
+        applyAppearance({
+          ...appState.appearance,
+          sidebar: btn.getAttribute("data-sidebar-pick") === "true",
+        });
         openCustomizeModal();
       };
     });
@@ -988,7 +1181,7 @@ function openCustomizeModal() {
       try {
         localStorage.removeItem(WELCOME_STORAGE_KEY);
       } catch {
-        // Ignore storage failures.
+        // Ignore storage errors.
       }
       closeModal();
       syncWelcomeOverlay(true);
@@ -1016,12 +1209,24 @@ function autoSizePromptInput() {
 }
 
 function wireUi() {
-  els.toggleSidebarBtn.onclick = () => els.sidebar.classList.toggle("collapsed");
+  els.toggleSidebarBtn.onclick = () => {
+    applyAppearance({ ...appState.appearance, sidebar: !appState.appearance.sidebar });
+  };
   els.newChatBtn.onclick = () => createNewSession(appState.session?.app_preset || "general");
   els.newAgentBtn.onclick = () => createNewSession("general");
-  document.getElementById("open-models-btn").onclick = openModelsModal;
-  els.modelPillBtn.onclick = openModelsModal;
-  document.getElementById("open-mcp-btn").onclick = openMcpModal;
+
+  document.querySelectorAll(".mode-nav-item").forEach((btn) => {
+    btn.onclick = () => setActiveView(btn.getAttribute("data-view"));
+  });
+
+  document.querySelectorAll("[data-viewer-tab]").forEach((tab) => {
+    tab.onclick = () => {
+      appState.viewerTab = tab.getAttribute("data-viewer-tab");
+      renderViewerPane();
+    };
+  });
+
+  els.modelPillBtn.onclick = () => setActiveView("models");
   document.getElementById("open-customize-btn").onclick = openCustomizeModal;
   els.harnessPillBtn.onclick = openCustomizeModal;
   els.diffsPillBtn.onclick = openDiffsModal;
@@ -1092,16 +1297,22 @@ function wireUi() {
 
   els.toggleViewerBtn.onclick = () => {
     appState.viewerOpen = !appState.viewerOpen;
-    renderViewerPane();
+    if (appState.viewerOpen && appState.activeView !== "chat" && appState.activeView !== "code") {
+      appState.activeView = "code";
+    }
+    renderAll();
   };
   els.closeViewerBtn.onclick = () => {
     appState.viewerOpen = false;
-    renderViewerPane();
+    if (appState.activeView === "code") {
+      appState.activeView = "chat";
+    }
+    renderAll();
   };
-  els.refreshViewerBtn.onclick = () => refreshWorkspaceFiles().then(loadViewerFile);
+  els.refreshViewerBtn.onclick = () => refreshWorkspaceFiles().then(loadViewerContent);
   els.viewerFileSelect.onchange = () => {
     appState.viewerFile = els.viewerFileSelect.value;
-    loadViewerFile();
+    loadViewerContent();
   };
 
   els.sendBtn.onclick = sendCurrentPrompt;
@@ -1116,5 +1327,5 @@ function wireUi() {
 }
 
 init().catch((err) => {
-  els.chatScroll.innerHTML = `<div class="empty-state"><h1>Keel</h1><p>${escapeHtml(String(err))}</p></div>`;
+  els.chatScroll.innerHTML = `<div class="empty-state"><h1>Keel Desktop</h1><p>${escapeHtml(String(err))}</p></div>`;
 });

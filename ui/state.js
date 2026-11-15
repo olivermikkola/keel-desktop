@@ -1,25 +1,22 @@
-export const THEME_PALETTES = [
-  { id: "original", label: "Original", ink: "#0c1415", surface: "#141f21", accent: "#a4cfc0", rust: "#c77851" },
-  { id: "jade", label: "Jade", ink: "#0a1714", surface: "#11241f", accent: "#88d4b8", rust: "#d98a5f" },
-  { id: "pine", label: "Pine", ink: "#0d1612", surface: "#15231c", accent: "#9cc5a1", rust: "#c88a4b" },
-  { id: "brass", label: "Brass", ink: "#141310", surface: "#1e1c17", accent: "#d8b982", rust: "#c96e4b" },
-  { id: "graphite", label: "Graphite", ink: "#111315", surface: "#1b1e22", accent: "#c5ced8", rust: "#d27a57" },
-];
-
-export const SPACING_MODES = ["tight", "regular", "airy"];
+export const ACCENT_MODES = ["sage", "copper", "ice"];
+export const TONE_MODES = ["slate", "ink"];
+export const DENSITY_MODES = ["cozy", "compact"];
 export const TEXT_SIZES = ["small", "regular", "large"];
 
 export const APPEARANCE_DEFAULTS = {
-  palette: "original",
-  spacing: "regular",
+  accent: "sage",
+  tone: "slate",
+  density: "cozy",
+  sidebar: true,
   textSize: "regular",
 };
 
 export function normalizeAppearance(raw = {}) {
-  const paletteIds = new Set(THEME_PALETTES.map((p) => p.id));
   return {
-    palette: paletteIds.has(raw?.palette) ? raw.palette : APPEARANCE_DEFAULTS.palette,
-    spacing: SPACING_MODES.includes(raw?.spacing) ? raw.spacing : APPEARANCE_DEFAULTS.spacing,
+    accent: ACCENT_MODES.includes(raw?.accent) ? raw.accent : APPEARANCE_DEFAULTS.accent,
+    tone: TONE_MODES.includes(raw?.tone) ? raw.tone : APPEARANCE_DEFAULTS.tone,
+    density: DENSITY_MODES.includes(raw?.density) ? raw.density : APPEARANCE_DEFAULTS.density,
+    sidebar: typeof raw?.sidebar === "boolean" ? raw.sidebar : APPEARANCE_DEFAULTS.sidebar,
     textSize: TEXT_SIZES.includes(raw?.textSize) ? raw.textSize : APPEARANCE_DEFAULTS.textSize,
   };
 }
@@ -37,6 +34,33 @@ export function formatRelativeTime(epochSecs, nowSecs = Math.floor(Date.now() / 
   const days = Math.floor(diff / 86400);
   if (days < 30) return `${days}d`;
   return `${Math.floor(days / 30)}mo`;
+}
+
+export function parseDiffLines(diffText = "") {
+  if (!diffText) return [];
+  return diffText.split("\n").map((line) => {
+    if (line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("@@")) {
+      return { kind: "meta", text: line };
+    }
+    if (line.startsWith("+")) {
+      return { kind: "add", text: line };
+    }
+    if (line.startsWith("-")) {
+      return { kind: "del", text: line };
+    }
+    return { kind: "ctx", text: line };
+  });
+}
+
+export function filterModels(models = [], query = "", filter = "all") {
+  const q = query.trim().toLowerCase();
+  return models.filter((m) => {
+    if (filter === "installed" && !m.installed) return false;
+    if (filter === "gguf" && m.backend && m.backend !== "gguf") return false;
+    if (!q) return true;
+    const hay = `${m.name || ""} ${m.id || ""} ${m.detail || ""} ${m.quantization || ""}`.toLowerCase();
+    return hay.includes(q);
+  });
 }
 
 export function formatBytes(bytes) {
