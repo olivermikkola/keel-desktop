@@ -4,8 +4,114 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Keel Desktop</title>
+    <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <main id="app">Keel Desktop</main>
+    <div class="app-shell">
+      <aside id="sidebar" class="sidebar">
+        <div class="brand-row">
+          <img src="assets/mark.svg" alt="Keel mark" />
+          <span class="brand-title">Keel Desktop</span>
+        </div>
+
+        <button id="new-chat-btn" class="btn btn-primary">+ New chat</button>
+
+        <div>
+          <div class="sidebar-section-label">Apps</div>
+          <div id="apps-list" class="nav-list"></div>
+        </div>
+
+        <div class="grow" style="flex: 1; min-height: 0; overflow-y: auto">
+          <div class="sidebar-section-label">Recents</div>
+          <div id="sessions-list" class="nav-list"></div>
+        </div>
+
+        <div class="sidebar-footer">
+          <button id="open-models-btn" class="nav-item">Models &amp; Runtime</button>
+          <button id="open-mcp-btn" class="nav-item">Connections (MCP)</button>
+          <button id="open-customize-btn" class="nav-item">Customize</button>
+        </div>
+      </aside>
+
+      <div class="main-area">
+        <header class="topbar">
+          <button id="toggle-sidebar-btn" class="btn btn-ghost btn-sm" title="Toggle sidebar">
+            Menu
+          </button>
+
+          <button id="model-pill-btn" class="pill-btn">
+            <span id="runtime-dot" class="status-dot"></span>
+            <span id="model-pill-label">Select model</span>
+          </button>
+
+          <button id="workspace-pill-btn" class="pill-btn" title="Choose project folder">
+            <span id="workspace-pill-label" class="mono">No folder</span>
+          </button>
+
+          <button id="harness-pill-btn" class="pill-btn" title="Agent harness">
+            <span id="harness-pill-label">Keel Harness</span>
+          </button>
+
+          <div class="topbar-spacer"></div>
+
+          <button id="diffs-pill-btn" class="pill-btn">
+            <span id="diffs-pill-label">0 applied · 0 awaiting review</span>
+          </button>
+
+          <button id="toggle-viewer-btn" class="btn btn-ghost btn-sm">Viewer</button>
+        </header>
+
+        <div class="workspace-body">
+          <section class="chat-column">
+            <div id="chat-scroll" class="chat-scroll"></div>
+            <div id="approval-slot"></div>
+
+            <div class="composer-wrap">
+              <div class="composer-box">
+                <textarea
+                  id="prompt-input"
+                  placeholder="Ask Keel to read, build, query CSVs, or edit files in your workspace..."
+                ></textarea>
+                <div class="composer-actions">
+                  <label class="row" style="font-size: 12px; color: var(--muted)">
+                    <input id="thinking-toggle" type="checkbox" checked />
+                    Thinking
+                  </label>
+                  <div class="spacer"></div>
+                  <button id="stop-btn" class="btn btn-rust btn-sm hidden">Stop</button>
+                  <button id="send-btn" class="btn btn-primary btn-sm">Send</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <aside id="viewer-pane" class="viewer-pane hidden">
+            <div class="viewer-header">
+              <select id="viewer-file-select"></select>
+              <button id="refresh-viewer-btn" class="btn btn-ghost btn-sm">Refresh</button>
+              <button id="close-viewer-btn" class="btn btn-ghost btn-sm">Close</button>
+            </div>
+            <div id="viewer-content" class="viewer-content"></div>
+          </aside>
+        </div>
+
+        <footer class="telemetry-bar">
+          <span id="telemetry-left">Ready</span>
+          <span id="telemetry-right" class="mono">Keel v0.1.0</span>
+        </footer>
+      </div>
+    </div>
+
+    <div id="modal-backdrop" class="modal-backdrop hidden">
+      <div class="modal">
+        <div class="modal-header">
+          <h2 id="modal-title">Settings</h2>
+          <button id="modal-close-btn" class="btn btn-ghost btn-sm">Close</button>
+        </div>
+        <div id="modal-body" class="modal-body"></div>
+      </div>
+    </div>
+
+    <script type="module" src="app.js"></script>
   </body>
 </html>
