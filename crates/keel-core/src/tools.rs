@@ -42,6 +42,10 @@ pub struct StagedEdit {
     pub old_content: Option<String>,
     pub new_content: Option<String>,
     pub diff: String,
+    #[serde(default)]
+    pub added_lines: usize,
+    #[serde(default)]
+    pub removed_lines: usize,
     pub status: StagedEditStatus,
 }
 
@@ -308,7 +312,8 @@ pub fn build_staged_edit(
                     .context("Missing replacement content for edit")?
                     .to_string(),
             };
-            let diff = simple_diff(path, Some(&old_content), Some(&new_content));
+            let (diff, added_lines, removed_lines) =
+                compute_diff(path, Some(&old_content), Some(&new_content));
             Ok(StagedEdit {
                 id: uuid::Uuid::new_v4().to_string(),
                 kind,
@@ -318,6 +323,8 @@ pub fn build_staged_edit(
                 old_content: Some(old_content),
                 new_content: Some(new_content),
                 diff,
+                added_lines,
+                removed_lines,
                 status: StagedEditStatus::Pending,
             })
         }
@@ -328,7 +335,8 @@ pub fn build_staged_edit(
             } else {
                 None
             };
-            let diff = simple_diff(path, old_content.as_deref(), Some(&content));
+            let (diff, added_lines, removed_lines) =
+                compute_diff(path, old_content.as_deref(), Some(&content));
             Ok(StagedEdit {
                 id: uuid::Uuid::new_v4().to_string(),
                 kind,
@@ -342,6 +350,8 @@ pub fn build_staged_edit(
                 old_content,
                 new_content: Some(content),
                 diff,
+                added_lines,
+                removed_lines,
                 status: StagedEditStatus::Pending,
             })
         }
@@ -350,7 +360,8 @@ pub fn build_staged_edit(
                 bail!("File does not exist: {path}");
             }
             let old_content = std::fs::read_to_string(&resolved).ok();
-            let diff = simple_diff(path, old_content.as_deref(), None);
+            let (diff, added_lines, removed_lines) =
+                compute_diff(path, old_content.as_deref(), None);
             Ok(StagedEdit {
                 id: uuid::Uuid::new_v4().to_string(),
                 kind,
@@ -360,6 +371,8 @@ pub fn build_staged_edit(
                 old_content,
                 new_content: None,
                 diff,
+                added_lines,
+                removed_lines,
                 status: StagedEditStatus::Pending,
             })
         }
@@ -379,6 +392,8 @@ pub fn build_staged_edit(
                 old_content: None,
                 new_content: None,
                 diff,
+                added_lines: 0,
+                removed_lines: 0,
                 status: StagedEditStatus::Pending,
             })
         }
@@ -413,19 +428,50 @@ pub fn apply_staged_edit(root: &Path, edit: &mut StagedEdit) -> Result<()> {
     Ok(())
 }
 
-fn simple_diff(path: &str, old: Option<&str>, new: Option<&str>) -> String {
+fn compute_diff(path: &str, old: Option<&str>, new: Option<&str>) -> (String, usize, usize) {
+    let old_lines: Vec<&str> = old.map(|s| s.lines().collect()).unwrap_or_default();
+    let new_lines: Vec<&str> = new.map(|s| s.lines().collect()).unwrap_or_default();
+
+    let mut prefix = 0;
+    while prefix < old_lines.len()
+        && prefix < new_lines.len()
+        && old_lines[prefix] == new_lines[prefix]
+    {
+        prefix += 1;
+    }
+
+    let mut suffix = 0;
+    while suffix < (old_lines.len() - prefix)
+        && suffix < (new_lines.len() - prefix)
+        && old_lines[old_lines.len() - 1 - suffix] == new_lines[new_lines.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+
+    let removed_slice = &old_lines[prefix..old_lines.len() - suffix];
+    let added_slice = &new_lines[prefix..new_lines.len() - suffix];
+
     let mut out = format!("--- a/{path}\n+++ b/{path}\n");
-    if let Some(o) = old {
-        for line in o.lines().take(60) {
-            out.push_str(&format!("- {line}\n"));
-        }
+    for line in removed_slice.iter().take(80) {
+        out.push_str(&format!("- {line}\n"));
     }
-    if let Some(n) = new {
-        for line in n.lines().take(60) {
-            out.push_str(&format!("+ {line}\n"));
-        }
+    if removed_slice.len() > 80 {
+        out.push_str(&format!(
+            "- ... ({} more removed lines)\n",
+            removed_slice.len() - 80
+        ));
     }
-    out
+    for line in added_slice.iter().take(80) {
+        out.push_str(&format!("+ {line}\n"));
+    }
+    if added_slice.len() > 80 {
+        out.push_str(&format!(
+            "+ ... ({} more added lines)\n",
+            added_slice.len() - 80
+        ));
+    }
+
+    (out, added_slice.len(), removed_slice.len())
 }
 
 pub fn is_destructive_shell_command(cmd: &str) -> Option<&'static str> {
@@ -693,6 +739,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(edit.status, StagedEditStatus::Pending);
+        assert_eq!(edit.added_lines, 1);
+        assert_eq!(edit.removed_lines, 1);
         // File should still be unchanged until applied.
         assert_eq!(
             std::fs::read_to_string(dir.join("hello.txt")).unwrap(),
@@ -704,6 +752,18 @@ mod tests {
             std::fs::read_to_string(dir.join("hello.txt")).unwrap(),
             "hello\nkeel\n"
         );
+
+        let created = build_staged_edit(
+            &dir,
+            StagedEditKind::Create,
+            "new.txt",
+            None,
+            Some("alpha\nbeta\ngamma"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(created.added_lines, 3);
+        assert_eq!(created.removed_lines, 0);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

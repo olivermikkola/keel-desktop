@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseCsv, parseStudyDeck, renderMarkdown } from "../markdown.js";
-import { countStagedEdits, detectViewerForPreset, formatBytes, shortPath } from "../state.js";
+import {
+  APPEARANCE_DEFAULTS,
+  THEME_PALETTES,
+  computeWelcomeVisible,
+  countStagedEdits,
+  detectViewerForPreset,
+  formatBytes,
+  formatRelativeTime,
+  normalizeAppearance,
+  shortPath,
+} from "../state.js";
 
 test("formats byte sizes cleanly", () => {
   assert.equal(formatBytes(0), "0 B");
@@ -48,4 +58,36 @@ test("parses quoted CSV rows and study flashcards", () => {
   assert.equal(deck.cards.length, 1);
   assert.deepEqual(deck.cards[0].choices, ["Venus", "Mercury"]);
   assert.equal(deck.cards[0].answer, "Mercury");
+});
+
+test("formats relative timestamps concisely", () => {
+  const base = 1_700_000_000;
+  assert.equal(formatRelativeTime(0, base), "now");
+  assert.equal(formatRelativeTime(base - 25, base), "now");
+  assert.equal(formatRelativeTime(base - 300, base), "5m");
+  assert.equal(formatRelativeTime(base - 7200, base), "2h");
+  assert.equal(formatRelativeTime(base - 86400, base), "1d");
+  assert.equal(formatRelativeTime(base - 40 * 86400, base), "1mo");
+});
+
+test("normalizes appearance settings and welcome state", () => {
+  assert.equal(THEME_PALETTES.length, 5);
+  assert.deepEqual(APPEARANCE_DEFAULTS, {
+    palette: "original",
+    spacing: "regular",
+    textSize: "regular",
+  });
+  assert.deepEqual(normalizeAppearance({ palette: "jade", spacing: "airy", textSize: "large" }), {
+    palette: "jade",
+    spacing: "airy",
+    textSize: "large",
+  });
+  assert.deepEqual(normalizeAppearance({ palette: "bogus", spacing: "x", textSize: null }), {
+    palette: "original",
+    spacing: "regular",
+    textSize: "regular",
+  });
+  assert.equal(computeWelcomeVisible(null), true);
+  assert.equal(computeWelcomeVisible("0"), true);
+  assert.equal(computeWelcomeVisible("1"), false);
 });

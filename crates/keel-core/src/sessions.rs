@@ -41,6 +41,8 @@ pub struct UiToolLog {
     pub arguments: serde_json::Value,
     pub result: Option<String>,
     pub is_error: bool,
+    #[serde(default)]
+    pub edit_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

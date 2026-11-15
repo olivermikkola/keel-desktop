@@ -41,6 +41,8 @@ pub enum AgentEvent {
         name: String,
         result: String,
         is_error: bool,
+        #[serde(default)]
+        edit_id: Option<String>,
     },
     StagedEditAdded {
         edit: StagedEdit,
@@ -261,6 +263,7 @@ where
                 }
             };
 
+            let staged_id = staged.as_ref().map(|e| e.id.clone());
             if let Some(edit) = staged {
                 emit(AgentEvent::StagedEditAdded { edit: edit.clone() });
                 staged_edits.push(edit);
@@ -270,6 +273,7 @@ where
                 name: tc.name.clone(),
                 result: result_text.clone(),
                 is_error,
+                edit_id: staged_id.clone(),
             });
 
             tool_logs.push(crate::sessions::UiToolLog {
@@ -277,6 +281,7 @@ where
                 arguments: tc.arguments.clone(),
                 result: Some(result_text.clone()),
                 is_error,
+                edit_id: staged_id,
             });
 
             messages.push(ChatTurnMessage {

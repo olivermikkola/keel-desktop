@@ -104,7 +104,10 @@ async fn main() -> Result<()> {
                 eprintln!("[tool done: {name}, error={is_error}]");
             }
             AgentEvent::StagedEditAdded { edit } => {
-                eprintln!("[staged edit: {} ({:?})]", edit.path, edit.status);
+                eprintln!(
+                    "[staged edit: {} (+{} -{}, {:?})]",
+                    edit.path, edit.added_lines, edit.removed_lines, edit.status
+                );
             }
             _ => {}
         },
