@@ -31,6 +31,24 @@ ui                 Zero-dependency dark-mode frontend + built-in live viewers
 scripts            Local check and verification scripts
 ```
 
+## Install
+
+### Download prebuilt desktop installers (macOS, Linux, Windows)
+
+Grab the latest installer from [**GitHub Releases**](https://github.com/olivermikkola/keel-desktop/releases):
+
+- **macOS:** `.dmg` (Apple Silicon `aarch64` or Intel `x86_64`) — drag **Keel Desktop** into Applications
+- **Linux:** `.deb`, `.AppImage`, or `.rpm`
+- **Windows:** `.exe` (NSIS setup) or `.msi`
+
+### Install locally on Linux (from source)
+
+Creates `~/.local/bin/keel-desktop`, `~/.local/bin/keel-desktop-cli`, and a desktop launcher entry so **Keel Desktop** appears in your application menu:
+
+```sh
+./scripts/install-linux.sh
+```
+
 ## Develop & test
 
 ### Prerequisites
