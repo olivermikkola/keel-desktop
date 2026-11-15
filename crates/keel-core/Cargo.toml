@@ -1,0 +1,24 @@
+[package]
+name = "keel-core"
+description = "Keel Desktop local agent engine, tools, model catalog, and runtime manager"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "keel-desktop-cli"
+path = "src/bin/keel_desktop_cli.rs"
+
+[dependencies]
+anyhow = "1"
+dirs = "5"
+futures-util = "0.3"
+hex = "0.4"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4"] }

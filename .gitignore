@@ -1,0 +1,10 @@
+target/
+dist/
+node_modules/
+.DS_Store
+*.gguf
+*.gguf.part
+*.bak-*
+.env
+.env.*
+src-tauri/gen/

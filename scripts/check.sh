@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export PATH="$HOME/.cargo/bin:$PATH"
+
+echo "==> cargo fmt --check"
+cargo fmt --all -- --check
+
+echo "==> cargo clippy"
+cargo clippy --workspace --all-targets -- -D warnings
+
+echo "==> cargo test"
+cargo test --workspace
+
+echo "==> ui unit tests"
+node --test ui/tests/*.test.mjs
+
+echo "All checks passed."
