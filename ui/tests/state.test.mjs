@@ -2,14 +2,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { parseCsv, parseStudyDeck, renderMarkdown } from "../markdown.js";
 import {
+  ACCENT_MODES,
   APPEARANCE_DEFAULTS,
-  THEME_PALETTES,
+  DENSITY_MODES,
+  TONE_MODES,
   computeWelcomeVisible,
   countStagedEdits,
   detectViewerForPreset,
+  filterModels,
   formatBytes,
   formatRelativeTime,
   normalizeAppearance,
+  parseDiffLines,
   shortPath,
 } from "../state.js";
 
@@ -71,23 +75,53 @@ test("formats relative timestamps concisely", () => {
 });
 
 test("normalizes appearance settings and welcome state", () => {
-  assert.equal(THEME_PALETTES.length, 5);
+  assert.deepEqual(ACCENT_MODES, ["sage", "copper", "ice"]);
+  assert.deepEqual(TONE_MODES, ["slate", "ink"]);
+  assert.deepEqual(DENSITY_MODES, ["cozy", "compact"]);
   assert.deepEqual(APPEARANCE_DEFAULTS, {
-    palette: "original",
-    spacing: "regular",
+    accent: "sage",
+    tone: "slate",
+    density: "cozy",
+    sidebar: true,
     textSize: "regular",
   });
-  assert.deepEqual(normalizeAppearance({ palette: "jade", spacing: "airy", textSize: "large" }), {
-    palette: "jade",
-    spacing: "airy",
-    textSize: "large",
-  });
-  assert.deepEqual(normalizeAppearance({ palette: "bogus", spacing: "x", textSize: null }), {
-    palette: "original",
-    spacing: "regular",
-    textSize: "regular",
-  });
+  assert.deepEqual(
+    normalizeAppearance({
+      accent: "copper",
+      tone: "ink",
+      density: "compact",
+      sidebar: false,
+      textSize: "large",
+    }),
+    {
+      accent: "copper",
+      tone: "ink",
+      density: "compact",
+      sidebar: false,
+      textSize: "large",
+    },
+  );
+  assert.deepEqual(
+    normalizeAppearance({ accent: "bogus", tone: "x", density: "y", sidebar: "nope", textSize: null }),
+    APPEARANCE_DEFAULTS,
+  );
   assert.equal(computeWelcomeVisible(null), true);
   assert.equal(computeWelcomeVisible("0"), true);
   assert.equal(computeWelcomeVisible("1"), false);
+});
+
+test("parses diff lines and filters models", () => {
+  const diff = parseDiffLines("--- index.html\n+++ index.html\n@@\n- <p>old</p>\n+ <p>new</p>\n ctx");
+  assert.deepEqual(
+    diff.map((d) => d.kind),
+    ["meta", "meta", "meta", "del", "add", "ctx"],
+  );
+
+  const models = [
+    { id: "minicpm5", name: "MiniCPM5 · 2B", quantization: "Q4_K_M", detail: "Fast local", installed: true },
+    { id: "qwen3", name: "Qwen3-Coder", quantization: "Q4_K_M", detail: "Coding", installed: false },
+  ];
+  assert.equal(filterModels(models, "", "all").length, 2);
+  assert.equal(filterModels(models, "", "installed").length, 1);
+  assert.equal(filterModels(models, "qwen", "all")[0].id, "qwen3");
 });

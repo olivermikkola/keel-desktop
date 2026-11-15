@@ -1,4 +1,49 @@
 import { escapeHtml, parseCsv, parseStudyDeck, renderMarkdown } from "./markdown.js";
+import { parseDiffLines } from "./state.js";
+
+export function renderDiffHtml(diffText = "") {
+  const lines = parseDiffLines(diffText);
+  if (lines.length === 0) {
+    return `<div class="viewer-empty">No diff hunks available.</div>`;
+  }
+  return `<div class="diff-lines">${lines
+    .map((line) => `<div class="diff-line diff-${line.kind}">${escapeHtml(line.text || " ")}</div>`)
+    .join("")}</div>`;
+}
+
+export function renderCodeView(container, fileName, content) {
+  if (!fileName) {
+    container.innerHTML = `<div class="viewer-empty">Select a workspace file above to inspect its source.</div>`;
+    return;
+  }
+  const rows = (content || "").split("\n");
+  const linesHtml = rows
+    .map(
+      (line, idx) =>
+        `<div class="code-line"><span class="code-ln">${idx + 1}</span><span class="code-src">${escapeHtml(line || " ")}</span></div>`,
+    )
+    .join("");
+  container.innerHTML = `<div class="viewer-scroll code-viewer">${linesHtml}</div>`;
+}
+
+export function renderDiffView(container, edit) {
+  if (!edit) {
+    container.innerHTML = `<div class="viewer-empty">No staged edits in this session yet. Ask Keel to modify a file to review diffs here.</div>`;
+    return;
+  }
+  container.innerHTML = `
+    <div class="viewer-scroll diff-pane-wrap">
+      <div class="diff-pane-head">
+        <span class="mono">${escapeHtml(edit.summary)}</span>
+        <span class="inline-edit-counts">
+          ${edit.added_lines ? `<span class="diff-plus">+${edit.added_lines}</span>` : ""}
+          ${edit.removed_lines ? `<span class="diff-minus">-${edit.removed_lines}</span>` : ""}
+        </span>
+      </div>
+      ${renderDiffHtml(edit.diff)}
+    </div>
+  `;
+}
 
 export function renderViewer(container, fileName, content) {
   if (!fileName) {
