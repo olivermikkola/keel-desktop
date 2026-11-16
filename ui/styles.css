@@ -6,14 +6,14 @@
   --user-bubble: #1b282b;
   --border: rgba(255, 255, 255, 0.08);
   --border-strong: rgba(255, 255, 255, 0.14);
-  --text: #eef3f2;
-  --muted: #849694;
-  --accent: #a4cfc0;
-  --accent-strong: #4d7c70;
-  --accent-ink: #081210;
-  --rust: #c77851;
+  --text: #eef4f2;
+  --muted: #8ca3a0;
+  --accent: #76dfc2;
+  --accent-strong: #36b394;
+  --accent-ink: #0a1112;
+  --rust: #dc7648;
   --danger: #e06c64;
-  --diff-add-bg: rgba(164, 207, 192, 0.11);
+  --diff-add-bg: rgba(54, 179, 148, 0.14);
   --diff-del-bg: rgba(224, 108, 100, 0.12);
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", "Fira Code", ui-monospace, monospace;
@@ -22,25 +22,25 @@
   --radius-card: 14px;
 }
 
-/* Tone variants: Slate vs deeper Ink */
+/* Tone variants: Slate vs deeper canonical Ink */
 html[data-tone="ink"] {
-  --ink: #070b0c;
-  --sidebar-bg: #0a1012;
-  --surface: #0f1719;
-  --surface-raised: #162023;
-  --user-bubble: #142022;
+  --ink: #0a1112;
+  --sidebar-bg: #0d1517;
+  --surface: #101a1c;
+  --surface-raised: #162426;
+  --user-bubble: #142224;
 }
 
-/* Accent variants: Sage | Copper | Ice */
+/* Accent variants: Sage (canonical Jade) | Copper (canonical Rust) | Ice */
 html[data-accent="copper"] {
-  --accent: #dfa07c;
-  --accent-strong: #9c6244;
+  --accent: #f09467;
+  --accent-strong: #dc7648;
   --accent-ink: #160c07;
 }
 
 html[data-accent="ice"] {
-  --accent: #a8cde8;
-  --accent-strong: #4f7b9e;
+  --accent: #8bc8f0;
+  --accent-strong: #3f82b5;
   --accent-ink: #07121b;
 }
 
