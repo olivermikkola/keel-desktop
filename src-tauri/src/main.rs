@@ -33,6 +33,8 @@ fn main() {
     let runtime_for_exit = Arc::clone(&runtime_arc);
 
     let state = AppState {
+        images: keel_core::images::ImageService::new(&data_dir)
+            .expect("failed to load image job history"),
         config_dir,
         data_dir,
         config: Arc::new(Mutex::new(cfg)),
@@ -46,6 +48,11 @@ fn main() {
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             commands::get_bootstrap_state,
+            commands::connect_image_server,
+            commands::list_image_jobs,
+            commands::start_image_job,
+            commands::cancel_image_job,
+            commands::read_workspace_png,
             commands::pick_workspace_folder,
             commands::set_workspace_folder,
             commands::list_workspace_files_cmd,

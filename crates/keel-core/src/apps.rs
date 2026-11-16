@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum AppPreset {
     #[default]
+    Chat,
     General,
+    Code,
     Websites,
     Sheets,
     Docs,
@@ -20,12 +22,15 @@ pub struct AppPresetInfo {
     pub summary: String,
     pub starters: Vec<String>,
     pub tools: Vec<String>,
+    pub mode: String,
 }
 
 impl AppPreset {
     pub fn all() -> &'static [AppPreset] {
         &[
+            AppPreset::Chat,
             AppPreset::General,
+            AppPreset::Code,
             AppPreset::Websites,
             AppPreset::Sheets,
             AppPreset::Docs,
@@ -36,7 +41,9 @@ impl AppPreset {
 
     pub fn title(self) -> &'static str {
         match self {
-            AppPreset::General => "Agent",
+            AppPreset::Chat => "Chat",
+            AppPreset::General => "Work",
+            AppPreset::Code => "Code",
             AppPreset::Websites => "Websites",
             AppPreset::Sheets => "Sheets",
             AppPreset::Docs => "Docs",
@@ -47,7 +54,11 @@ impl AppPreset {
 
     pub fn summary(self) -> &'static str {
         match self {
-            AppPreset::General => "Read, edit, query data, and run commands in a local folder",
+            AppPreset::Chat => "Ask questions, think things through, and write together",
+            AppPreset::General => "Turn your files and ideas into finished work",
+            AppPreset::Code => {
+                "Explore a repository, make changes, and run checks with your approval"
+            }
             AppPreset::Websites => "Build a web page and preview it live",
             AppPreset::Sheets => "Query CSV tables with SQL or build spreadsheets",
             AppPreset::Docs => "Write and revise Markdown documents",
@@ -58,7 +69,17 @@ impl AppPreset {
 
     pub fn starters(self) -> &'static [&'static str] {
         match self {
+            AppPreset::Chat => &[
+                "Explain something complicated in simple terms",
+                "Help me think through an idea",
+                "Help me draft a thoughtful message",
+            ],
             AppPreset::General => &[
+                "Summarize the documents in this folder",
+                "Turn my notes into a project brief",
+                "Analyze the CSV files in this workspace",
+            ],
+            AppPreset::Code => &[
                 "Explore this workspace and summarize how it is structured",
                 "Find and fix a bug or failing test in this project",
                 "Write a small script or utility in this folder",
@@ -93,7 +114,8 @@ impl AppPreset {
 
     pub fn allowed_tools(self) -> &'static [&'static str] {
         match self {
-            AppPreset::General => &[
+            AppPreset::Chat => &[],
+            AppPreset::Code => &[
                 "list_files",
                 "read_file",
                 "search_files",
@@ -113,7 +135,7 @@ impl AppPreset {
                 "delete_file",
                 "rename_file",
             ],
-            AppPreset::Sheets => &[
+            AppPreset::General | AppPreset::Sheets => &[
                 "list_files",
                 "read_file",
                 "search_files",
@@ -137,11 +159,17 @@ impl AppPreset {
 
     pub fn instructions(self) -> &'static str {
         match self {
+            AppPreset::Chat => {
+                "You are Keel, a helpful conversational assistant. Answer questions, explain ideas, brainstorm, and help with writing. You have no file, shell, or connector tools in Chat. Do not claim to access files, browse the web, or execute actions. If the user needs work done in a folder, suggest Work; for repository changes or commands, suggest Code."
+            }
             AppPreset::General => {
+                "You are Keel in Work, helping turn local files into useful deliverables. Inspect relevant files, make a brief plan for multi-step tasks, then carry out the work. Use SQL for exact calculations over CSV data. File changes are staged for review. Do not claim a deliverable is saved until its edit is approved. Shell commands are available in Code, not Work."
+            }
+            AppPreset::Code => {
                 "You are Keel, a local AI agent working inside the user's selected workspace folder. Inspect files before editing them. Keep changes minimal and accurate. Propose edits with propose_edit or create_file, and only request run_shell when compiling, testing, or running a command is genuinely needed."
             }
             AppPreset::Websites => {
-                "This chat is the Websites app. Build what the user asks as a self-contained web page in index.html (with inline CSS and JavaScript unless separate files are requested). Keep the layout responsive and clean, with real content instead of placeholders, and avoid external network fonts or CDN scripts so it previews reliably offline. To update an existing page, read it first and use propose_edit."
+                "This chat is the Websites app. Use list_files to find existing assets/ PNGs; reference them with relative img src paths when appropriate. Build what the user asks as a self-contained web page in index.html (with inline CSS and JavaScript unless separate files are requested). Keep the layout responsive and clean, with real content instead of placeholders, and avoid external network fonts or CDN scripts so it previews reliably offline. To update an existing page, read it first and use propose_edit."
             }
             AppPreset::Sheets => {
                 "This chat is the Sheets app. Work with CSV tables in the workspace. To answer questions about a .csv file, query it with run_sql (for example SELECT * FROM \"sales.csv\") and report exact numbers from the result. When asked to create or update a table, write a .csv file using create_file or propose_edit with a header row first, quoting any field containing commas."
@@ -153,14 +181,23 @@ impl AppPreset {
                 "This chat is the Study app. Help the user learn a topic or workspace notes by writing a Markdown (.md) flashcard deck. Start with a # title, then for each card write a Q: line and an A: line separated by a blank line. For multiple-choice questions, write the Q: line, choices starting with '- ', and an A: line matching the right choice. Make 8 to 12 cards unless asked otherwise."
             }
             AppPreset::Slides => {
-                "This chat is the Slides app. Build presentations as a single self-contained slides.html file: put each slide inside a <section class=\"slide\"> element with a clear heading and concise bullets, include compact CSS plus Previous/Next controls inside the file, and add @media print rules so every slide prints cleanly to PDF without external network resources."
+                "This chat is the Slides app. Use existing assets/ PNGs with relative img src paths when useful. Build presentations as a single self-contained slides.html file: put each slide inside a <section class=\"slide\"> element with a clear heading and concise bullets, include compact CSS plus Previous/Next controls inside the file, and add @media print rules so every slide prints cleanly to PDF without external network resources."
             }
+        }
+    }
+
+    pub fn mode(self) -> &'static str {
+        match self {
+            Self::Chat => "chat",
+            Self::Code => "code",
+            _ => "work",
         }
     }
 
     pub fn info(self) -> AppPresetInfo {
         AppPresetInfo {
             id: self,
+            mode: self.mode().to_string(),
             title: self.title().to_string(),
             summary: self.summary().to_string(),
             starters: self.starters().iter().map(|s| (*s).to_string()).collect(),
@@ -183,7 +220,9 @@ mod tests {
             let info = preset.info();
             assert!(!info.title.is_empty());
             assert!(!info.starters.is_empty());
-            assert!(info.tools.contains(&"read_file".to_string()));
+            if preset != &AppPreset::Chat {
+                assert!(info.tools.contains(&"read_file".to_string()));
+            }
         }
     }
 }

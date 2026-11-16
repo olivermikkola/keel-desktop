@@ -47,7 +47,7 @@ impl RuntimeManager {
     pub fn set_external_url(&mut self, url: &str, model_id: Option<String>) {
         self.stop_sync();
         self.base_url = url.trim_end_matches('/').to_string();
-        self.active_model_id = model_id;
+        self.active_model_id = model_id.or_else(|| Some("default".to_string()));
         self.active_model_path = None;
     }
 
@@ -96,6 +96,8 @@ impl RuntimeManager {
             if let Some(ref mut ch) = self.child {
                 if let Ok(Some(exit)) = ch.try_wait() {
                     self.child = None;
+                    self.active_model_id = None;
+                    self.active_model_path = None;
                     bail!("llama-server exited early with status {exit}");
                 }
             }
@@ -120,6 +122,7 @@ impl RuntimeManager {
             let _ = child.wait().await;
         }
         self.active_model_path = None;
+        self.active_model_id = None;
     }
 
     pub fn stop_sync(&mut self) {
@@ -127,6 +130,7 @@ impl RuntimeManager {
             let _ = child.start_kill();
         }
         self.active_model_path = None;
+        self.active_model_id = None;
     }
 
     pub fn status(&self) -> RuntimeStatus {
@@ -214,4 +218,25 @@ pub async fn probe_openai_models(base_url: &str) -> Result<Vec<String>> {
         })
         .unwrap_or_default();
     Ok(ids)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stopping_clears_identity_instead_of_turning_local_into_external() {
+        let mut runtime = RuntimeManager::new(18180);
+        runtime.active_model_id = Some("local-model".into());
+        runtime.active_model_path = Some("model.gguf".into());
+        runtime.stop().await;
+        assert_eq!(runtime.status().state, "stopped");
+        assert!(runtime.active_model_id.is_none());
+        assert!(runtime.active_model_path.is_none());
+        runtime.set_external_url("http://127.0.0.1:8080/v1/", Some("external-model".into()));
+        assert_eq!(runtime.status().state, "external");
+        assert_eq!(runtime.base_url, "http://127.0.0.1:8080/v1");
+        runtime.stop_sync();
+        assert_eq!(runtime.status().state, "stopped");
+    }
 }
