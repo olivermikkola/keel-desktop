@@ -1,15 +1,19 @@
 # Keel Desktop
 
+[![CI](https://github.com/olivermikkola/keel-desktop/actions/workflows/ci.yml/badge.svg)](https://github.com/olivermikkola/keel-desktop/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/olivermikkola/keel-desktop)](https://github.com/olivermikkola/keel-desktop/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 **Chat, get work done, and build software with local AI on macOS, Linux, and Windows.**
 Use a shared text model across Chat, Work, and Code. Download a GGUF or connect an existing model server. Add optional image generation when you need it; media models are never required for the assistant.
 
 Built with **Tauri 2**, **Rust**, and **llama.cpp** (`llama-server`), carrying the **Keel** small-model harness and dark-mode workspace from Keel Mobile onto the desktop without iOS memory or sandbox restrictions.
 
-## Start here
+## First 60 seconds
 
-Open Keel and choose **Get started** or **Models → Guided setup**. Keel recommends a text model for your RAM, downloads the checksum-verified model runner and weights, and starts the assistant. No terminal command or separate llama.cpp installation is needed on supported macOS, Windows, and Linux builds. Models can take several gigabytes; setup shows the sizes before you choose it.
-
-Already using Ollama or LM Studio? Choose **Connect existing server** in guided setup instead. No duplicate model download is required. You can also import GGUF files in Models.
+1. **Install:** Download a prebuilt installer from [**GitHub Releases**](https://github.com/olivermikkola/keel-desktop/releases) (`.dmg` for macOS, `.deb`/`.AppImage`/`.rpm` for Linux, `.exe`/`.msi` for Windows), or run `./scripts/install-linux.sh` from source on Linux.
+2. **Guided setup:** Open Keel and choose **Get started** or **Models → Guided setup**. Keel recommends a text model for your RAM, downloads the checksum-verified model runner and weights, and starts the assistant with no terminal setup needed. Already using Ollama, LM Studio, or `llama-server`? Choose **Connect existing server** instead, or import a `.gguf` in **Models**.
+3. **Pick a mode:** Start in **Chat**, attach PDFs/DOCX/CSV/code or open a folder in **Work** (Websites, Sheets, Docs, Study, Slides), or switch to **Code** for repo edits, approved shell commands, and inline diff review.
 
 ## What is included
 
@@ -102,6 +106,10 @@ cargo run -p keel-desktop
 ```sh
 cargo run -p keel-core --bin keel-desktop-cli -- --help
 ```
+
+## Ecosystem
+
+- [**Keel Arena**](https://github.com/olivermikkola/keel-arena) — Reproducible Edge AI & coding-agent benchmarks (7-suite gauntlet, frontier LLM judge, hardware profiling, SVG scorecards).
 
 ## License
 
