@@ -76,7 +76,11 @@ async fn main() -> Result<()> {
             base_url,
             model_name: model,
             context_size: 8192,
-            app_preset: AppPreset::General,
+            app_preset: if workspace.is_some() {
+                AppPreset::Code
+            } else {
+                AppPreset::Chat
+            },
             custom_instructions: String::new(),
             workspace_root: workspace,
             auto_apply_edits: auto_apply,

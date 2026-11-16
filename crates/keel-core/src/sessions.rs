@@ -9,6 +9,8 @@ use crate::tools::StagedEdit;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DesktopConfig {
     pub selected_model_id: String,
+    #[serde(default)]
+    pub image_endpoint: Option<String>,
     pub external_base_url: Option<String>,
     pub external_model_name: Option<String>,
     pub llama_server_path: Option<String>,
@@ -22,6 +24,7 @@ pub struct DesktopConfig {
 impl Default for DesktopConfig {
     fn default() -> Self {
         Self {
+            image_endpoint: None,
             selected_model_id: "bonsai-4b".to_string(),
             external_base_url: None,
             external_model_name: None,

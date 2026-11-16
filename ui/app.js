@@ -1,3 +1,5 @@
+import { createImageWorkspace } from "./images.js";
+import { MODES, modeForPreset, isRuntimeLive, promptBlockReason } from "./modes.js";
 import { escapeHtml, renderMarkdown } from "./markdown.js";
 import {
   ACCENT_MODES,
@@ -14,7 +16,7 @@ import {
   normalizeAppearance,
   shortPath,
 } from "./state.js";
-import { renderCodeView, renderDiffHtml, renderDiffView, renderViewer } from "./viewers.js";
+import { renderCodeView, renderDiffHtml, renderDiffView, renderViewer, inlineWorkspaceImages } from "./viewers.js";
 
 const tauri = window.__TAURI__?.core;
 const events = window.__TAURI__?.event;
@@ -35,8 +37,6 @@ const appState = {
   selectedModelInspectorId: null,
   modelSearchQuery: "",
   modelFilter: "all", // "all" | "installed" | "gguf"
-  inspectorContextLen: 8192,
-  inspectorTemp: 0.7,
   streaming: false,
   streamingText: "",
   streamingThinking: "",
@@ -65,6 +65,7 @@ const els = {
   toggleViewerBtn: document.getElementById("toggle-viewer-btn"),
   viewChatCode: document.getElementById("view-chat-code"),
   viewModels: document.getElementById("view-models"),
+  viewTools: document.getElementById("view-tools"),
   viewConnectors: document.getElementById("view-connectors"),
   chatScroll: document.getElementById("chat-scroll"),
   approvalSlot: document.getElementById("approval-slot"),
@@ -90,6 +91,16 @@ const els = {
   welcomeSkipBtn: document.getElementById("welcome-skip-btn"),
   welcomeDoneBtn: document.getElementById("welcome-done-btn"),
 };
+
+const images = createImageWorkspace({
+  invoke,
+  getWorkspace: () => appState.workspacePath,
+  getEndpoint: () => appState.bootstrap?.config.image_endpoint,
+  refresh: refreshBootstrap,
+  selectFolder: () => els.workspacePillBtn.click(),
+  openModels: () => setActiveView("models"),
+  notice: showToast,
+});
 
 function loadAppearance() {
   try {
@@ -239,7 +250,13 @@ function renderToolOrEditHtml(tool) {
   `;
 }
 
-function setActiveView(view) {
+async function setActiveView(view) {
+  if (appState.streaming) return;
+  if (MODES[view] && modeForPreset(appState.session?.app_preset) !== view) {
+    const recent = appState.bootstrap.sessions.find((s) => modeForPreset(s.app_preset) === view);
+    if (recent) await loadSession(recent.id);
+    else await createNewSession(MODES[view].preset);
+  }
   appState.activeView = view;
   if (view === "code") {
     appState.viewerOpen = true;
@@ -253,6 +270,7 @@ async function init() {
   syncWelcomeOverlay(false);
 
   if (events) {
+    await events.listen("keel://image-job", () => images.onJob());
     await events.listen("keel://agent-event", (ev) => handleAgentEvent(ev.payload));
     await events.listen("keel://download-progress", (ev) => {
       const p = ev.payload;
@@ -261,7 +279,7 @@ async function init() {
       if (bar) {
         const pct = p.total_bytes ? Math.round((p.downloaded_bytes / p.total_bytes) * 100) : 0;
         bar.textContent =
-          p.status === "completed"
+          p.done
             ? "Installed"
             : `${formatBytes(p.downloaded_bytes)}${pct ? ` (${pct}%)` : ""}`;
       }
@@ -273,10 +291,11 @@ async function init() {
   if (appState.bootstrap?.sessions?.length > 0) {
     await loadSession(appState.bootstrap.sessions[0].id);
   } else {
-    await createNewSession("general");
+    await createNewSession("chat");
   }
 
   wireUi();
+  await images.reload();
   renderAll();
 }
 
@@ -299,40 +318,33 @@ async function refreshBootstrap() {
   await refreshWorkspaceFiles();
 }
 
-async function createNewSession(preset = "general") {
+async function createNewSession(preset = "chat") {
+  if (appState.streaming) return;
   appState.session = await invoke("create_session", {
     preset,
     workspacePath: appState.workspacePath,
   });
   appState.selectedEditId = null;
-  if (preset !== "general") {
-    appState.activeView = "code";
-    appState.viewerOpen = true;
-    appState.viewerTab = "preview";
-  } else if (appState.activeView === "models" || appState.activeView === "connectors") {
-    appState.activeView = "chat";
-  }
+  appState.activeView = modeForPreset(preset);
+  appState.viewerOpen = appState.activeView !== "chat";
+  appState.viewerTab = appState.activeView === "code" ? "code" : "preview";
+  els.promptInput.value = "";
+  autoSizePromptInput();
   await refreshBootstrap();
   renderAll();
 }
 
 async function loadSession(id) {
+  if (appState.streaming) return;
   appState.session = await invoke("load_session_cmd", { id });
-  if (appState.session.workspace_path) {
-    appState.workspacePath = appState.session.workspace_path;
-    await refreshWorkspaceFiles();
-  }
-  if (appState.session.app_preset !== "general") {
-    appState.viewerOpen = true;
-    appState.viewerTab = "preview";
-    const picked = detectViewerForPreset(appState.session.app_preset, appState.workspaceFiles);
-    if (picked) {
-      appState.viewerFile = picked;
-    }
-  }
-  if (appState.activeView === "models" || appState.activeView === "connectors") {
-    appState.activeView = "chat";
-  }
+  appState.workspacePath = appState.session.workspace_path || null;
+  await refreshWorkspaceFiles();
+  appState.activeView = modeForPreset(appState.session.app_preset);
+  appState.viewerOpen = appState.activeView !== "chat";
+  appState.viewerTab = appState.activeView === "code" ? "code" : "preview";
+  appState.viewerFile = detectViewerForPreset(appState.session.app_preset, appState.workspaceFiles);
+  els.promptInput.value = "";
+  autoSizePromptInput();
   renderAll();
 }
 
@@ -357,6 +369,8 @@ function renderAll() {
   renderViewVisibility();
   if (appState.activeView === "models") {
     renderModelsWorkspace();
+  } else if (appState.activeView === "tools") {
+    images.render(els.viewTools);
   } else if (appState.activeView === "connectors") {
     renderConnectorsWorkspace();
   } else {
@@ -369,9 +383,10 @@ function renderViewVisibility() {
   document.querySelectorAll(".mode-nav-item").forEach((btn) => {
     btn.classList.toggle("active", btn.getAttribute("data-view") === appState.activeView);
   });
-  const isChatOrCode = appState.activeView === "chat" || appState.activeView === "code";
+  const isChatOrCode = appState.activeView === "chat" || appState.activeView === "work" || appState.activeView === "code";
   els.viewChatCode.classList.toggle("hidden", !isChatOrCode);
   els.viewModels.classList.toggle("hidden", appState.activeView !== "models");
+  els.viewTools.classList.toggle("hidden", appState.activeView !== "tools");
   els.viewConnectors.classList.toggle("hidden", appState.activeView !== "connectors");
 }
 
@@ -381,13 +396,14 @@ function renderSidebar() {
 
   els.appsList.innerHTML = "";
   const activePreset = appState.session?.app_preset || "general";
+  els.appsList.classList.toggle("hidden", appState.activeView !== "work");
   const circleIds = ["websites", "sheets", "docs", "study", "slides"];
   for (const id of circleIds) {
     const preset = b.presets.find((p) => p.id === id);
     if (!preset) continue;
     const btn = document.createElement("button");
     btn.className = `app-circle-btn ${activePreset === preset.id ? "active" : ""}`;
-    btn.title = preset.description || preset.title;
+    btn.title = preset.summary;
     btn.innerHTML = `
       <div class="app-circle-ring">${APP_ICONS[id] || APP_ICONS.docs}</div>
       <span>${escapeHtml(preset.title)}</span>
@@ -401,7 +417,7 @@ function renderSidebar() {
     const row = document.createElement("div");
     row.className = `recent-item ${appState.session?.id === s.id ? "active" : ""}`;
     row.innerHTML = `
-      <span class="recent-title">${escapeHtml(s.title)}</span>
+      <span class="recent-mode">${MODES[modeForPreset(s.app_preset)].title}</span><span class="recent-title">${escapeHtml(s.title)}</span>
       <span class="recent-age">${escapeHtml(formatRelativeTime(s.updated_at))}</span>
       <button class="recent-del" title="Delete thread" aria-label="Delete thread">&times;</button>
     `;
@@ -411,12 +427,13 @@ function renderSidebar() {
     };
     row.querySelector(".recent-del").onclick = async (e) => {
       e.stopPropagation();
+      if (appState.streaming) return;
       const remaining = await invoke("delete_session_cmd", { id: s.id });
       if (appState.session?.id === s.id) {
         if (remaining.length > 0) {
           await loadSession(remaining[0].id);
         } else {
-          await createNewSession("general");
+          await createNewSession("chat");
         }
       } else {
         await refreshBootstrap();
@@ -432,7 +449,7 @@ function renderSidebar() {
     rt.state === "external"
       ? b.config.external_model_name || "External API"
       : activeModel?.name || "No model loaded";
-  const isLive = rt.state === "ready" || rt.state === "external" || rt.state === "starting";
+  const isLive = isRuntimeLive(rt);
   els.sidebarRuntimeBox.innerHTML = `
     <span class="status-dot ${rt.state}"></span>
     <div class="sidebar-runtime-meta">
@@ -474,6 +491,15 @@ function renderHeader() {
         : "Local only";
   els.diffsPillBtn.classList.toggle("has-pending", counts.pending > 0);
   els.telemetryRight.textContent = `Keel v${b.version}`;
+  const mode = modeForPreset(appState.session?.app_preset);
+  els.promptInput.placeholder = MODES[mode].placeholder;
+  els.composerWsChip.textContent = mode === "chat" ? "Chat · no workspace tools" : shortWs;
+  els.workspacePillBtn.classList.toggle("hidden", mode === "chat" && appState.activeView !== "tools");
+  els.harnessPillBtn.classList.toggle("hidden", mode !== "code");
+  els.toggleViewerBtn.classList.toggle("hidden", mode === "chat");
+  els.diffsPillBtn.classList.toggle("hidden", mode === "chat");
+  els.newChatBtn.disabled = appState.streaming;
+  els.newAgentBtn.disabled = appState.streaming;
 }
 
 function renderChat() {
@@ -492,7 +518,7 @@ function renderChat() {
     els.chatScroll.innerHTML = `
       <div class="empty-state">
         <h1>${escapeHtml(preset.title)}</h1>
-        <p>${escapeHtml(preset.description)}</p>
+        <p>${escapeHtml(preset.summary)}</p>
         <div class="starters-grid">${starters}</div>
       </div>
     `;
@@ -535,7 +561,7 @@ function renderMessageHtml(msg) {
   const thinkingHtml = msg.thinking
     ? `<details class="thinking-box"><summary>Thought</summary><pre class="mono">${escapeHtml(msg.thinking)}</pre></details>`
     : "";
-  const toolsHtml = (msg.tools || []).map(renderToolOrEditHtml).join("");
+  const toolsHtml = (msg.tool_calls || []).map(renderToolOrEditHtml).join("");
   return `
     <div class="msg assistant">
       ${thinkingHtml}
@@ -610,6 +636,13 @@ async function sendCurrentPrompt() {
   if (appState.streaming || !appState.session) return;
   const prompt = els.promptInput.value.trim();
   if (!prompt) return;
+  const blocked = promptBlockReason(appState.session, appState.bootstrap.runtime,
+    appState.workspacePath, appState.bootstrap.config.harness_mode);
+  if (blocked) {
+    showNotice(blocked);
+    return;
+  }
+  els.approvalSlot.innerHTML = "";
 
   els.promptInput.value = "";
   autoSizePromptInput();
@@ -618,7 +651,7 @@ async function sendCurrentPrompt() {
     role: "user",
     content: prompt,
     thinking: null,
-    tools: [],
+    tool_calls: [],
     created_at: Math.floor(Date.now() / 1000),
   });
 
@@ -651,7 +684,7 @@ async function sendCurrentPrompt() {
       role: "assistant",
       content: `Runtime error: ${String(err)}`,
       thinking: null,
-      tools: [],
+      tool_calls: [],
       created_at: Math.floor(Date.now() / 1000),
     });
   } finally {
@@ -664,7 +697,7 @@ async function sendCurrentPrompt() {
 }
 
 function renderViewerPane() {
-  els.viewerPane.classList.toggle("hidden", !appState.viewerOpen);
+  els.viewerPane.classList.toggle("hidden", !appState.viewerOpen || appState.activeView === "chat");
   document.querySelectorAll("[data-viewer-tab]").forEach((tab) => {
     tab.classList.toggle("active", tab.getAttribute("data-viewer-tab") === appState.viewerTab);
   });
@@ -704,13 +737,23 @@ async function loadViewerContent() {
     return;
   }
   try {
-    const content = await invoke("read_workspace_file_raw", {
+    if (appState.viewerFile.toLowerCase().endsWith(".png")) {
+      const src = await invoke("read_workspace_png", { workspacePath: appState.workspacePath, relPath: appState.viewerFile });
+      els.viewerContent.innerHTML = `<img class="generated-image" alt="Workspace image" src="${src}" />`;
+      return;
+    }
+    let content = await invoke("read_workspace_file_raw", {
       workspacePath: appState.workspacePath,
       relPath: appState.viewerFile,
     });
     if (appState.viewerTab === "code") {
       renderCodeView(els.viewerContent, appState.viewerFile, content);
     } else {
+      if (/\.html?$/i.test(appState.viewerFile)) {
+        const workspace = appState.workspacePath;
+        content = await inlineWorkspaceImages(content, appState.viewerFile, (relPath) =>
+          invoke("read_workspace_png", { workspacePath: workspace, relPath }));
+      }
       renderViewer(els.viewerContent, appState.viewerFile, content);
     }
   } catch (err) {
@@ -730,7 +773,7 @@ function renderModelsWorkspace() {
 
   const rowsHtml = filtered
     .map((m) => {
-      const isRunning = rt.active_model_id === m.id && (rt.state === "ready" || rt.state === "starting");
+      const isRunning = rt.active_model_id === m.id && rt.state === "running";
       const isSelected = inspected?.id === m.id;
       return `
         <div class="model-clean-row ${isSelected ? "active" : ""}" data-select-model="${escapeHtml(m.id)}">
@@ -755,7 +798,7 @@ function renderModelsWorkspace() {
     .join("");
 
   const isRunningExternal = rt.state === "external";
-  const isRunningLocal = rt.state === "ready" || rt.state === "starting";
+  const isRunningLocal = rt.state === "running";
   const serverUrl = rt.base_url || b.config.external_base_url || "http://127.0.0.1:8080/v1";
 
   els.viewModels.innerHTML = `
@@ -801,22 +844,8 @@ function renderModelsWorkspace() {
         <div style="font-size:12px;color:var(--muted)">${inspected ? `${escapeHtml(inspected.quantization)} · ${formatBytes(inspected.bytes)}` : "Configure runtime"}</div>
       </div>
 
-      <div class="inspector-control">
-        <div class="inspector-label-row">
-          <span>Context length</span>
-          <span id="insp-ctx-val" class="mono">${appState.inspectorContextLen}</span>
-        </div>
-        <input id="insp-ctx" class="inspector-range" type="range" min="2048" max="32768" step="2048" value="${appState.inspectorContextLen}" />
-      </div>
-
-      <div class="inspector-control">
-        <div class="inspector-label-row">
-          <span>Temperature</span>
-          <span id="insp-temp-val" class="mono">${appState.inspectorTemp.toFixed(1)}</span>
-        </div>
-        <input id="insp-temp" class="inspector-range" type="range" min="0" max="1.2" step="0.1" value="${appState.inspectorTemp}" />
-      </div>
-
+      <p class="muted">Download only the models you need. Chat, Work, and Code share your selected text model.</p>
+      <p class="muted">Local inference needs llama-server from llama.cpp. Set its path in Settings, or connect an existing server below.</p>
       <div class="card">
         <div style="font-size:12px;color:var(--muted)">Local server</div>
         <div class="mono" style="font-size:12px;word-break:break-all">${escapeHtml(serverUrl)}</div>
@@ -873,14 +902,6 @@ function renderModelsWorkspace() {
     };
   });
 
-  document.getElementById("insp-ctx").oninput = (e) => {
-    appState.inspectorContextLen = Number(e.target.value);
-    document.getElementById("insp-ctx-val").textContent = String(appState.inspectorContextLen);
-  };
-  document.getElementById("insp-temp").oninput = (e) => {
-    appState.inspectorTemp = Number(e.target.value);
-    document.getElementById("insp-temp-val").textContent = appState.inspectorTemp.toFixed(1);
-  };
   document.getElementById("insp-stop-rt")?.addEventListener("click", async () => {
     await invoke("stop_runtime");
     await refreshBootstrap();
@@ -1203,6 +1224,19 @@ function openCustomizeModal() {
   });
 }
 
+let toastTimer;
+function showToast(message) {
+  const toast = document.getElementById("global-notice");
+  toast.textContent = message;
+  toast.classList.remove("hidden");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.add("hidden"), 8000);
+}
+
+function showNotice(message) {
+  els.approvalSlot.innerHTML = `<div class="approval-card" role="status">${escapeHtml(message)}</div>`;
+}
+
 function autoSizePromptInput() {
   els.promptInput.style.height = "auto";
   els.promptInput.style.height = `${Math.min(els.promptInput.scrollHeight, 140)}px`;
@@ -1212,8 +1246,8 @@ function wireUi() {
   els.toggleSidebarBtn.onclick = () => {
     applyAppearance({ ...appState.appearance, sidebar: !appState.appearance.sidebar });
   };
-  els.newChatBtn.onclick = () => createNewSession(appState.session?.app_preset || "general");
-  els.newAgentBtn.onclick = () => createNewSession("general");
+  els.newChatBtn.onclick = () => createNewSession(MODES[appState.activeView]?.preset || "chat");
+  els.newAgentBtn.onclick = els.newChatBtn.onclick;
 
   document.querySelectorAll(".mode-nav-item").forEach((btn) => {
     btn.onclick = () => setActiveView(btn.getAttribute("data-view"));
@@ -1266,6 +1300,7 @@ function wireUi() {
   });
 
   els.workspacePillBtn.onclick = async () => {
+    if (appState.streaming) return;
     const picked = await invoke("pick_workspace_folder");
     if (picked) {
       appState.workspacePath = await invoke("set_workspace_folder", { path: picked });
@@ -1297,16 +1332,14 @@ function wireUi() {
 
   els.toggleViewerBtn.onclick = () => {
     appState.viewerOpen = !appState.viewerOpen;
-    if (appState.viewerOpen && appState.activeView !== "chat" && appState.activeView !== "code") {
+    if (appState.viewerOpen && !MODES[appState.activeView]) {
       appState.activeView = "code";
     }
     renderAll();
   };
   els.closeViewerBtn.onclick = () => {
     appState.viewerOpen = false;
-    if (appState.activeView === "code") {
-      appState.activeView = "chat";
-    }
+
     renderAll();
   };
   els.refreshViewerBtn.onclick = () => refreshWorkspaceFiles().then(loadViewerContent);
@@ -1325,6 +1358,11 @@ function wireUi() {
     }
   });
 }
+
+window.addEventListener("unhandledrejection", (event) => {
+  showToast(String(event.reason));
+  event.preventDefault();
+});
 
 init().catch((err) => {
   els.chatScroll.innerHTML = `<div class="empty-state"><h1>Keel Desktop</h1><p>${escapeHtml(String(err))}</p></div>`;

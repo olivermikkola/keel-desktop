@@ -157,3 +157,22 @@ export function renderViewer(container, fileName, content) {
 
   container.innerHTML = `<div class="viewer-scroll markdown-body">${renderMarkdown(content)}</div>`;
 }
+
+// Sandboxed srcdoc has no workspace URL. Embed referenced local PNGs so generated
+// assets work in Websites and Slides while preserving the iframe sandbox.
+export async function inlineWorkspaceImages(html, fileName, readPng) {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const directory = fileName.split("/").slice(0, -1);
+  await Promise.all([...doc.querySelectorAll("img[src]")].map(async (image) => {
+    const src = image.getAttribute("src");
+    if (!src || !/\.png$/i.test(src) || /^[a-z][a-z0-9+.-]*:|^[/\\]/i.test(src)) return;
+    const parts = [...directory];
+    for (const part of src.split("/")) {
+      if (part === "..") { if (!parts.length) return; parts.pop(); }
+      else if (part && part !== ".") parts.push(part);
+    }
+    try { image.setAttribute("src", await readPng(parts.join("/"))); }
+    catch { /* Keep the original reference if an asset has moved or is unavailable. */ }
+  }));
+  return "<!doctype html>\n" + doc.documentElement.outerHTML;
+}

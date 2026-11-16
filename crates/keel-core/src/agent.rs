@@ -103,6 +103,7 @@ where
     AFut: std::future::Future<Output = ApprovalDecision>,
 {
     let validated_ws = match &params.workspace_root {
+        _ if params.app_preset == AppPreset::Chat => None,
         Some(p) => Some(validate_workspace_root(p)?),
         None => None,
     };
@@ -123,8 +124,14 @@ where
     });
     messages.extend(params.history);
 
-    let mcp_schemas = mcp_tools_to_openai_schemas(&params.mcp_tools);
-    let tool_schemas = if validated_ws.is_some() || !mcp_schemas.is_empty() {
+    let mcp_schemas = if params.app_preset == AppPreset::Chat {
+        Vec::new()
+    } else {
+        mcp_tools_to_openai_schemas(&params.mcp_tools)
+    };
+    let tool_schemas = if params.app_preset != AppPreset::Chat
+        && (validated_ws.is_some() || !mcp_schemas.is_empty())
+    {
         let allowed = if validated_ws.is_some() {
             params.app_preset.allowed_tools()
         } else {
@@ -134,6 +141,11 @@ where
     } else {
         Vec::new()
     };
+
+    let exposed_tools: HashSet<String> = tool_schemas
+        .iter()
+        .filter_map(|s| s.get("function")?.get("name")?.as_str().map(String::from))
+        .collect();
 
     let mcp_lookup: HashMap<String, McpToolInfo> = params
         .mcp_tools
@@ -234,18 +246,25 @@ where
                 repeated_nudge = Some(nudge);
             }
 
-            let exec = execute_tool_call(
-                &tc.name,
-                &tc.arguments,
-                validated_ws.as_deref(),
-                params.auto_apply_edits,
-                &params.mcp_config,
-                &mcp_lookup,
-                always_allowed_tools,
-                &mut emit,
-                &mut ask_approval,
-            )
-            .await;
+            let exec = if !exposed_tools.contains(&tc.name) {
+                Err(anyhow::anyhow!(
+                    "Tool `{}` is not available in this mode",
+                    tc.name
+                ))
+            } else {
+                execute_tool_call(
+                    &tc.name,
+                    &tc.arguments,
+                    validated_ws.as_deref(),
+                    params.auto_apply_edits,
+                    &params.mcp_config,
+                    &mcp_lookup,
+                    always_allowed_tools,
+                    &mut emit,
+                    &mut ask_approval,
+                )
+                .await
+            };
 
             let (result_text, is_error, staged) = match exec {
                 Ok((txt, maybe_edit)) => {
@@ -765,7 +784,9 @@ fn build_system_prompt(
 ) -> String {
     let mut parts = vec![preset.instructions().to_string()];
 
-    if let Some(ws) = workspace {
+    if preset == AppPreset::Chat {
+        // Chat deliberately receives no workspace context or tool instructions.
+    } else if let Some(ws) = workspace {
         let mode_note = if auto_apply {
             "File edits you make apply immediately to the workspace."
         } else {

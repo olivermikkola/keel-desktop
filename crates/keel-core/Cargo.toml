@@ -11,6 +11,7 @@ path = "src/bin/keel_desktop_cli.rs"
 
 [dependencies]
 anyhow = "1"
+base64 = "0.22"
 dirs = "5"
 futures-util = "0.3"
 hex = "0.4"

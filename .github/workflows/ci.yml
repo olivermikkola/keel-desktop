@@ -56,3 +56,24 @@ jobs:
         run: cargo test --workspace
       - name: Build release binaries
         run: cargo build --workspace --release
+
+  browser-smoke:
+    name: Frontend Mode & Image Flows
+    # Keep the browser runner on an OS supported by the pinned Playwright release.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install playwright==1.56.0
+      - run: python -m playwright install --with-deps chromium
+      - name: Exercise frontend with test-only Tauri IPC fixtures
+        env:
+          KEEL_SMOKE_OUTPUT: test-artifacts
+        run: python scripts/ui-smoke.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frontend-screenshots
+          path: test-artifacts/

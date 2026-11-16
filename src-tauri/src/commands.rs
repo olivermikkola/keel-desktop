@@ -28,6 +28,7 @@ use tokio::sync::{oneshot, Mutex};
 use tokio::task::AbortHandle;
 
 pub struct AppState {
+    pub images: keel_core::images::ImageService,
     pub config_dir: PathBuf,
     pub data_dir: PathBuf,
     pub config: Arc<Mutex<DesktopConfig>>,
@@ -208,7 +209,7 @@ pub async fn create_session(
 ) -> Result<ChatSession, String> {
     let session = ChatSession {
         id: uuid::Uuid::new_v4().to_string(),
-        title: format!("New {} chat", preset.title()),
+        title: format!("New {} thread", preset.title()),
         app_preset: preset,
         workspace_path,
         messages: Vec::new(),
@@ -264,14 +265,20 @@ pub async fn start_model(
 
     cfg.selected_model_id = model.id;
     cfg.external_base_url = None;
+    cfg.external_model_name = None;
     save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
     Ok(status)
 }
 
 #[tauri::command]
 pub async fn stop_runtime(state: State<'_, AppState>) -> Result<RuntimeStatus, String> {
+    // Use the same lock order as start_model.
+    let mut cfg = state.config.lock().await;
     let mut rt = state.runtime.lock().await;
     rt.stop().await;
+    cfg.external_base_url = None;
+    cfg.external_model_name = None;
+    save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
     Ok(rt.status())
 }
 
@@ -281,17 +288,19 @@ pub async fn set_external_endpoint(
     base_url: String,
     model_name: Option<String>,
 ) -> Result<RuntimeStatus, String> {
-    let probed = probe_openai_models(&base_url).await.unwrap_or_default();
+    let probed = probe_openai_models(&base_url)
+        .await
+        .map_err(|e| format!("Could not connect to model server: {e}"))?;
     let chosen = model_name
         .filter(|s| !s.trim().is_empty())
         .or_else(|| probed.into_iter().next())
         .unwrap_or_else(|| "default".to_string());
 
+    let mut cfg = state.config.lock().await;
     let mut rt = state.runtime.lock().await;
     rt.set_external_url(&base_url, Some(chosen.clone()));
     let status = rt.status();
 
-    let mut cfg = state.config.lock().await;
     cfg.external_base_url = Some(base_url.trim_end_matches('/').to_string());
     cfg.external_model_name = Some(chosen);
     save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
@@ -386,6 +395,21 @@ pub async fn send_message(
         session.workspace_path = input.workspace_path.clone();
     }
 
+    if input.prompt.trim().is_empty() {
+        return Err("Write a message first".to_string());
+    }
+    let cfg = state.config.lock().await.clone();
+    let rt_status = state.runtime.lock().await.status();
+    let use_external_harness = cfg.harness_mode != "keel" && session.app_preset == AppPreset::Code;
+    if session.app_preset != AppPreset::Chat && session.workspace_path.is_none() {
+        return Err("Choose a workspace folder for Work or Code first".to_string());
+    }
+    if !use_external_harness && rt_status.state == "stopped" {
+        return Err(
+            "Load a model in Models, or connect an existing model server first".to_string(),
+        );
+    }
+
     if session.messages.is_empty() && !input.prompt.trim().is_empty() {
         let snippet: String = input.prompt.trim().chars().take(48).collect();
         session.title = snippet;
@@ -401,11 +425,8 @@ pub async fn send_message(
     session.updated_at = now_epoch();
     save_session(&state.data_dir, &session).map_err(|e| e.to_string())?;
 
-    let cfg = state.config.lock().await.clone();
-    let rt_status = state.runtime.lock().await.status();
-
-    // External CLI harness path when selected.
-    if cfg.harness_mode != "keel" {
+    // External harnesses are explicitly a Code capability; Chat never runs them.
+    if use_external_harness {
         let ws = session
             .workspace_path
             .as_deref()
@@ -445,14 +466,10 @@ pub async fn send_message(
         return Ok(session);
     }
 
-    let base_url = cfg
-        .external_base_url
+    let base_url = rt_status.base_url.clone();
+    let model_name = rt_status
+        .active_model_id
         .clone()
-        .unwrap_or(rt_status.base_url.clone());
-    let model_name = cfg
-        .external_model_name
-        .clone()
-        .or(rt_status.active_model_id.clone())
         .unwrap_or_else(|| cfg.selected_model_id.clone());
 
     let catalog = list_models(&state.data_dir, &cfg.custom_model_paths);
@@ -462,9 +479,17 @@ pub async fn send_message(
         .map(|m| m.context_size as usize)
         .unwrap_or(8192);
 
-    let ws_path = session.workspace_path.as_deref().map(PathBuf::from);
+    let ws_path = if session.app_preset == AppPreset::Chat {
+        None
+    } else {
+        session.workspace_path.as_deref().map(PathBuf::from)
+    };
     let mcp_cfg: McpConfigFile = load_mcp_configs(&state.config_dir, ws_path.as_deref());
-    let mcp_statuses = inspect_mcp_servers(&mcp_cfg, ws_path.as_deref()).await;
+    let mcp_statuses = if session.app_preset == AppPreset::Chat {
+        Vec::new()
+    } else {
+        inspect_mcp_servers(&mcp_cfg, ws_path.as_deref()).await
+    };
     let mcp_tools: Vec<McpToolInfo> = mcp_statuses.into_iter().flat_map(|s| s.tools).collect();
 
     let history: Vec<ChatTurnMessage> = session
@@ -719,4 +744,66 @@ pub async fn refresh_mcp_servers(
     let ws = workspace_path.as_deref().map(Path::new);
     let merged = load_mcp_configs(&state.config_dir, ws);
     Ok(inspect_mcp_servers(&merged, ws).await)
+}
+
+#[tauri::command]
+pub async fn connect_image_server(
+    state: State<'_, AppState>,
+    endpoint: String,
+) -> Result<Vec<String>, String> {
+    let endpoint = keel_core::images::local_endpoint(&endpoint).map_err(|e| e.to_string())?;
+    let checkpoints = keel_core::images::probe_checkpoints(&endpoint)
+        .await
+        .map_err(|e| format!("Could not connect. Start AUTOMATIC1111 or Forge with --api. {e}"))?;
+    let mut cfg = state.config.lock().await;
+    cfg.image_endpoint = Some(endpoint);
+    save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
+    Ok(checkpoints)
+}
+
+#[tauri::command]
+pub async fn list_image_jobs(
+    state: State<'_, AppState>,
+) -> Result<Vec<keel_core::images::ImageJob>, String> {
+    Ok(state.images.list().await)
+}
+
+#[tauri::command]
+pub async fn start_image_job(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace_path: String,
+    mut request: keel_core::images::ImageRequest,
+) -> Result<keel_core::images::ImageJob, String> {
+    request.endpoint = state
+        .config
+        .lock()
+        .await
+        .image_endpoint
+        .clone()
+        .ok_or("Connect an image server first")?;
+    state
+        .images
+        .start(Path::new(&workspace_path), request, move |job| {
+            let _ = app.emit("keel://image-job", job);
+        })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn cancel_image_job(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<keel_core::images::ImageJob, String> {
+    state.images.cancel(&id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn read_workspace_png(
+    workspace_path: String,
+    rel_path: String,
+) -> Result<String, String> {
+    keel_core::images::read_workspace_png(Path::new(&workspace_path), &rel_path)
+        .map_err(|e| e.to_string())
 }
