@@ -124,6 +124,9 @@ fn collect_csvs(dir: &Path, out: &mut Vec<PathBufRef>) -> Result<()> {
         return Ok(());
     };
     for entry in entries.flatten() {
+        if entry.file_type().is_ok_and(|kind| kind.is_symlink()) {
+            continue;
+        }
         let p = entry.path();
         if p.is_file()
             && p.extension()
@@ -138,6 +141,9 @@ fn collect_csvs(dir: &Path, out: &mut Vec<PathBufRef>) -> Result<()> {
         {
             if let Ok(sub) = std::fs::read_dir(&p) {
                 for se in sub.flatten() {
+                    if se.file_type().is_ok_and(|kind| kind.is_symlink()) {
+                        continue;
+                    }
                     let sp = se.path();
                     if sp.is_file()
                         && sp
@@ -157,11 +163,10 @@ fn collect_csvs(dir: &Path, out: &mut Vec<PathBufRef>) -> Result<()> {
 type PathBufRef = std::path::PathBuf;
 
 fn load_csv_into_table(conn: &Connection, table_name: &str, raw: &str) -> Result<()> {
-    let mut lines = raw.lines().filter(|l| !l.trim().is_empty());
-    let Some(header_line) = lines.next() else {
-        return Ok(());
-    };
-    let headers = parse_csv_row(header_line);
+    let mut reader = csv::ReaderBuilder::new()
+        .flexible(true)
+        .from_reader(raw.as_bytes());
+    let headers = reader.headers()?.clone();
     if headers.is_empty() {
         return Ok(());
     }
@@ -192,8 +197,8 @@ fn load_csv_into_table(conn: &Connection, table_name: &str, raw: &str) -> Result
     let insert_sql = format!("INSERT INTO {safe_table} VALUES ({placeholders})");
     let mut stmt = conn.prepare(&insert_sql)?;
 
-    for line in lines {
-        let mut fields = parse_csv_row(line);
+    for record in reader.records() {
+        let mut fields: Vec<String> = record?.iter().map(String::from).collect();
         fields.resize(headers.len(), String::new());
         let params: Vec<&dyn rusqlite::ToSql> =
             fields.iter().map(|s| s as &dyn rusqlite::ToSql).collect();

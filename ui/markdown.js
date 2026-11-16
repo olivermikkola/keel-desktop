@@ -8,105 +8,67 @@ export function escapeHtml(str = "") {
 }
 
 function formatInline(text) {
-  let out = escapeHtml(text);
-  out = out.replace(/`([^`]+)`/g, "<code>$1</code>");
-  out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  out = out.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-  return out;
+  const tokens = [];
+  const protect = (html) => { tokens.push(html); return `\u0000${tokens.length - 1}\u0000`; };
+  let out = escapeHtml(text).replace(/`([^`]+)`/g, (_, code) => protect(`<code>${code}</code>`));
+  out = out.replace(/\[([^\]]+)\]\(([^\s)]+)\)/g, (_, label, escapedUrl) => {
+    const url = escapedUrl.replace(/&amp;/g, "&");
+    if (!/^https?:\/\//i.test(url)) return label;
+    return protect(`<a href="${escapeHtml(url)}" data-external-link="${escapeHtml(url)}" rel="noopener noreferrer">${label}</a>`);
+  });
+  out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/__([^_]+)__/g, "<strong>$1</strong>");
+  out = out.replace(/\*([^*]+)\*/g, "<em>$1</em>").replace(/~~([^~]+)~~/g, "<del>$1</del>");
+  return out.replace(/\u0000(\d+)\u0000/g, (_, index) => tokens[Number(index)]);
 }
 
 export function renderMarkdown(raw = "") {
   const lines = String(raw).replace(/\r\n/g, "\n").split("\n");
   const out = [];
-  let inCode = false;
-  let codeLines = [];
-  let inList = false;
-
-  const closeList = () => {
-    if (inList) {
-      out.push("</ul>");
-      inList = false;
-    }
-  };
-
-  for (const line of lines) {
-    if (line.trim().startsWith("```")) {
-      closeList();
-      if (!inCode) {
-        inCode = true;
-        codeLines = [];
-      } else {
-        out.push(`<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
-        inCode = false;
-      }
-      continue;
-    }
-
-    if (inCode) {
-      codeLines.push(line);
-      continue;
-    }
-
-    const trimmed = line.trim();
-    if (!trimmed) {
-      closeList();
-      continue;
-    }
-
-    if (trimmed.startsWith("### ")) {
-      closeList();
-      out.push(`<h3>${formatInline(trimmed.slice(4))}</h3>`);
-    } else if (trimmed.startsWith("## ")) {
-      closeList();
-      out.push(`<h2>${formatInline(trimmed.slice(3))}</h2>`);
-    } else if (trimmed.startsWith("# ")) {
-      closeList();
-      out.push(`<h1>${formatInline(trimmed.slice(2))}</h1>`);
-    } else if (/^[-*]\s+/.test(trimmed)) {
-      if (!inList) {
-        out.push("<ul>");
-        inList = true;
-      }
-      out.push(`<li>${formatInline(trimmed.replace(/^[-*]\s+/, ""))}</li>`);
-    } else {
-      closeList();
-      out.push(`<p>${formatInline(trimmed)}</p>`);
-    }
+  let paragraph = [];
+  let list = null;
+  const flush = () => { if (paragraph.length) { out.push(`<p>${formatInline(paragraph.join("\n")).replace(/\n/g, "<br>")}</p>`); paragraph = []; } };
+  const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+  const cells = (line) => line.trim().replace(/^\||\|$/g, "").split(/(?<!\\)\|/).map((cell) => cell.trim().replace(/\\\|/g, "|"));
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i], trimmed = line.trim();
+    const fence = trimmed.match(/^(`{3,}|~{3,})([\w+-]*)/);
+    if (fence) {
+      flush(); closeList();
+      const code = [];
+      while (++i < lines.length && !lines[i].trim().startsWith(fence[1])) code.push(lines[i]);
+      out.push(`<div class="code-block"><div class="code-block-head"><span>${escapeHtml(fence[2] || "Code")}</span><button class="text-action" data-copy-code>Copy code</button></div><pre><code>${escapeHtml(code.join("\n"))}</code></pre></div>`);
+    } else if (trimmed.includes("|") && i + 1 < lines.length && /^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(lines[i + 1])) {
+      flush(); closeList();
+      const headers = cells(line); i += 1;
+      const rows = [];
+      while (i + 1 < lines.length && lines[i + 1].includes("|") && lines[i + 1].trim()) rows.push(cells(lines[++i]));
+      out.push(`<div class="markdown-table-wrap"><table><thead><tr>${headers.map((c) => `<th>${formatInline(c)}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${headers.map((_, j) => `<td>${formatInline(row[j] || "")}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`);
+    } else if (!trimmed) { flush(); closeList(); }
+    else if (/^#{1,6}\s/.test(trimmed)) {
+      flush(); closeList(); const level = trimmed.indexOf(" "); out.push(`<h${level}>${formatInline(trimmed.slice(level + 1))}</h${level}>`);
+    } else if (/^([-*_])(?:\s*\1){2,}\s*$/.test(trimmed)) { flush(); closeList(); out.push("<hr>"); }
+    else if (/^>\s?/.test(trimmed)) { flush(); closeList(); out.push(`<blockquote>${formatInline(trimmed.replace(/^>\s?/, ""))}</blockquote>`); }
+    else if (/^(?:[-*+]\s+|\d+[.)]\s+)/.test(trimmed)) {
+      flush(); const kind = /^\d/.test(trimmed) ? "ol" : "ul";
+      if (list !== kind) { closeList(); list = kind; out.push(`<${kind}>`); }
+      out.push(`<li>${formatInline(trimmed.replace(/^(?:[-*+]\s+|\d+[.)]\s+)/, ""))}</li>`);
+    } else { closeList(); paragraph.push(line); }
   }
-
-  closeList();
-  if (inCode) {
-    out.push(`<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
-  }
-  return out.join("\n");
+  flush(); closeList(); return out.join("\n");
 }
 
 export function parseCsv(raw = "") {
-  const rows = [];
-  for (const line of String(raw).replace(/\r\n/g, "\n").split("\n")) {
-    if (!line.trim()) continue;
-    const fields = [];
-    let cur = "";
-    let inQuotes = false;
-    for (let i = 0; i < line.length; i += 1) {
-      const ch = line[i];
-      if (ch === '"') {
-        if (inQuotes && line[i + 1] === '"') {
-          cur += '"';
-          i += 1;
-        } else {
-          inQuotes = !inQuotes;
-        }
-      } else if (ch === "," && !inQuotes) {
-        fields.push(cur.trim());
-        cur = "";
-      } else {
-        cur += ch;
-      }
-    }
-    fields.push(cur.trim());
-    rows.push(fields);
+  const text = String(raw).replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
+  const rows = []; let row = [], field = "", quoted = false;
+  const pushRow = () => { row.push(field); if (row.some((value) => value.trim())) rows.push(row); row = []; field = ""; };
+  for (let i = 0; i < text.length; i += 1) {
+    const character = text[i];
+    if (character === '"') { if (quoted && text[i+1] === '"') { field += '"'; i += 1; } else quoted = !quoted; }
+    else if (character === "," && !quoted) { row.push(field); field = ""; }
+    else if (character === "\n" && !quoted) pushRow();
+    else field += character;
   }
+  if (field || row.length) pushRow();
   return rows;
 }
 

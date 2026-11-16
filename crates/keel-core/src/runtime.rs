@@ -23,6 +23,7 @@ pub struct RuntimeManager {
     pub active_model_path: Option<String>,
     pub llama_server_bin: Option<String>,
     pub port: u16,
+    last_error: Option<String>,
 }
 
 impl Default for RuntimeManager {
@@ -41,6 +42,7 @@ impl RuntimeManager {
             active_model_path: None,
             llama_server_bin,
             port,
+            last_error: None,
         }
     }
 
@@ -68,6 +70,12 @@ impl RuntimeManager {
         self.llama_server_bin = Some(bin.to_string_lossy().to_string());
         self.base_url = format!("http://127.0.0.1:{}/v1", self.port);
 
+        let log_dir = dirs::cache_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("keel-desktop");
+        std::fs::create_dir_all(&log_dir)?;
+        let log_path = log_dir.join("model-runner.log");
+        let log = std::fs::File::create(&log_path)?;
         let child = Command::new(&bin)
             .arg("-m")
             .arg(model_path)
@@ -77,9 +85,13 @@ impl RuntimeManager {
             .arg(self.port.to_string())
             .arg("-c")
             .arg(context_size.to_string())
+            .arg("--parallel")
+            .arg("1")
+            .arg("--alias")
+            .arg(model_id)
             .arg("--jinja")
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::from(log))
             .spawn()
             .with_context(|| format!("Failed to start {}", bin.display()))?;
 
@@ -98,7 +110,21 @@ impl RuntimeManager {
                     self.child = None;
                     self.active_model_id = None;
                     self.active_model_path = None;
-                    bail!("llama-server exited early with status {exit}");
+                    let details = std::fs::read_to_string(&log_path)
+                        .unwrap_or_default()
+                        .lines()
+                        .rev()
+                        .take(8)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    self.last_error = Some(format!("Model runner exited ({exit}). {details}"));
+                    bail!(
+                        "{}",
+                        self.last_error.as_deref().unwrap_or("Model runner failed")
+                    );
                 }
             }
             if let Ok(resp) = client.get(&health_url).send().await {
@@ -123,6 +149,7 @@ impl RuntimeManager {
         }
         self.active_model_path = None;
         self.active_model_id = None;
+        self.last_error = None;
     }
 
     pub fn stop_sync(&mut self) {
@@ -131,13 +158,24 @@ impl RuntimeManager {
         }
         self.active_model_path = None;
         self.active_model_id = None;
+        self.last_error = None;
     }
 
-    pub fn status(&self) -> RuntimeStatus {
+    pub fn status(&mut self) -> RuntimeStatus {
+        if let Some(child) = &mut self.child {
+            if let Ok(Some(exit)) = child.try_wait() {
+                self.child = None;
+                self.active_model_id = None;
+                self.active_model_path = None;
+                self.last_error = Some(format!("The model runner stopped ({exit}). Reload a smaller model or check its runner log."));
+            }
+        }
         let state = if self.child.is_some() {
             "running"
         } else if self.active_model_id.is_some() {
             "external"
+        } else if self.last_error.is_some() {
+            "error"
         } else {
             "stopped"
         };
@@ -148,7 +186,7 @@ impl RuntimeManager {
             active_model_path: self.active_model_path.clone(),
             llama_server_bin: self.llama_server_bin.clone(),
             managed_pid: self.child.as_ref().and_then(|c| c.id()),
-            error: None,
+            error: self.last_error.clone(),
         }
     }
 }

@@ -5,8 +5,20 @@ Use a shared text model across Chat, Work, and Code. Download a GGUF or connect 
 
 Built with **Tauri 2**, **Rust**, and **llama.cpp** (`llama-server`), carrying the **Keel** small-model harness and dark-mode workspace from Keel Mobile onto the desktop without iOS memory or sandbox restrictions.
 
+## Start here
+
+Open Keel and choose **Get started** or **Models → Guided setup**. Keel recommends a text model for your RAM, downloads the checksum-verified model runner and weights, and starts the assistant. No terminal command or separate llama.cpp installation is needed on supported macOS, Windows, and Linux builds. Models can take several gigabytes; setup shows the sizes before you choose it.
+
+Already using Ollama or LM Studio? Choose **Connect existing server** in guided setup instead. No duplicate model download is required. You can also import GGUF files in Models.
+
 ## What is included
 
+- **Document chat:** Attach PDFs, DOCX, text, Markdown, CSV, or code files. Inspect the extracted source and ask follow-up questions. Large documents use labeled excerpts; scanned PDFs need OCR before import.
+- **Projects:** Reusable instructions, reference documents, an optional working folder, and conversations grouped around the same work.
+- **Saved preferences:** Editable local context for future conversations. Add it in the sidebar or explicitly ask “Remember that …”; ordinary conversation is not automatically mined for memories.
+- **Conversation tools:** Search message text and titles, rename, pin, export to Markdown, edit a prompt in a copy, retry a text answer, keep drafts, and undo a deletion. Interrupted replies keep partial answers and proposed edits.
+- **Library:** Find approved documents, websites, code, and generated PNGs across your workspaces.
+- **Readable replies:** Tables, numbered steps, quotes, web links, and code blocks with copy controls. Direct answers are the default; reasoning is optional.
 - **Chat / Work / Code:** Chat answers without workspace tools. Work handles files, documents, and data with staged edits. Code adds repository tools, approved shell commands, and diff review. Existing threads keep their history and map into the appropriate mode.
 - **Optional Images:** Connect a local AUTOMATIC1111 / Forge server, choose its checkpoint, generate PNGs into your workspace, and use them in website/slide previews. Job history, failure states, and stop-waiting controls are included. Audio and video are marked as planned.
 - **Local models & `llama-server` lifecycle:** GGUF catalog (`Bonsai 2` 4B/9B/27B, `LFM3` 1.7B, `MiniCPM5` 2B), with pinned revisions and SHA-256 verification for the 4B/9B/LFM3/MiniCPM entries; the 27B entry currently follows `main` without a checksum. Includes custom `.gguf` import/URL download, or connect to any OpenAI-compatible local server (`http://127.0.0.1:8080/v1`, Ollama, LM Studio).
@@ -23,6 +35,8 @@ Built with **Tauri 2**, **Rust**, and **llama.cpp** (`llama-server`), carrying t
   - **Slides** (HTML presentation preview with slide navigation & print/PDF export)
 - **Local `stdio` MCP servers:** Configure standard MCP servers in `.keel/mcp.json` or `~/.config/keel-desktop/mcp.json`.
 - **Harness-agnostic pass-through:** Use the built-in Keel Harness by default, or switch in **Code** to an external CLI harness (`opencode`, `keel`, etc.) when installed.
+
+See [everyday assistant validation](docs/everyday-readiness.md) for tested flows and real-model limitations.
 
 ## Optional image setup
 
@@ -66,10 +80,10 @@ Creates `~/.local/bin/keel-desktop`, `~/.local/bin/keel-desktop-cli`, and a desk
 
 ### Prerequisites
 
-- Rust (`1.85+`, `clippy`, `rustfmt`)
+- Rust (stable, tested with `1.100`, plus `clippy` and `rustfmt`)
 - Node.js (`20+`, for `ui/tests/*.test.mjs`)
 - On Linux: `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev`
-- Optional for local inference: `llama-server` on `PATH` (or configure its path in **Models**)
+- Local inference: guided setup installs a pinned `llama-server`; an existing executable on `PATH` or a custom path in Settings can also be used.
 
 ### Run checks
 

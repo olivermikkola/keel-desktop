@@ -22,13 +22,13 @@ Successful images are written as new `assets/keel-<job-id>.png` files in the sel
 
 ## Next milestones
 
-1. **Reliable everyday use:** document attachments and extraction, conversation search/rename, richer Code context, resumable task progress, stronger real-model evaluations, and native desktop smoke tests.
+1. **Reliable everyday use:** PDF/DOCX/text attachments, search/rename/pin/export, reusable projects, saved preferences, a file Library, durable partial replies, and guided runtime/model setup are implemented. Next: broader real-model evaluations, native interaction tests, richer Code context, and better CPU latency.
 2. **Model packs:** capability-specific runtime adapters, verified manifests, resumable/cancellable downloads, removal, measured hardware requirements, and resource scheduling/unloading. Curate Lightweight / Balanced / Powerful choices where real measurements support them; parameter counts alone are insufficient.
 3. **Audio:** separate speech-to-text and text-to-speech adapters with optional packs and audio artifacts. Do not force music generation into a speech model's interface.
 4. **Video:** asynchronous generation with engine-specific requirements, progress, cancellation semantics, and playable artifacts after image/audio jobs are dependable.
 5. **Explicit remote providers:** opt-in endpoint/auth configuration, secure credential storage, clear processing-location/cost labels, and no silent cloud fallback. A model still has to run somewhere when a user skips a local download.
 
-Images currently need a separately installed image server. Audio/video backends, hardware detection, automatic media runtime installation, hosted-provider authentication, web search, and Chat attachments are not implemented by this milestone.
+Images currently need a separately installed image server. Audio/video backends, hardware detection, automatic media runtime installation, hosted-provider authentication and web search are not implemented by this milestone.
 
 ## Verification
 

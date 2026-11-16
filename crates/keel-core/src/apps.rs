@@ -157,6 +157,27 @@ impl AppPreset {
         }
     }
 
+    /// Read-only CSV questions do not need the full editing/shell schema payload.
+    pub fn tools_for_request(self, prompt: &str) -> &'static [&'static str] {
+        let prompt = prompt.to_lowercase();
+        let writes = [
+            "create", "write", "save", "edit", "update", "delete", "rename", "build", "make",
+            "plot", "chart", "graph", "export",
+        ];
+        if matches!(self, Self::General | Self::Sheets)
+            && prompt.contains("csv")
+            && !writes.iter().any(|word| {
+                prompt
+                    .split(|c: char| !c.is_alphanumeric())
+                    .any(|token| token == *word)
+            })
+        {
+            &["list_files", "read_file", "run_sql"]
+        } else {
+            self.allowed_tools()
+        }
+    }
+
     pub fn instructions(self) -> &'static str {
         match self {
             AppPreset::Chat => {

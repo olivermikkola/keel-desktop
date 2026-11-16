@@ -12,11 +12,18 @@ path = "src/bin/keel_desktop_cli.rs"
 [dependencies]
 anyhow = "1"
 base64 = "0.22"
+csv = "1"
+flate2 = "1"
+pdf-extract = "0.12"
+quick-xml = "0.37"
+sysinfo = "0.33"
+tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 dirs = "5"
 futures-util = "0.3"
 hex = "0.4"
 regex = "1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-native-roots"] }
 rusqlite = { version = "0.32", features = ["bundled", "limits"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

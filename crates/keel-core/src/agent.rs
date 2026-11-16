@@ -122,6 +122,13 @@ where
         tool_call_id: None,
         tool_calls: None,
     });
+    let latest_request = params
+        .history
+        .iter()
+        .rev()
+        .find(|m| m.role == "user")
+        .map(|m| m.content.clone())
+        .unwrap_or_default();
     messages.extend(params.history);
 
     let mcp_schemas = if params.app_preset == AppPreset::Chat {
@@ -133,7 +140,7 @@ where
         && (validated_ws.is_some() || !mcp_schemas.is_empty())
     {
         let allowed = if validated_ws.is_some() {
-            params.app_preset.allowed_tools()
+            params.app_preset.tools_for_request(&latest_request)
         } else {
             &["run_sql"][..]
         };
@@ -180,12 +187,17 @@ where
             });
         }
 
+        if crate::compaction::estimate_tokens(&messages) > budget.max(2048) {
+            bail!("This request is larger than the selected model’s context. Shorten the message or project instructions, or attach a document so Keel can select excerpts.");
+        }
+
         let resp = stream_completion(
             &client,
             &endpoint,
             &params.model_name,
             &messages,
             &tool_schemas,
+            params.enable_thinking,
             &mut emit,
         )
         .await?;
@@ -346,6 +358,9 @@ where
         }
     }
 
+    if final_content.trim().is_empty() {
+        final_content = "I reached the step limit for this turn. The tool results and any proposed edits are available above; tell me which step to continue.".into();
+    }
     let secs = turn_start.elapsed().as_secs_f64().max(0.01);
     let tps = total_completion_tokens as f64 / secs;
     let thinking = (!total_thinking.is_empty()).then_some(total_thinking);
@@ -609,6 +624,7 @@ async fn stream_completion<E>(
     model: &str,
     messages: &[ChatTurnMessage],
     tools: &[Value],
+    enable_thinking: bool,
     emit: &mut E,
 ) -> Result<StreamedCompletion>
 where
@@ -618,7 +634,10 @@ where
         "model": model,
         "messages": messages,
         "stream": true,
-        "stream_options": { "include_usage": true }
+        "stream_options": { "include_usage": true },
+        "chat_template_kwargs": { "enable_thinking": enable_thinking },
+        "temperature": 0.5,
+        "max_tokens": 2048
     });
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools.to_vec());
@@ -640,27 +659,31 @@ where
     let mut prompt_tokens = 0u64;
     let mut completion_tokens = 0u64;
 
-    let mut buffer = String::new();
+    let mut decoder = crate::streaming::SseLines::default();
+    let mut router = crate::streaming::TextRouter::default();
     let mut stream = resp.bytes_stream();
-    let mut in_think_tag = false;
+    let mut received = false;
+    let mut finished = false;
 
-    while let Some(chunk) = stream.next().await {
-        let bytes = chunk?;
-        buffer.push_str(&String::from_utf8_lossy(&bytes));
-
-        while let Some(nl) = buffer.find('\n') {
-            let line = buffer[..nl].trim().to_string();
-            buffer.drain(..=nl);
-            let Some(data) = line.strip_prefix("data:") else {
-                continue;
-            };
-            let data = data.trim();
-            if data == "[DONE]" || data.is_empty() {
+    loop {
+        let data_lines = match stream.next().await {
+            Some(chunk) => decoder.push(&chunk?)?,
+            None => {
+                finished = true;
+                decoder.finish()?
+            }
+        };
+        for data in data_lines {
+            if data == "[DONE]" {
+                finished = true;
                 continue;
             }
-            let Ok(val) = serde_json::from_str::<Value>(data) else {
-                continue;
-            };
+            let val: Value = serde_json::from_str(&data)
+                .context("Model server sent an invalid streaming event")?;
+            if let Some(error) = val.get("error") {
+                bail!("Model server: {}", error.get("message").unwrap_or(error));
+            }
+            received = true;
 
             if let Some(usage) = val.get("usage") {
                 if let Some(p) = usage.get("prompt_tokens").and_then(|v| v.as_u64()) {
@@ -691,22 +714,12 @@ where
 
             if let Some(c) = delta.get("content").and_then(|v| v.as_str()) {
                 content.push_str(c);
-                // Stream delta cleanly, routing inline <think> tags to ThinkingDelta.
-                if c.contains("<think>") {
-                    in_think_tag = true;
-                }
-                if in_think_tag {
-                    let clean = c.replace("<think>", "").replace("</think>", "");
-                    if !clean.is_empty() {
-                        emit(AgentEvent::ThinkingDelta { text: clean });
+                for (thinking, text) in router.push(c) {
+                    if thinking {
+                        emit(AgentEvent::ThinkingDelta { text });
+                    } else {
+                        emit(AgentEvent::ContentDelta { text });
                     }
-                    if c.contains("</think>") {
-                        in_think_tag = false;
-                    }
-                } else {
-                    emit(AgentEvent::ContentDelta {
-                        text: c.to_string(),
-                    });
                 }
             }
 
@@ -728,6 +741,21 @@ where
                 }
             }
         }
+        if finished {
+            break;
+        }
+    }
+    for (thinking, text) in router.finish() {
+        if thinking {
+            emit(AgentEvent::ThinkingDelta { text });
+        } else {
+            emit(AgentEvent::ContentDelta { text });
+        }
+    }
+    if !received {
+        bail!(
+            "The model server returned no response. Check that a model is loaded, then try again."
+        );
     }
 
     let mut ordered_indices: Vec<usize> = partial_calls.keys().copied().collect();
@@ -792,7 +820,7 @@ fn build_system_prompt(
         } else {
             "File edits (`propose_edit`, `create_file`, `delete_file`, `rename_file`) are staged for user diff review."
         };
-        parts.push(format!("Workspace root: `{}`. {mode_note}", ws.display()));
+        parts.push(format!("Workspace root: `{}`. All tool paths must be relative to this folder; never pass absolute paths. {mode_note}", ws.display()));
     } else {
         parts.push(
             "No workspace folder is currently selected. You can still answer directly or run SQL queries via `run_sql`."

@@ -1,3 +1,4 @@
+import { createEveryday } from "./everyday.js";
 import { createImageWorkspace } from "./images.js";
 import { MODES, modeForPreset, isRuntimeLive, promptBlockReason } from "./modes.js";
 import { escapeHtml, renderMarkdown } from "./markdown.js";
@@ -27,6 +28,9 @@ const WELCOME_STORAGE_KEY = "keel_welcome_done";
 const appState = {
   bootstrap: null,
   session: null,
+  activeProjectId: null,
+  pendingDocuments: [],
+  searchResults: null,
   workspacePath: null,
   workspaceFiles: [],
   activeView: "chat", // "chat" | "code" | "models" | "connectors"
@@ -66,6 +70,7 @@ const els = {
   viewChatCode: document.getElementById("view-chat-code"),
   viewModels: document.getElementById("view-models"),
   viewTools: document.getElementById("view-tools"),
+  viewLibrary: document.getElementById("view-library"),
   viewConnectors: document.getElementById("view-connectors"),
   chatScroll: document.getElementById("chat-scroll"),
   approvalSlot: document.getElementById("approval-slot"),
@@ -101,6 +106,46 @@ const images = createImageWorkspace({
   openModels: () => setActiveView("models"),
   notice: showToast,
 });
+
+const drafts = new Map();
+const everyday = createEveryday({
+  invoke, state: () => appState, refresh: refreshBootstrap, render: renderAll,
+  modal: openModal, closeModal, toast: showToast, renderSidebar,
+  selectProject: async (id) => {
+    if (appState.streaming) return;
+    appState.activeProjectId = id;
+    appState.searchResults = null;
+    const project = appState.bootstrap.projects?.find((p) => p.id === id);
+    if (project?.workspace_path) appState.workspacePath = project.workspace_path;
+    await createNewSession("chat");
+  },
+  openArtifact: async (item) => {
+    appState.workspacePath = item.workspace_path;
+    appState.activeProjectId = item.project_id;
+    await createNewSession(item.kind === "html" ? "websites" : item.kind === "csv" ? "sheets" : item.kind === "md" ? "docs" : "general");
+    appState.viewerFile = item.path; appState.viewerOpen = true; appState.viewerTab = "preview"; renderAll();
+  },
+});
+
+function saveDraft() {
+  if (!appState.session) return;
+  drafts.set(appState.session.id, { text: els.promptInput.value, documents: appState.pendingDocuments });
+  try { localStorage.setItem(`keel_draft_${appState.session.id}`, els.promptInput.value); } catch { /* Storage quota may be unavailable. */ }
+}
+function restoreDraft() {
+  const draft = drafts.get(appState.session.id);
+  let text = draft?.text || "";
+  if (!draft) { try { text = localStorage.getItem(`keel_draft_${appState.session.id}`) || ""; } catch { /* Ignore unavailable storage. */ } }
+  els.promptInput.value = text;
+  appState.pendingDocuments = draft?.documents || [];
+  autoSizePromptInput(); renderAttachmentChips();
+}
+function renderAttachmentChips() {
+  const target = document.getElementById("attachment-chips");
+  target.innerHTML = appState.pendingDocuments.map((doc) => `<span class="attachment-chip"><button class="text-action" data-pending-source="${escapeHtml(doc.id)}">${escapeHtml(doc.name)}</button><button class="text-action" data-remove-attachment="${escapeHtml(doc.id)}" aria-label="Remove ${escapeHtml(doc.name)}">×</button></span>`).join("");
+  target.querySelectorAll("[data-remove-attachment]").forEach((button) => { button.onclick = () => { appState.pendingDocuments = appState.pendingDocuments.filter((doc) => doc.id !== button.dataset.removeAttachment); saveDraft(); renderAttachmentChips(); }; });
+  target.querySelectorAll("[data-pending-source]").forEach((button) => { button.onclick = () => everyday.previewSource(appState.pendingDocuments.find((doc) => doc.id === button.dataset.pendingSource)); });
+}
 
 function loadAppearance() {
   try {
@@ -210,8 +255,8 @@ function renderToolOrEditHtml(tool) {
         : "Rejected · discarded";
     const footer = isPending
       ? `<div class="inline-edit-footer">
-           <button class="inline-edit-btn reject" data-edit-reject="${escapeHtml(staged.id)}">Reject</button>
-           <button class="inline-edit-btn approve" data-edit-approve="${escapeHtml(staged.id)}">Approve</button>
+           <button class="inline-edit-btn reject" ${appState.streaming ? "disabled" : ""} data-edit-reject="${escapeHtml(staged.id)}">Reject</button>
+           <button class="inline-edit-btn approve" ${appState.streaming ? "disabled" : ""} data-edit-approve="${escapeHtml(staged.id)}">Approve</button>
          </div>`
       : `<div class="inline-edit-resolved ${staged.status === "applied" ? "applied" : ""}">
            <span>${statusLabel}</span>
@@ -219,7 +264,7 @@ function renderToolOrEditHtml(tool) {
          </div>`;
 
     return `
-      <details class="inline-edit-card" ${isPending ? "open" : ""}>
+      <details class="inline-edit-card" data-details-id="edit-${escapeHtml(staged.id)}" ${isPending ? "open" : ""}>
         <summary class="inline-edit-head">
           ${renderEditFileSvg()}
           <span class="inline-edit-title">${escapeHtml(staged.summary)}</span>
@@ -253,7 +298,7 @@ function renderToolOrEditHtml(tool) {
 async function setActiveView(view) {
   if (appState.streaming) return;
   if (MODES[view] && modeForPreset(appState.session?.app_preset) !== view) {
-    const recent = appState.bootstrap.sessions.find((s) => modeForPreset(s.app_preset) === view);
+    const recent = appState.bootstrap.sessions.find((s) => modeForPreset(s.app_preset) === view && (s.project_id || null) === appState.activeProjectId);
     if (recent) await loadSession(recent.id);
     else await createNewSession(MODES[view].preset);
   }
@@ -270,11 +315,14 @@ async function init() {
   syncWelcomeOverlay(false);
 
   if (events) {
+    await events.listen("keel://preference-saved", () => showToast("Saved to preferences. You can edit or remove it in the sidebar."));
+    await events.listen("keel://setup-progress", (event) => everyday.setupProgress(event.payload));
     await events.listen("keel://image-job", () => images.onJob());
     await events.listen("keel://agent-event", (ev) => handleAgentEvent(ev.payload));
     await events.listen("keel://download-progress", (ev) => {
       const p = ev.payload;
       appState.downloadProgress[p.model_id] = p;
+      everyday.downloadProgress(p);
       const bar = document.getElementById(`dl-prog-${p.model_id}`);
       if (bar) {
         const pct = p.total_bytes ? Math.round((p.downloaded_bytes / p.total_bytes) * 100) : 0;
@@ -297,6 +345,18 @@ async function init() {
   wireUi();
   await images.reload();
   renderAll();
+  window.__KEEL_READY__ = { preset: appState.session.app_preset };
+  setInterval(async () => {
+    if (!appState.bootstrap) return;
+    try {
+      const next = await invoke("get_runtime_status");
+      if (JSON.stringify(next) !== JSON.stringify(appState.bootstrap.runtime)) {
+        appState.bootstrap.runtime = next; renderHeader(); renderSidebar();
+        if (appState.activeView === "models") renderModelsWorkspace();
+        if (next.error) showToast(next.error);
+      }
+    } catch { /* The next interaction can report a disconnected desktop. */ }
+  }, 5000);
 }
 
 async function refreshBootstrap() {
@@ -320,31 +380,34 @@ async function refreshBootstrap() {
 
 async function createNewSession(preset = "chat") {
   if (appState.streaming) return;
+  saveDraft();
   appState.session = await invoke("create_session", {
     preset,
     workspacePath: appState.workspacePath,
+    projectId: appState.activeProjectId,
   });
   appState.selectedEditId = null;
   appState.activeView = modeForPreset(preset);
   appState.viewerOpen = appState.activeView !== "chat";
   appState.viewerTab = appState.activeView === "code" ? "code" : "preview";
-  els.promptInput.value = "";
-  autoSizePromptInput();
+  restoreDraft();
   await refreshBootstrap();
   renderAll();
 }
 
 async function loadSession(id) {
   if (appState.streaming) return;
+  saveDraft();
   appState.session = await invoke("load_session_cmd", { id });
+  appState.activeProjectId = appState.session.project_id || null;
+  appState.searchResults = null;
   appState.workspacePath = appState.session.workspace_path || null;
   await refreshWorkspaceFiles();
   appState.activeView = modeForPreset(appState.session.app_preset);
   appState.viewerOpen = appState.activeView !== "chat";
   appState.viewerTab = appState.activeView === "code" ? "code" : "preview";
   appState.viewerFile = detectViewerForPreset(appState.session.app_preset, appState.workspaceFiles);
-  els.promptInput.value = "";
-  autoSizePromptInput();
+  restoreDraft();
   renderAll();
 }
 
@@ -369,6 +432,8 @@ function renderAll() {
   renderViewVisibility();
   if (appState.activeView === "models") {
     renderModelsWorkspace();
+  } else if (appState.activeView === "library") {
+    everyday.renderLibrary(els.viewLibrary).catch((error) => showToast(String(error)));
   } else if (appState.activeView === "tools") {
     images.render(els.viewTools);
   } else if (appState.activeView === "connectors") {
@@ -387,6 +452,7 @@ function renderViewVisibility() {
   els.viewChatCode.classList.toggle("hidden", !isChatOrCode);
   els.viewModels.classList.toggle("hidden", appState.activeView !== "models");
   els.viewTools.classList.toggle("hidden", appState.activeView !== "tools");
+  els.viewLibrary.classList.toggle("hidden", appState.activeView !== "library");
   els.viewConnectors.classList.toggle("hidden", appState.activeView !== "connectors");
 }
 
@@ -413,11 +479,27 @@ function renderSidebar() {
   }
 
   els.sessionsList.innerHTML = "";
-  for (const s of b.sessions) {
+  const projectsList = document.getElementById("projects-list");
+  projectsList.innerHTML = `<button class="project-row ${!appState.activeProjectId ? "active" : ""}" data-project="">All conversations</button>` + (b.projects || []).map((project) => `<div class="project-row-wrap"><button class="project-row ${appState.activeProjectId === project.id ? "active" : ""}" data-project="${escapeHtml(project.id)}">${escapeHtml(project.name)}</button><button class="text-action" data-edit-project="${escapeHtml(project.id)}" aria-label="Edit ${escapeHtml(project.name)}">⋯</button></div>`).join("");
+  projectsList.querySelectorAll("[data-project]").forEach((button) => { button.onclick = async () => {
+    if (appState.streaming) return;
+    appState.activeProjectId = button.dataset.project || null; appState.searchResults = null;
+    const recent = b.sessions.find((session) => (session.project_id || null) === appState.activeProjectId);
+    if (recent) await loadSession(recent.id);
+    else {
+      const project = b.projects?.find((p) => p.id === appState.activeProjectId);
+      if (project?.workspace_path) appState.workspacePath = project.workspace_path;
+      await createNewSession("chat");
+    }
+  }; });
+  projectsList.querySelectorAll("[data-edit-project]").forEach((button) => { button.onclick = () => everyday.editProject(button.dataset.editProject); });
+  const visibleSessions = appState.searchResults || b.sessions.filter((session) => !appState.activeProjectId || session.project_id === appState.activeProjectId);
+  if (!visibleSessions.length) els.sessionsList.innerHTML = '<p class="sidebar-empty">No conversations found.</p>';
+  for (const s of visibleSessions) {
     const row = document.createElement("div");
     row.className = `recent-item ${appState.session?.id === s.id ? "active" : ""}`;
     row.innerHTML = `
-      <span class="recent-mode">${MODES[modeForPreset(s.app_preset)].title}</span><span class="recent-title">${escapeHtml(s.title)}</span>
+      <span class="recent-mode">${MODES[modeForPreset(s.app_preset)].title}</span><span class="recent-title">${s.pinned ? "⌑ " : ""}${escapeHtml(s.title)}</span>
       <span class="recent-age">${escapeHtml(formatRelativeTime(s.updated_at))}</span>
       <button class="recent-del" title="Delete thread" aria-label="Delete thread">&times;</button>
     `;
@@ -439,6 +521,10 @@ function renderSidebar() {
         await refreshBootstrap();
         renderSidebar();
       }
+      showToast("Conversation deleted.");
+      const undo = document.createElement("button"); undo.className = "text-action"; undo.textContent = "Undo";
+      undo.onclick = async () => { await invoke("restore_thread", { id: s.id }); await refreshBootstrap(); await loadSession(s.id); showToast("Conversation restored."); };
+      document.getElementById("global-notice").appendChild(undo);
     };
     els.sessionsList.appendChild(row);
   }
@@ -448,7 +534,7 @@ function renderSidebar() {
   const runningLabel =
     rt.state === "external"
       ? b.config.external_model_name || "External API"
-      : activeModel?.name || "No model loaded";
+      : rt.state === "running" ? activeModel?.name || "Local model" : "No model loaded";
   const isLive = isRuntimeLive(rt);
   els.sidebarRuntimeBox.innerHTML = `
     <span class="status-dot ${rt.state}"></span>
@@ -468,7 +554,7 @@ function renderHeader() {
   const selected = b.models.find(
     (m) => m.id === (rt.active_model_id || b.config.selected_model_id),
   );
-  els.modelPillLabel.textContent =
+  els.modelPillLabel.textContent = rt.state === "stopped" ? "Choose a model" : rt.state === "error" ? "Model needs attention" :
     rt.state === "external"
       ? b.config.external_model_name || "External endpoint"
       : selected
@@ -488,9 +574,14 @@ function renderHeader() {
       ? `${counts.pending} pending`
       : counts.applied > 0
         ? `${counts.applied} applied`
-        : "Local only";
+        : "Review changes";
   els.diffsPillBtn.classList.toggle("has-pending", counts.pending > 0);
   els.telemetryRight.textContent = `Keel v${b.version}`;
+  if (!appState.streaming) {
+    let location = "On this computer";
+    try { if (!["localhost", "127.0.0.1", "[::1]"].includes(new URL(rt.base_url).hostname)) location = "Your external model server"; } catch { /* Setup can correct an invalid endpoint. */ }
+    els.telemetryLeft.textContent = isRuntimeLive(rt) ? `${location} · ${appState.session?.messages.length || 0} messages` : "Set up a local assistant to get started";
+  }
   const mode = modeForPreset(appState.session?.app_preset);
   els.promptInput.placeholder = MODES[mode].placeholder;
   els.composerWsChip.textContent = mode === "chat" ? "Chat · no workspace tools" : shortWs;
@@ -509,6 +600,7 @@ function renderChat() {
 
   if (s.messages.length === 0 && !appState.streaming) {
     const preset = b.presets.find((p) => p.id === s.app_preset) || b.presets[0];
+    const project = b.projects?.find((p) => p.id === appState.activeProjectId);
     const starters = preset.starters
       .map(
         (st) =>
@@ -517,11 +609,14 @@ function renderChat() {
       .join("");
     els.chatScroll.innerHTML = `
       <div class="empty-state">
+        ${project ? `<span class="eyebrow">${escapeHtml(project.name)}</span>` : ""}
         <h1>${escapeHtml(preset.title)}</h1>
         <p>${escapeHtml(preset.summary)}</p>
+        ${!isRuntimeLive(b.runtime) ? '<button class="btn btn-primary" id="chat-setup-btn">Set up your assistant</button>' : ""}
         <div class="starters-grid">${starters}</div>
       </div>
     `;
+    els.chatScroll.querySelector("#chat-setup-btn")?.addEventListener("click", () => everyday.setup());
     els.chatScroll.querySelectorAll("[data-starter]").forEach((btn) => {
       btn.onclick = () => {
         els.promptInput.value = btn.getAttribute("data-starter");
@@ -531,6 +626,9 @@ function renderChat() {
     return;
   }
 
+  const shouldStick = els.chatScroll.scrollHeight - els.chatScroll.scrollTop - els.chatScroll.clientHeight < 100;
+  const oldTop = els.chatScroll.scrollTop;
+  const details = new Map([...els.chatScroll.querySelectorAll("details[data-details-id]")].map((d) => [d.dataset.detailsId, d.open]));
   let html = "";
   for (const msg of s.messages) {
     html += renderMessageHtml(msg);
@@ -539,7 +637,7 @@ function renderChat() {
   if (appState.streaming) {
     const toolsHtml = appState.streamingTools.map(renderToolOrEditHtml).join("");
     const thinkingHtml = appState.streamingThinking
-      ? `<details class="thinking-box"><summary>Thought</summary><pre class="mono">${escapeHtml(appState.streamingThinking)}</pre></details>`
+      ? `<details class="thinking-box" data-details-id="live-thought"><summary>Thinking</summary><pre class="mono">${escapeHtml(appState.streamingThinking)}</pre></details>`
       : "";
     html += `
       <div class="msg assistant">
@@ -551,24 +649,24 @@ function renderChat() {
   }
 
   els.chatScroll.innerHTML = html;
-  els.chatScroll.scrollTop = els.chatScroll.scrollHeight;
+  els.chatScroll.querySelectorAll("details[data-details-id]").forEach((d) => { if (details.has(d.dataset.detailsId)) d.open = details.get(d.dataset.detailsId); });
+  els.chatScroll.scrollTop = shouldStick ? els.chatScroll.scrollHeight : oldTop;
 }
 
 function renderMessageHtml(msg) {
+  const documents = (msg.attachments || []).map((doc) => `<button class="attachment-chip" data-message-source="${escapeHtml(doc.id)}">▤ ${escapeHtml(doc.name)}</button>`).join("");
+  const disabled = appState.streaming ? "disabled" : "";
   if (msg.role === "user") {
-    return `<div class="msg user"><div class="bubble">${escapeHtml(msg.content)}</div></div>`;
+    return `<div class="msg user" data-message-id="${escapeHtml(msg.id)}">${documents ? `<div class="message-sources">${documents}</div>` : ""}<div class="bubble">${escapeHtml(msg.content)}</div><div class="message-actions"><button class="text-action" data-edit-message="${escapeHtml(msg.id)}" ${disabled}>Edit</button></div></div>`;
   }
   const thinkingHtml = msg.thinking
-    ? `<details class="thinking-box"><summary>Thought</summary><pre class="mono">${escapeHtml(msg.thinking)}</pre></details>`
-    : "";
+    ? `<details class="thinking-box" data-details-id="thinking-${escapeHtml(msg.id)}"><summary>Thinking</summary><pre class="mono">${escapeHtml(msg.thinking)}</pre></details>` : "";
   const toolsHtml = (msg.tool_calls || []).map(renderToolOrEditHtml).join("");
-  return `
-    <div class="msg assistant">
-      ${thinkingHtml}
-      ${toolsHtml}
-      <div class="bubble markdown-body">${renderMarkdown(msg.content)}</div>
-    </div>
-  `;
+  const lastUser = [...appState.session.messages].reverse().find((m) => m.role === "user");
+  const canRetry = msg === appState.session.messages[appState.session.messages.length - 1] && !(msg.tool_calls?.length) && lastUser;
+  return `<div class="msg assistant" data-message-id="${escapeHtml(msg.id)}">${thinkingHtml}${toolsHtml}<div class="bubble markdown-body">${renderMarkdown(msg.content)}</div>
+    ${msg.status === "failed" ? '<span class="reply-status">Reply interrupted · partial answer kept</span>' : ""}
+    <div class="message-actions"><button class="text-action" data-copy-message="${escapeHtml(msg.id)}">Copy</button>${canRetry ? `<button class="text-action" data-retry-message="${escapeHtml(lastUser.id)}" ${disabled}>Try again</button>` : ""}</div></div>`;
 }
 
 function handleAgentEvent(ev) {
@@ -607,7 +705,7 @@ function handleAgentEvent(ev) {
     els.telemetryLeft.textContent = `${ev.prompt_tokens} prompt · ${ev.completion_tokens} completion · ${ev.tokens_per_sec.toFixed(1)} tok/s`;
   }
   renderChat();
-  if (appState.viewerOpen) {
+  if (appState.viewerOpen && ["staged_edit_added", "turn_finished"].includes(ev.type)) {
     renderViewerPane();
   }
 }
@@ -618,7 +716,7 @@ function renderApprovalCard(req) {
       <div><strong>Approval required:</strong> ${escapeHtml(req.summary)}</div>
       <div class="approval-actions">
         <button id="appr-once" class="btn btn-primary btn-sm">Allow once</button>
-        <button id="appr-always" class="btn btn-sm">Always allow</button>
+        <button id="appr-always" class="btn btn-sm">Allow for this thread</button>
         <button id="appr-deny" class="btn btn-rust btn-sm">Deny</button>
       </div>
     </div>
@@ -634,7 +732,7 @@ function renderApprovalCard(req) {
 
 async function sendCurrentPrompt() {
   if (appState.streaming || !appState.session) return;
-  const prompt = els.promptInput.value.trim();
+  const prompt = els.promptInput.value.trim() || (appState.pendingDocuments.length ? "Summarize the attached documents and highlight the key points." : "");
   if (!prompt) return;
   const blocked = promptBlockReason(appState.session, appState.bootstrap.runtime,
     appState.workspacePath, appState.bootstrap.config.harness_mode);
@@ -644,12 +742,17 @@ async function sendCurrentPrompt() {
   }
   els.approvalSlot.innerHTML = "";
 
+  const documents = appState.pendingDocuments;
+  appState.pendingDocuments = [];
   els.promptInput.value = "";
+  saveDraft();
+  renderAttachmentChips();
   autoSizePromptInput();
   appState.session.messages.push({
     id: `local-${Date.now()}`,
     role: "user",
     content: prompt,
+    attachments: documents,
     thinking: null,
     tool_calls: [],
     created_at: Math.floor(Date.now() / 1000),
@@ -669,6 +772,8 @@ async function sendCurrentPrompt() {
         session_id: appState.session.id,
         prompt,
         enable_thinking: els.thinkingToggle.checked,
+        attachments: documents,
+        selected_file: modeForPreset(appState.session.app_preset) !== "chat" && appState.viewerOpen ? appState.viewerFile : null,
         workspace_path: appState.workspacePath,
       },
     });
@@ -679,6 +784,9 @@ async function sendCurrentPrompt() {
       appState.viewerFile = latest.path;
     }
   } catch (err) {
+    els.promptInput.value = prompt;
+    appState.pendingDocuments = documents;
+    saveDraft(); renderAttachmentChips();
     appState.session.messages.push({
       id: `err-${Date.now()}`,
       role: "assistant",
@@ -803,6 +911,7 @@ function renderModelsWorkspace() {
 
   els.viewModels.innerHTML = `
     <div class="models-main-col">
+      <div class="model-setup-row"><div><strong>Start with a local assistant</strong><p class="muted">Recommended model, verified downloads, and the model runner in one setup.</p></div><button id="models-setup-btn" class="btn btn-primary btn-sm">Guided setup</button></div>
       <div class="models-search-bar">
         <input id="models-search-in" class="input grow" value="${escapeHtml(appState.modelSearchQuery)}" placeholder="Search local & catalog GGUF models..." />
         <div class="models-filter-pills">
@@ -866,6 +975,7 @@ function renderModelsWorkspace() {
     </aside>
   `;
 
+  document.getElementById("models-setup-btn").onclick = everyday.setup;
   const searchIn = document.getElementById("models-search-in");
   searchIn.oninput = () => {
     appState.modelSearchQuery = searchIn.value;
@@ -1018,15 +1128,19 @@ function renderConnectorsWorkspace() {
   });
 }
 
+let modalReturnFocus;
 function openModal(title, builder) {
+  modalReturnFocus = document.activeElement;
   els.modalTitle.textContent = title;
   els.modalBody.innerHTML = "";
   builder(els.modalBody);
   els.modalBackdrop.classList.remove("hidden");
+  els.modalBody.querySelector("input, textarea, select, button")?.focus();
 }
 
 function closeModal() {
   els.modalBackdrop.classList.add("hidden");
+  if (modalReturnFocus?.isConnected) modalReturnFocus.focus();
 }
 
 function openDiffsModal() {
@@ -1248,6 +1362,31 @@ function wireUi() {
   };
   els.newChatBtn.onclick = () => createNewSession(MODES[appState.activeView]?.preset || "chat");
   els.newAgentBtn.onclick = els.newChatBtn.onclick;
+  document.getElementById("thread-settings-btn").onclick = everyday.threadSettings;
+  document.getElementById("new-project-btn").onclick = () => everyday.editProject();
+  document.getElementById("memory-btn").onclick = () => everyday.preferences();
+  let searchTimer;
+  document.getElementById("thread-search").oninput = (event) => { clearTimeout(searchTimer); searchTimer = setTimeout(() => everyday.search(event.target.value), 200); };
+  document.getElementById("attach-docs-btn").onclick = async () => {
+    if (appState.streaming) return;
+    const documents = await invoke("pick_documents");
+    if (appState.pendingDocuments.length + documents.length > 8) { showToast("Attach up to 8 documents per message."); return; }
+    appState.pendingDocuments.push(...documents); saveDraft(); renderAttachmentChips();
+  };
+  document.addEventListener("click", (event) => {
+    const link = event.target.closest("[data-external-link]");
+    if (link) { event.preventDefault(); invoke("open_external_link", { url: link.dataset.externalLink }).catch((error) => showToast(String(error))); }
+  });
+  document.addEventListener("keydown", (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); document.getElementById("thread-search").focus(); }
+    if (event.key === "Escape") closeModal();
+    if (event.key === "Tab" && !els.modalBackdrop.classList.contains("hidden")) {
+      const focusable = [...els.modalBackdrop.querySelectorAll("button, input, textarea, select, a[href]")].filter((el) => !el.disabled && el.getClientRects().length);
+      const first = focusable[0], last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    }
+  });
 
   document.querySelectorAll(".mode-nav-item").forEach((btn) => {
     btn.onclick = () => setActiveView(btn.getAttribute("data-view"));
@@ -1266,14 +1405,28 @@ function wireUi() {
   els.diffsPillBtn.onclick = openDiffsModal;
   document.getElementById("modal-close-btn").onclick = closeModal;
 
-  els.welcomeNextBtn.onclick = () => {
-    els.welcomeStep1.classList.add("hidden");
-    els.welcomeStep2.classList.remove("hidden");
-  };
+  els.welcomeNextBtn.onclick = () => { dismissWelcome(); everyday.setup(); };
   els.welcomeSkipBtn.onclick = dismissWelcome;
   els.welcomeDoneBtn.onclick = dismissWelcome;
 
   els.chatScroll.addEventListener("click", async (e) => {
+    const copyCode = e.target.closest("[data-copy-code]");
+    if (copyCode) { await navigator.clipboard.writeText(copyCode.closest(".code-block").querySelector("code").textContent); copyCode.textContent = "Copied"; return; }
+    const copyMessage = e.target.closest("[data-copy-message]");
+    if (copyMessage) { const msg = appState.session.messages.find((m) => m.id === copyMessage.dataset.copyMessage); await navigator.clipboard.writeText(msg.content); copyMessage.textContent = "Copied"; return; }
+    const source = e.target.closest("[data-message-source]");
+    if (source) { const doc = appState.session.messages.flatMap((m) => m.attachments || []).find((d) => d.id === source.dataset.messageSource); if (doc) everyday.previewSource(doc); return; }
+    const editMessage = e.target.closest("[data-edit-message], [data-retry-message]");
+    if (editMessage && !appState.streaming) {
+      const id = editMessage.dataset.editMessage || editMessage.dataset.retryMessage;
+      const message = appState.session.messages.find((m) => m.id === id);
+      const fork = await invoke("fork_thread", { id: appState.session.id, beforeMessageId: id });
+      await refreshBootstrap(); await loadSession(fork.id);
+      els.promptInput.value = message.content; appState.pendingDocuments = message.attachments || []; saveDraft(); renderAttachmentChips(); autoSizePromptInput();
+      showToast("Editing a copy. Your original conversation is kept.");
+      if (editMessage.dataset.retryMessage) await sendCurrentPrompt(); else els.promptInput.focus();
+      return;
+    }
     const approveBtn = e.target.closest("[data-edit-approve]");
     const rejectBtn = e.target.closest("[data-edit-reject]");
     if (!approveBtn && !rejectBtn) return;
@@ -1350,7 +1503,7 @@ function wireUi() {
 
   els.sendBtn.onclick = sendCurrentPrompt;
   els.stopBtn.onclick = () => invoke("stop_generation");
-  els.promptInput.addEventListener("input", autoSizePromptInput);
+  els.promptInput.addEventListener("input", () => { autoSizePromptInput(); saveDraft(); });
   els.promptInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -1365,5 +1518,6 @@ window.addEventListener("unhandledrejection", (event) => {
 });
 
 init().catch((err) => {
+  window.__KEEL_STARTUP_ERROR__ = String(err);
   els.chatScroll.innerHTML = `<div class="empty-state"><h1>Keel Desktop</h1><p>${escapeHtml(String(err))}</p></div>`;
 });

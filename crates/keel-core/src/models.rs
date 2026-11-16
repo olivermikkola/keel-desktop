@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CatalogModel {
@@ -274,16 +274,67 @@ where
 
     let part_path = dest_path.with_extension("gguf.part");
     let client = reqwest::Client::builder()
-        .user_agent("keel-desktop/0.1")
+        .user_agent(format!("keel-desktop/{}", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .read_timeout(std::time::Duration::from_secs(120))
+        .timeout(std::time::Duration::from_secs(3600))
         .build()?;
-    let resp = client.get(url).send().await?.error_for_status()?;
-    let total = resp.content_length();
-
-    let mut file = fs::File::create(&part_path).await?;
+    // Only immutable, checksummed downloads may resume a partial file.
+    let partial = if expected_sha256.is_some() {
+        fs::metadata(&part_path).await.map(|m| m.len()).unwrap_or(0)
+    } else {
+        0
+    };
+    let mut request = client.get(url);
+    if partial > 0 {
+        request = request.header(reqwest::header::RANGE, format!("bytes={partial}-"));
+    }
+    let mut resp = request.send().await?;
+    if resp.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+        resp = client.get(url).send().await?;
+    }
+    let resp = resp.error_for_status()?;
+    let resume = partial > 0 && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+    if resume {
+        let range = resp
+            .headers()
+            .get(reqwest::header::CONTENT_RANGE)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("");
+        if !range.starts_with(&format!("bytes {partial}-")) {
+            bail!("Download server returned an unexpected resume range; try again");
+        }
+    }
+    let mut downloaded = if resume { partial } else { 0 };
+    let total = resp.content_length().map(|length| length + downloaded);
     let mut hasher = Sha256::new();
-    let mut downloaded: u64 = 0;
+    if resume {
+        let mut previous = fs::File::open(&part_path).await?;
+        let mut buffer = vec![0u8; 1024 * 1024];
+        loop {
+            let n = previous.read(&mut buffer).await?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buffer[..n]);
+        }
+    }
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(resume)
+        .truncate(!resume)
+        .open(&part_path)
+        .await?;
     let mut stream = resp.bytes_stream();
-    let mut last_reported: u64 = 0;
+    let mut last_reported = downloaded;
+    on_progress(DownloadProgress {
+        model_id: model_id.to_string(),
+        downloaded_bytes: downloaded,
+        total_bytes: total,
+        done: false,
+        error: None,
+    });
 
     while let Some(chunk) = stream.next().await {
         let bytes = chunk?;
