@@ -1,0 +1,41 @@
+{
+  "version": "b12428",
+  "assets": {
+    "macos-aarch64": {
+      "name": "llama-b12428-bin-macos-arm64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12428/llama-b12428-bin-macos-arm64.tar.gz",
+      "sha256": "7d72477a2a375cc1d93e308b34e26fb9a608c2f93750517d2bafc59af578d3e2",
+      "bytes": 17004150
+    },
+    "macos-x86_64": {
+      "name": "llama-b12428-bin-macos-x64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12428/llama-b12428-bin-macos-x64.tar.gz",
+      "sha256": "27e4277bdbabcc9a4925cac77d99cd792abe0600c71bc33f265c43b8ea379d87",
+      "bytes": 12760709
+    },
+    "linux-aarch64": {
+      "name": "llama-b12428-bin-ubuntu-arm64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12428/llama-b12428-bin-ubuntu-arm64.tar.gz",
+      "sha256": "68fdee3e3086de8d1b6b3ef3bb791ff03ec4a6f2a8e7e199130fb70167d33d6d",
+      "bytes": 19090408
+    },
+    "linux-x86_64": {
+      "name": "llama-b12428-bin-ubuntu-x64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12428/llama-b12428-bin-ubuntu-x64.tar.gz",
+      "sha256": "a9b243a3bc4ca172010e96c64062fc02afd1dc4f8b699716f813ae6845ada4c6",
+      "bytes": 23457554
+    },
+    "windows-aarch64": {
+      "name": "llama-b12428-bin-win-cpu-arm64.zip",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12428/llama-b12428-bin-win-cpu-arm64.zip",
+      "sha256": "ea2770a224400f69842135710a1c110d65bbfb7cd94584fdfd2f4caadb2b1c66",
+      "bytes": 13553634
+    },
+    "windows-x86_64": {
+      "name": "llama-b12428-bin-win-cpu-x64.zip",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12428/llama-b12428-bin-win-cpu-x64.zip",
+      "sha256": "4ebc7fb961cf707e3b61396806e62c9e4065e42990cfc31f238eb48264a465b2",
+      "bytes": 25212756
+    }
+  }
+}

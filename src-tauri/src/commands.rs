@@ -1,6 +1,5 @@
 use keel_core::agent::{run_agent_turn, AgentEvent, ApprovalDecision, TurnParams};
 use keel_core::apps::{AppPreset, AppPresetInfo};
-use keel_core::compaction::ChatTurnMessage;
 use keel_core::harnesses::{detect_harnesses, run_external_harness, HarnessOption};
 use keel_core::mcp::{
     inspect_mcp_servers, load_mcp_configs, save_global_mcp_config, McpConfigFile, McpServerConfig,
@@ -29,12 +28,13 @@ use tokio::task::AbortHandle;
 
 pub struct AppState {
     pub images: keel_core::images::ImageService,
+    pub turn_lock: Arc<Mutex<()>>,
     pub config_dir: PathBuf,
     pub data_dir: PathBuf,
     pub config: Arc<Mutex<DesktopConfig>>,
     pub runtime: Arc<Mutex<RuntimeManager>>,
     pub approvals: Arc<Mutex<HashMap<String, oneshot::Sender<ApprovalDecision>>>>,
-    pub always_allowed: Arc<Mutex<HashSet<String>>>,
+    pub always_allowed: Arc<Mutex<HashMap<String, HashSet<String>>>>,
     pub active_abort: Arc<Mutex<Option<AbortHandle>>>,
 }
 
@@ -45,6 +45,7 @@ pub struct BootstrapState {
     pub models: Vec<CatalogModel>,
     pub runtime: RuntimeStatus,
     pub sessions: Vec<SessionSummary>,
+    pub projects: Vec<keel_core::projects::ProjectInfo>,
     pub presets: Vec<AppPresetInfo>,
     pub harnesses: Vec<HarnessOption>,
     pub mcp_servers: Vec<McpServerStatus>,
@@ -78,6 +79,7 @@ pub async fn get_bootstrap_state(
         models,
         runtime,
         sessions,
+        projects: keel_core::projects::project_info(&state.data_dir),
         presets,
         harnesses,
         mcp_servers,
@@ -206,10 +208,16 @@ pub async fn create_session(
     state: State<'_, AppState>,
     preset: AppPreset,
     workspace_path: Option<String>,
+    project_id: Option<String>,
 ) -> Result<ChatSession, String> {
+    if let Some(id) = &project_id {
+        keel_core::projects::load_project(&state.data_dir, id).map_err(|e| e.to_string())?;
+    }
     let session = ChatSession {
         id: uuid::Uuid::new_v4().to_string(),
         title: format!("New {} thread", preset.title()),
+        project_id,
+        pinned: false,
         app_preset: preset,
         workspace_path,
         messages: Vec::new(),
@@ -233,6 +241,10 @@ pub async fn delete_session_cmd(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<Vec<SessionSummary>, String> {
+    let _guard = state
+        .turn_lock
+        .try_lock()
+        .map_err(|_| "Wait for the current reply to finish before changing this thread")?;
     delete_session(&state.data_dir, &id).map_err(|e| e.to_string())?;
     Ok(list_sessions(&state.data_dir))
 }
@@ -252,12 +264,16 @@ pub async fn start_model(
         .local_path
         .ok_or_else(|| format!("Model `{}` is not installed yet", model.name))?;
 
+    if cfg.llama_server_path.is_none() {
+        cfg.llama_server_path = keel_core::setup::installed_runtime(&state.data_dir)
+            .map(|p| p.to_string_lossy().into_owned());
+    }
     let mut rt = state.runtime.lock().await;
     let status = rt
         .start_model(
             &model.id,
             Path::new(&path_str),
-            model.context_size,
+            model.context_size.min(8192),
             cfg.llama_server_path.as_deref(),
         )
         .await
@@ -380,6 +396,10 @@ pub struct SendMessageInput {
     pub session_id: String,
     pub prompt: String,
     pub enable_thinking: bool,
+    #[serde(default)]
+    pub attachments: Vec<keel_core::documents::Document>,
+    #[serde(default)]
+    pub selected_file: Option<String>,
     pub workspace_path: Option<String>,
 }
 
@@ -389,22 +409,46 @@ pub async fn send_message(
     state: State<'_, AppState>,
     input: SendMessageInput,
 ) -> Result<ChatSession, String> {
+    let _turn_guard = state
+        .turn_lock
+        .try_lock()
+        .map_err(|_| "A reply is already running. Stop it or wait for it to finish.")?;
     let mut session =
         load_session(&state.data_dir, &input.session_id).map_err(|e| e.to_string())?;
     if input.workspace_path.is_some() {
         session.workspace_path = input.workspace_path.clone();
     }
 
+    if input.attachments.len() > 8
+        || input
+            .attachments
+            .iter()
+            .any(|d| d.text.chars().count() > keel_core::documents::MAX_TEXT_CHARS)
+    {
+        return Err("Attach up to 8 documents per message".into());
+    }
+    if input.prompt.chars().count() > 20000 {
+        return Err("This message is too long. Attach the text as a document instead, or keep the message under 20,000 characters.".into());
+    }
     if input.prompt.trim().is_empty() {
         return Err("Write a message first".to_string());
     }
-    let cfg = state.config.lock().await.clone();
+    let cfg = {
+        let mut cfg = state.config.lock().await;
+        if keel_core::context::remember_requested(&mut cfg, &input.prompt)
+            .map_err(|e| e.to_string())?
+        {
+            save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
+            let _ = app.emit("keel://preference-saved", cfg.personal_context.clone());
+        }
+        cfg.clone()
+    };
     let rt_status = state.runtime.lock().await.status();
     let use_external_harness = cfg.harness_mode != "keel" && session.app_preset == AppPreset::Code;
     if session.app_preset != AppPreset::Chat && session.workspace_path.is_none() {
         return Err("Choose a workspace folder for Work or Code first".to_string());
     }
-    if !use_external_harness && rt_status.state == "stopped" {
+    if !use_external_harness && !matches!(rt_status.state.as_str(), "running" | "external") {
         return Err(
             "Load a model in Models, or connect an existing model server first".to_string(),
         );
@@ -421,6 +465,8 @@ pub async fn send_message(
         content: input.prompt.clone(),
         thinking: None,
         tool_calls: Vec::new(),
+        attachments: input.attachments.clone(),
+        status: "complete".into(),
     });
     session.updated_at = now_epoch();
     save_session(&state.data_dir, &session).map_err(|e| e.to_string())?;
@@ -450,6 +496,8 @@ pub async fn send_message(
             content: text.clone(),
             thinking: None,
             tool_calls: Vec::new(),
+            attachments: Vec::new(),
+            status: "complete".into(),
         });
         session.updated_at = now_epoch();
         save_session(&state.data_dir, &session).map_err(|e| e.to_string())?;
@@ -476,7 +524,7 @@ pub async fn send_message(
     let context_size = catalog
         .iter()
         .find(|m| m.id == cfg.selected_model_id)
-        .map(|m| m.context_size as usize)
+        .map(|m| m.context_size.min(8192) as usize)
         .unwrap_or(8192);
 
     let ws_path = if session.app_preset == AppPreset::Chat {
@@ -492,27 +540,42 @@ pub async fn send_message(
     };
     let mcp_tools: Vec<McpToolInfo> = mcp_statuses.into_iter().flat_map(|s| s.tools).collect();
 
-    let history: Vec<ChatTurnMessage> = session
-        .messages
-        .iter()
-        .map(|m| ChatTurnMessage {
-            role: m.role.clone(),
-            content: m.content.clone(),
-            tool_call_id: None,
-            tool_calls: None,
-        })
-        .collect();
+    let project = session
+        .project_id
+        .as_deref()
+        .map(|id| keel_core::projects::load_project(&state.data_dir, id))
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    let history =
+        keel_core::context::history_for_turn(&session, &cfg, project.as_ref(), context_size);
 
-    let mut allowed = state.always_allowed.lock().await.clone();
+    let allowance_key = format!(
+        "{}:{}",
+        session.id,
+        session.workspace_path.as_deref().unwrap_or("")
+    );
+    let mut allowed = state
+        .always_allowed
+        .lock()
+        .await
+        .get(&allowance_key)
+        .cloned()
+        .unwrap_or_default();
     let approvals_map = Arc::clone(&state.approvals);
     let app_for_emit = app.clone();
+    let app_for_approval = app.clone();
 
+    let mut custom_instructions = keel_core::context::instructions(&cfg, project.as_ref());
+    if let (Some(file), Some(root)) = (&input.selected_file, &ws_path) {
+        keel_core::tools::confine_path(root, file).map_err(|e| e.to_string())?;
+        custom_instructions.push_str(&format!("\n\nThe user currently has `{file}` selected in the workspace inspector. Use it as context when the request refers to this file, and inspect it before editing."));
+    }
     let params = TurnParams {
         base_url,
         model_name,
         context_size,
         app_preset: session.app_preset,
-        custom_instructions: cfg.custom_instructions.clone(),
+        custom_instructions,
         workspace_root: ws_path,
         auto_apply_edits: cfg.auto_apply_edits,
         enable_thinking: input.enable_thinking,
@@ -522,24 +585,49 @@ pub async fn send_message(
         max_steps: 12,
     };
 
+    let mut recorder = keel_core::recording::TurnRecorder::new(&state.data_dir, session.clone())
+        .map_err(|e| e.to_string())?;
+    let mut recording_error: Option<String> = None;
+
     let handle = tokio::spawn(async move {
         let res = run_agent_turn(
             params,
             &mut allowed,
             |ev| {
-                let _ = app_for_emit.emit("keel://agent-event", ev);
+                if let Err(error) = recorder.record(&ev) {
+                    recording_error = Some(error.to_string());
+                }
+                if !matches!(ev, AgentEvent::ApprovalRequired { .. }) {
+                    let _ = app_for_emit.emit("keel://agent-event", ev);
+                }
             },
-            |req_id, _tool, _summary, _args| {
+            |req_id, tool, summary, arguments| {
+                let app = app_for_approval.clone();
                 let map = Arc::clone(&approvals_map);
                 async move {
                     let (tx, rx) = oneshot::channel();
-                    map.lock().await.insert(req_id, tx);
+                    map.lock().await.insert(req_id.clone(), tx);
+                    let _ = app.emit(
+                        "keel://agent-event",
+                        AgentEvent::ApprovalRequired {
+                            id: req_id,
+                            tool,
+                            summary,
+                            arguments,
+                        },
+                    );
                     rx.await.unwrap_or(ApprovalDecision::Deny)
                 }
             },
         )
         .await;
-        (res, allowed)
+        if let Err(error) = &res {
+            let _ = recorder.fail(&format!("Could not finish this reply: {error}"));
+        }
+        if let Some(error) = recording_error {
+            let _ = recorder.fail(&format!("Could not save part of this reply: {error}"));
+        }
+        (res, allowed, recorder.session)
     });
 
     {
@@ -553,25 +641,31 @@ pub async fn send_message(
         *abort_slot = None;
     }
 
-    let (turn_res, updated_allowed) = match join_res {
-        Ok(pair) => pair,
-        Err(e) if e.is_cancelled() => {
-            return Err("Generation stopped.".to_string());
+    let (_turn_res, updated_allowed, recorded_session) = match join_res {
+        Ok(result) => result,
+        Err(error) => {
+            let mut restored =
+                load_session(&state.data_dir, &input.session_id).map_err(|e| e.to_string())?;
+            if let Some(message) = restored.messages.last_mut() {
+                message.status = "failed".into();
+                message.content.push_str(if error.is_cancelled() {
+                    "\n\nReply stopped. Your partial answer and proposed edits have been kept."
+                } else {
+                    "\n\nThis reply was interrupted. You can try again."
+                });
+            }
+            save_session(&state.data_dir, &restored).map_err(|e| e.to_string())?;
+            state.approvals.lock().await.clear();
+            return Ok(restored);
         }
-        Err(e) => return Err(e.to_string()),
     };
-
-    *state.always_allowed.lock().await = updated_allowed;
-
-    let outcome = turn_res.map_err(|e| e.to_string())?;
-    session.staged_edits.extend(outcome.staged_edits);
-    session.messages.push(UiMessage {
-        id: uuid::Uuid::new_v4().to_string(),
-        role: "assistant".to_string(),
-        content: outcome.content,
-        thinking: outcome.thinking,
-        tool_calls: outcome.tool_logs,
-    });
+    state
+        .always_allowed
+        .lock()
+        .await
+        .insert(allowance_key, updated_allowed);
+    state.approvals.lock().await.clear();
+    session = recorded_session;
     session.updated_at = now_epoch();
     save_session(&state.data_dir, &session).map_err(|e| e.to_string())?;
 
@@ -608,6 +702,10 @@ pub async fn apply_staged_edit_cmd(
     session_id: String,
     edit_id: String,
 ) -> Result<ChatSession, String> {
+    let _guard = state
+        .turn_lock
+        .try_lock()
+        .map_err(|_| "Wait for the current reply to finish before changing this thread")?;
     let mut session = load_session(&state.data_dir, &session_id).map_err(|e| e.to_string())?;
     let ws = session
         .workspace_path
@@ -633,6 +731,10 @@ pub async fn discard_staged_edit_cmd(
     session_id: String,
     edit_id: String,
 ) -> Result<ChatSession, String> {
+    let _guard = state
+        .turn_lock
+        .try_lock()
+        .map_err(|_| "Wait for the current reply to finish before changing this thread")?;
     let mut session = load_session(&state.data_dir, &session_id).map_err(|e| e.to_string())?;
     let edit = session
         .staged_edits
@@ -650,6 +752,10 @@ pub async fn apply_all_staged_edits(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<ChatSession, String> {
+    let _guard = state
+        .turn_lock
+        .try_lock()
+        .map_err(|_| "Wait for the current reply to finish before changing this thread")?;
     let mut session = load_session(&state.data_dir, &session_id).map_err(|e| e.to_string())?;
     let ws = session
         .workspace_path
@@ -806,4 +912,9 @@ pub async fn read_workspace_png(
 ) -> Result<String, String> {
     keel_core::images::read_workspace_png(Path::new(&workspace_path), &rel_path)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_runtime_status(state: State<'_, AppState>) -> Result<RuntimeStatus, String> {
+    Ok(state.runtime.lock().await.status())
 }

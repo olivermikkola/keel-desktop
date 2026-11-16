@@ -584,7 +584,7 @@ pub fn openai_tool_schemas(
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read a workspace file with line numbers.",
+                "description": "Read a workspace file with line numbers. Use a relative path such as src/app.js, never an absolute path.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -674,7 +674,7 @@ pub fn openai_tool_schemas(
             "type": "function",
             "function": {
                 "name": "run_sql",
-                "description": "Run a SQLite query in an isolated in-memory database with workspace CSV files auto-mounted as tables.",
+                "description": "Query workspace CSVs with SQLite. Quote filenames: SELECT SUM(revenue) FROM \"sales.csv\". The bare stem sales also works. Use this for exact calculations.",
                 "parameters": {
                     "type": "object",
                     "properties": {

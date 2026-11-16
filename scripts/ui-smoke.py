@@ -10,7 +10,7 @@ OUTPUT.mkdir(parents=True, exist_ok=True)
 PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j5uoAAAAASUVORK5CYII='
 MOCK = r'''(() => {
 localStorage.setItem('keel_welcome_done', '1');
-const listeners = {}, sessions = [], jobs = [];
+const listeners = {}, sessions = [], jobs = [], projects = [];
 let cfg = {selected_model_id:'test',external_base_url:null,external_model_name:null,image_endpoint:null,recent_workspaces:[],harness_mode:'keel', custom_model_paths:{}};
 let runtime = {state:'stopped',active_model_id:null,base_url:'http://127.0.0.1:18180/v1'};
 const presets = ['chat','general','code','websites','docs','sheets','study','slides'].map(id => ({id,title:({chat:'Chat',general:'Work',code:'Code'})[id] || id[0].toUpperCase()+id.slice(1),summary:'A useful local workspace',starters:['Help me get started'],tools:[]}));
@@ -21,11 +21,22 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  window.__test.calls.push({cmd,args});
  let result;
  switch(cmd) {
- case 'get_bootstrap_state': result={version:'0.1.0',config:cfg, runtime,models:[{id:'test',name:'Test local model',installed:true,quantization:'Q4',bytes:1000000000,detail:'Fast local model',tier:'fast'}],sessions:sessions.map(s=>({...s})),presets,harnesses:[{id:'keel',name:'Keel Harness'}],mcp_servers:[]};break;
- case 'create_session': result={id:crypto.randomUUID(),title:'New '+args.preset+' chat',app_preset:args.preset,workspace_path:args.workspacePath,messages:[],staged_edits:[],updated_at:Date.now()/1000};sessions.unshift(result);break;
+ case 'get_bootstrap_state': result={version:'0.1.0',config:cfg, runtime,models:[{id:'test',name:'Test local model',installed:true,quantization:'Q4',bytes:1000000000,detail:'Fast local model',tier:'fast'}],sessions:sessions.map(s=>({...s})),projects,presets,harnesses:[{id:'keel',name:'Keel Harness'}],mcp_servers:[]};break;
+ case 'create_session': result={id:crypto.randomUUID(),title:'New '+args.preset+' chat',app_preset:args.preset,workspace_path:args.workspacePath,project_id:args.projectId || null,pinned:false,messages:[],staged_edits:[],updated_at:Date.now()/1000};sessions.unshift(result);break;
  case 'load_session_cmd':result=sessions.find(s=>s.id===args.id);break;
  case 'list_workspace_files_cmd':result=files;break;
  case 'list_image_jobs':result=jobs;break;
+ case 'get_runtime_status':result=runtime;break;
+ case 'pick_documents':result=[{id:crypto.randomUUID(),name:'brief.txt',kind:'txt',text:'Project Harbor budget is 4800 euros.',truncated:false}];break;
+ case 'save_personal_context':cfg.personal_context=args.text;result=null;break;
+ case 'save_project':{const old=projects.findIndex(p=>p.id===args.project.id);if(old>=0)projects[old]=args.project;else projects.push(args.project);result=projects;break;}
+ case 'get_project':result=projects.find(p=>p.id===args.id);break;
+ case 'search_threads':result=sessions.filter(s=>(!args.projectId||s.project_id===args.projectId)&&(s.title+' '+s.messages.map(m=>m.content).join(' ')).toLowerCase().includes(args.query.toLowerCase()));break;
+ case 'update_thread':{const thread=sessions.find(s=>s.id===args.id);Object.assign(thread,{title:args.title,pinned:args.pinned,project_id:args.projectId});result=thread;break;}
+ case 'fork_thread':{const previous=sessions.find(s=>s.id===args.id);const index=previous.messages.findIndex(m=>m.id===args.beforeMessageId);result={...structuredClone(previous),id:crypto.randomUUID(),messages:previous.messages.slice(0,index),staged_edits:[]};sessions.unshift(result);break;}
+ case 'list_library':result=files.map(path=>({id:path,name:path,path,kind:path.split('.').pop(),workspace_path:'/test/project',project_id:projects[0]?.id || null,updated_at:Date.now()/1000}));break;
+ case 'get_setup_plan':result={memory_bytes:17179869184,runtime_path:null,runtime_asset:{bytes:20000000},recommended_model:{id:'test',name:'Recommended model',detail:'A balanced local assistant',bytes:1000000000}};break;
+ case 'setup_local_ai':runtime={...runtime,state:'running',active_model_id:'test'};result=runtime;break;
  case 'pick_workspace_folder':result='/test/project';break;
  case 'set_workspace_folder':cfg.recent_workspaces=['/test/project'];result='/test/project';break;
  case 'start_model':runtime={...runtime,state:'running',active_model_id:'test'};result=runtime;break;
@@ -35,7 +46,7 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  case 'read_workspace_file_raw':result=fileContent[args.relPath] || '# Local document';break;
  case 'send_message': {
  const s=sessions.find(s=>s.id===args.input.session_id);
- s.messages.push({id:'u'+Date.now(),role:'user',content:args.input.prompt});
+ s.messages.push({id:'u'+Date.now(),role:'user',content:args.input.prompt,attachments:args.input.attachments || []});
  let tool_calls=[];
  if(s.app_preset!=='chat') {
  const edit={id:crypto.randomUUID(),path:'brief.md',summary:'Create brief.md',diff:'--- brief.md\n+++ brief.md\n+# Brief',added_lines:1,removed_lines:0,status:'pending'};
@@ -78,6 +89,36 @@ async def main(port):
         await page.get_by_text('Ready to help.',exact=True).wait_for()
         assert await page.locator('#viewer-pane').is_hidden()
         await page.screenshot(path=str(OUTPUT / 'chat.png'))
+        # Attach a source, inspect it, then save explicit cross-conversation preferences.
+        await page.locator('#attach-docs-btn').click()
+        await page.locator('[data-pending-source]').wait_for()
+        await page.locator('#prompt-input').fill('Summarize the attached brief')
+        await page.locator('#send-btn').click()
+        await page.locator('[data-message-source]').wait_for()
+        await page.locator('[data-message-source]').click()
+        await page.locator('.document-text').get_by_text('Project Harbor budget is 4800 euros.',exact=True).wait_for()
+        await page.locator('#modal-close-btn').click()
+        await page.locator('#memory-btn').click()
+        await page.locator('#personal-context').fill('I am vegetarian and prefer concise answers.')
+        await page.locator('#memory-save').click()
+        await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='save_personal_context'&&c.args.text.includes('vegetarian'))")
+        # Project instructions and documents have a persistent, editable home.
+        await page.locator('#new-project-btn').click()
+        await page.locator('#project-name').fill('Harbor')
+        await page.locator('#project-instructions').fill('Write for local cafes.')
+        await page.locator('#project-add-docs').click()
+        await page.locator('#project-save').click()
+        await page.locator('[data-project]').filter(has_text='Harbor').wait_for()
+        await page.get_by_role('heading', name='Chat', exact=True).wait_for()
+        # Renaming/pinning keeps a thread manageable as history grows.
+        await page.locator('#thread-settings-btn').click()
+        await page.locator('#thread-title').fill('Harbor planning')
+        await page.locator('#thread-pinned').check()
+        await page.locator('#thread-save').click()
+        await page.locator('#thread-search').fill('Harbor')
+        await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='search_threads'&&c.args.query==='Harbor')")
+        await page.locator('#thread-search').fill('')
+
         await page.locator('[data-view=work]').click()
         await page.get_by_role('heading',name='Work',exact=True).wait_for()
         await page.locator('#workspace-pill-btn').click()
@@ -115,8 +156,19 @@ async def main(port):
         }''')
         assert result['seen']==['assets/a.png'],result
         assert 'data:image/png;base64,test' in result['html']
+
+        await page.locator('[data-view=library]').click()
+        await page.locator('.library-card').first.wait_for()
+        await page.screenshot(path=str(OUTPUT / 'library.png'))
+        await page.locator('[data-view=models]').click()
+        await page.locator('#models-setup-btn').click()
+        await page.locator('#setup-start').wait_for()
+        await page.screenshot(path=str(OUTPUT / 'setup.png'))
+        await page.locator('#setup-start').click()
+        await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='setup_local_ai')")
+        await page.locator('#modal-backdrop').wait_for(state='hidden')
         assert not errors,errors
-        print('PASS: Chat model preflight, load/status, conversation, Work folder + staged approval, Code tools/viewer, optional Images connect/generate/preview, safe HTML asset embedding; no browser errors.')
+        print('PASS: setup, attachments, source preview, saved preferences, projects, thread rename/pin/search, Chat/Work/Code, file approval, Library, Images, safe HTML previews; no browser errors.')
         await browser.close()
 
 if __name__ == '__main__':

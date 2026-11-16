@@ -1,11 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod productivity;
 
 use commands::AppState;
 use keel_core::runtime::RuntimeManager;
 use keel_core::sessions::{default_config_dir, default_data_dir, load_config};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::RunEvent;
 use tokio::sync::Mutex;
@@ -24,6 +25,9 @@ fn main() {
     let config_dir = default_config_dir();
     let data_dir = default_data_dir();
     let cfg = load_config(&config_dir);
+    if let Err(error) = keel_core::sessions::recover_interrupted(&data_dir) {
+        eprintln!("Could not recover interrupted conversations: {error}");
+    }
 
     let mut runtime = RuntimeManager::default();
     if let Some(ref url) = cfg.external_base_url {
@@ -35,19 +39,36 @@ fn main() {
     let state = AppState {
         images: keel_core::images::ImageService::new(&data_dir)
             .expect("failed to load image job history"),
+        turn_lock: Arc::new(Mutex::new(())),
         config_dir,
         data_dir,
         config: Arc::new(Mutex::new(cfg)),
         runtime: runtime_arc,
         approvals: Arc::new(Mutex::new(HashMap::new())),
-        always_allowed: Arc::new(Mutex::new(HashSet::new())),
+        always_allowed: Arc::new(Mutex::new(HashMap::new())),
         active_abort: Arc::new(Mutex::new(None)),
     };
 
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             commands::get_bootstrap_state,
+            productivity::pick_documents,
+            productivity::save_project,
+            productivity::get_project,
+            productivity::list_library,
+            productivity::delete_project,
+            productivity::search_threads,
+            productivity::update_thread,
+            productivity::fork_thread,
+            productivity::restore_thread,
+            productivity::save_personal_context,
+            productivity::export_thread,
+            productivity::open_external_link,
+            productivity::get_setup_plan,
+            productivity::setup_local_ai,
             commands::connect_image_server,
             commands::list_image_jobs,
             commands::start_image_job,
@@ -62,6 +83,7 @@ fn main() {
             commands::delete_session_cmd,
             commands::start_model,
             commands::stop_runtime,
+            commands::get_runtime_status,
             commands::set_external_endpoint,
             commands::download_catalog_model,
             commands::download_huggingface_gguf,

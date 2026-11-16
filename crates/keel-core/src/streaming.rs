@@ -1,0 +1,77 @@
+use anyhow::{bail, Context, Result};
+
+/// Keep UTF-8 bytes intact until an entire SSE data line is available.
+#[derive(Default)]
+pub struct SseLines {
+    pending: Vec<u8>,
+}
+impl SseLines {
+    pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<String>> {
+        self.pending.extend_from_slice(bytes);
+        if self.pending.len() > 2 * 1024 * 1024 {
+            bail!("Model server sent an oversized streaming event");
+        }
+        let mut result = Vec::new();
+        while let Some(index) = self.pending.iter().position(|&b| b == b'\n') {
+            let line: Vec<_> = self.pending.drain(..=index).collect();
+            let line = std::str::from_utf8(&line)
+                .context("Model server sent invalid UTF-8")?
+                .trim();
+            if let Some(data) = line.strip_prefix("data:") {
+                if !data.trim().is_empty() {
+                    result.push(data.trim().to_string());
+                }
+            }
+        }
+        Ok(result)
+    }
+    pub fn finish(&mut self) -> Result<Vec<String>> {
+        self.push(b"\n")
+    }
+}
+
+/// Tags can straddle arbitrary model-token boundaries. Tool JSON stays out of the reply.
+#[derive(Default)]
+pub struct TextRouter {
+    pending: String,
+    mode: u8,
+}
+impl TextRouter {
+    pub fn push(&mut self, text: &str) -> Vec<(bool, String)> {
+        const TAGS: [&str; 4] = ["<think>", "</think>", "<tool_call>", "</tool_call>"];
+        self.pending.push_str(text);
+        let mut result: Vec<(bool, String)> = Vec::new();
+        while !self.pending.is_empty() {
+            if let Some(tag) = TAGS.iter().find(|tag| self.pending.starts_with(**tag)) {
+                self.mode = match *tag {
+                    "<think>" => 1,
+                    "<tool_call>" => 2,
+                    _ => 0,
+                };
+                self.pending.drain(..tag.len());
+                continue;
+            }
+            if TAGS.iter().any(|tag| tag.starts_with(&self.pending)) {
+                break;
+            }
+            let character = self.pending.remove(0);
+            if self.mode == 2 {
+                continue;
+            }
+            let thinking = self.mode == 1;
+            if let Some(last) = result.last_mut().filter(|last| last.0 == thinking) {
+                last.1.push(character);
+            } else {
+                result.push((thinking, character.to_string()));
+            }
+        }
+        result
+    }
+    pub fn finish(&mut self) -> Vec<(bool, String)> {
+        if self.pending.is_empty() || self.mode == 2 {
+            self.pending.clear();
+            return vec![];
+        }
+        vec![(self.mode == 1, std::mem::take(&mut self.pending))]
+    }
+}

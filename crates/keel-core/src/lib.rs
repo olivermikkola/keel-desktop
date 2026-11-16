@@ -15,3 +15,11 @@ pub fn version() -> &'static str {
 }
 
 pub mod images;
+
+pub mod context;
+pub mod documents;
+pub mod projects;
+pub mod setup;
+
+pub mod recording;
+pub mod streaming;

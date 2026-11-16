@@ -32,11 +32,14 @@ pub fn compact_messages(
     budget_tokens: usize,
     keep_tail: usize,
 ) -> (Vec<ChatTurnMessage>, bool) {
-    if messages.len() <= keep_tail + 2 || estimate_tokens(&messages) <= budget_tokens {
+    if estimate_tokens(&messages) <= budget_tokens {
         return (messages, false);
     }
 
-    let split_idx = messages.len().saturating_sub(keep_tail);
+    let mut split_idx = messages.len().saturating_sub(keep_tail).max(1);
+    while split_idx > 1 && messages[split_idx].role != "user" {
+        split_idx -= 1;
+    }
     let head = &messages[..1];
     let middle = &messages[1..split_idx];
     let tail = &messages[split_idx..];
@@ -69,6 +72,40 @@ pub fn compact_messages(
     out.extend_from_slice(head);
     out.push(summary_msg);
     out.extend_from_slice(tail);
+    // Drop complete older turns when snippets plus the tail still exceed the budget.
+    while estimate_tokens(&out) > budget_tokens {
+        let latest_user = out.iter().rposition(|m| m.role == "user").unwrap_or(1);
+        if latest_user <= 1 {
+            break;
+        }
+        let end = if out[1].role == "system" {
+            2
+        } else {
+            out.iter()
+                .enumerate()
+                .skip(2)
+                .find(|(_, m)| m.role == "user")
+                .map(|(i, _)| i)
+                .unwrap_or(latest_user)
+        };
+        out.drain(1..end);
+    }
+    if estimate_tokens(&out) > budget_tokens {
+        let non_tool_cost = estimate_tokens(
+            &out.iter()
+                .filter(|m| m.role != "tool")
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
+        let tool_count = out.iter().filter(|m| m.role == "tool").count().max(1);
+        let each = (budget_tokens.saturating_sub(non_tool_cost + tool_count * 32) * 4 / tool_count)
+            .clamp(128, 8000);
+        for message in out.iter_mut().filter(|m| m.role == "tool") {
+            if message.content.chars().count() > each {
+                message.content = format!("{}\n[Tool output shortened to fit context. Read a smaller line range or query fewer rows for details.]",message.content.chars().take(each).collect::<String>());
+            }
+        }
+    }
     (out, true)
 }
 
@@ -94,10 +131,9 @@ mod tests {
         }
         let (compacted, did_compact) = compact_messages(msgs, 500, 4);
         assert!(did_compact);
-        assert_eq!(compacted.len(), 6);
+        assert!(estimate_tokens(&compacted) <= 500);
+        assert!(compacted.len() >= 5);
         assert_eq!(compacted[0].content, "You are Keel.");
-        assert!(compacted[1]
-            .content
-            .contains("Earlier conversation summary"));
+        assert_eq!(compacted.last().unwrap().content, "x".repeat(400));
     }
 }

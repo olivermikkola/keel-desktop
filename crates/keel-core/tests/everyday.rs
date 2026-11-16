@@ -1,0 +1,265 @@
+use keel_core::{
+    agent::AgentEvent,
+    apps::AppPreset,
+    documents::{self, Document},
+    projects::{self, Project},
+    recording::TurnRecorder,
+    sessions::{self, ChatSession, DesktopConfig, UiMessage},
+    streaming::{SseLines, TextRouter},
+};
+use std::io::Write;
+
+fn temp() -> std::path::PathBuf {
+    let root = std::env::temp_dir().join(format!("keel_everyday_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    root
+}
+fn empty_session() -> ChatSession {
+    ChatSession {
+        id: "test-session".into(),
+        title: "Test".into(),
+        project_id: None,
+        pinned: false,
+        app_preset: AppPreset::Chat,
+        workspace_path: None,
+        messages: vec![],
+        staged_edits: vec![],
+        updated_at: 0,
+    }
+}
+fn user(content: &str) -> UiMessage {
+    UiMessage {
+        id: "user".into(),
+        role: "user".into(),
+        content: content.into(),
+        thinking: None,
+        tool_calls: vec![],
+        attachments: vec![],
+        status: "complete".into(),
+    }
+}
+fn document(text: &str) -> Document {
+    Document {
+        id: "source".into(),
+        name: "brief.txt".into(),
+        kind: "txt".into(),
+        text: text.into(),
+        truncated: false,
+    }
+}
+
+#[test]
+fn documents_extract_text_docx_and_pdf_without_external_programs() {
+    let root = temp();
+    std::fs::write(root.join("notes.txt"), "Café budget: €4800").unwrap();
+    assert_eq!(
+        documents::import_document(&root.join("notes.txt"))
+            .unwrap()
+            .text,
+        "Café budget: €4800"
+    );
+    let file = std::fs::File::create(root.join("brief.docx")).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    zip.start_file(
+        "word/document.xml",
+        zip::write::SimpleFileOptions::default(),
+    )
+    .unwrap();
+    zip.write_all(b"<w:document xmlns:w=\"w\"><w:body><w:p><w:r><w:t>Project Harbor &amp; Co</w:t></w:r></w:p><w:p><w:r><w:t>Budget 4800</w:t></w:r></w:p></w:body></w:document>").unwrap();
+    zip.finish().unwrap();
+    let doc = documents::import_document(&root.join("brief.docx")).unwrap();
+    assert!(doc.text.contains("Harbor & Co\nBudget 4800"));
+    // Small, valid text PDF with a built-in Helvetica font.
+    let stream = "BT /F1 12 Tf 50 700 Td (Project Harbor budget 4800) Tj ET";
+    let objects = ["<< /Type /Catalog /Pages 2 0 R >>".to_string(), "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into(), "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>".into(), "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into(), format!("<< /Length {} >>\nstream\n{stream}\nendstream", stream.len())];
+    let mut pdf = "%PDF-1.4\n".to_string();
+    let mut offsets = vec![0];
+    for (index, object) in objects.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.push_str(&format!("{} 0 obj\n{}\nendobj\n", index + 1, object));
+    }
+    let xref = pdf.len();
+    pdf.push_str("xref\n0 6\n0000000000 65535 f \n");
+    for offset in offsets.iter().skip(1) {
+        pdf.push_str(&format!("{offset:010} 00000 n \n"));
+    }
+    pdf.push_str(&format!(
+        "trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF"
+    ));
+    std::fs::write(root.join("brief.pdf"), pdf).unwrap();
+    assert!(documents::import_document(&root.join("brief.pdf"))
+        .unwrap()
+        .text
+        .contains("Harbor budget 4800"));
+    std::fs::write(root.join("binary.txt"), [0xff, 0xfe, 0x00]).unwrap();
+    assert!(documents::import_document(&root.join("binary.txt")).is_err());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn project_and_attachment_context_survives_followups_without_leaking_other_projects() {
+    let root = temp();
+    let project = Project {
+        id: "harbor".into(),
+        name: "Harbor".into(),
+        instructions: "Write for local cafes".into(),
+        workspace_path: None,
+        documents: vec![document("The approved budget is 4800 euros.")],
+    };
+    projects::save_project(&root, &project).unwrap();
+    let mut session = empty_session();
+    session.project_id = Some(project.id.clone());
+    let mut message = user("What is the launch date?");
+    message.attachments = vec![Document {
+        id: "dates".into(),
+        name: "dates.txt".into(),
+        text: "Launch: 14 May 2027".into(),
+        ..document("")
+    }];
+    session.messages.push(message);
+    session.messages.push(UiMessage {
+        role: "assistant".into(),
+        content: "14 May".into(),
+        ..user("")
+    });
+    session.messages.push(UiMessage {
+        id: "followup".into(),
+        ..user("And the budget?")
+    });
+    let history = keel_core::context::history(&session, Some(&project), 8192);
+    let latest = &history.last().unwrap().content;
+    assert!(latest.contains("4800") && latest.contains("14 May") && latest.contains("brief.txt"));
+    let other = keel_core::context::history(&empty_session(), None, 8192);
+    assert!(other.is_empty());
+    let cfg = DesktopConfig {
+        personal_context: "I prefer vegetarian meals".into(),
+        ..Default::default()
+    };
+    assert!(keel_core::context::instructions(&cfg, Some(&project)).contains("vegetarian"));
+    assert!(keel_core::context::instructions(&cfg, Some(&project)).contains("local cafes"));
+    assert!(!keel_core::context::instructions(&cfg, None).contains("local cafes"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn excerpts_are_bounded_unicode_safe_and_find_relevant_later_sections() {
+    let text = format!(
+        "{}{}{}",
+        "irrelevant café ".repeat(200),
+        "Launch budget is 4800 euros. ".repeat(30),
+        "other material ".repeat(200)
+    );
+    let (snippet, partial) = documents::excerpt(&text, "What is the launch budget?", 2200);
+    assert!(partial && snippet.chars().count() <= 2200);
+    assert!(snippet.contains("4800"));
+}
+
+#[test]
+fn byte_streams_preserve_multilingual_text_and_split_reasoning_tags() {
+    let text = "data: {\"text\":\"Hyvää päivää ☕ 日本語\"}\r\n\r\ndata: [DONE]";
+    let mut decoder = SseLines::default();
+    let mut lines = vec![];
+    for byte in text.as_bytes() {
+        lines.extend(decoder.push(&[*byte]).unwrap());
+    }
+    lines.extend(decoder.finish().unwrap());
+    assert!(lines[0].contains("Hyvää päivää ☕ 日本語"));
+    assert_eq!(lines[1], "[DONE]");
+    let mut router = TextRouter::default();
+    let mut output = vec![];
+    for chunk in [
+        "Hi <thi",
+        "nk>quiet",
+        " thoughts</thi",
+        "nk> there <tool_",
+        "call>{\"secret\":1}</tool_call>",
+    ] {
+        output.extend(router.push(chunk));
+    }
+    output.extend(router.finish());
+    let visible: String = output
+        .iter()
+        .filter(|s| !s.0)
+        .map(|s| s.1.as_str())
+        .collect();
+    let thoughts: String = output
+        .iter()
+        .filter(|s| s.0)
+        .map(|s| s.1.as_str())
+        .collect();
+    assert_eq!(visible, "Hi  there ");
+    assert_eq!(thoughts, "quiet thoughts");
+}
+
+#[test]
+fn interrupted_turns_keep_partial_output_and_staged_edits() {
+    let root = temp();
+    let mut session = empty_session();
+    session.messages.push(user("Write a document"));
+    let mut recorder = TurnRecorder::new(&root, session).unwrap();
+    recorder
+        .record(&AgentEvent::ContentDelta {
+            text: "Here is a draft".into(),
+        })
+        .unwrap();
+    let workspace = root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let edit = keel_core::tools::build_staged_edit(
+        &workspace,
+        keel_core::tools::StagedEditKind::Create,
+        "brief.md",
+        None,
+        Some("# Brief"),
+        None,
+    )
+    .unwrap();
+    recorder
+        .record(&AgentEvent::StagedEditAdded { edit })
+        .unwrap();
+    drop(recorder); // A process exit loses in-memory state.
+    sessions::recover_interrupted(&root).unwrap();
+    let restored = sessions::load_session(&root, "test-session").unwrap();
+    assert_eq!(restored.messages.last().unwrap().status, "failed");
+    assert!(restored
+        .messages
+        .last()
+        .unwrap()
+        .content
+        .contains("Here is a draft"));
+    assert_eq!(restored.staged_edits.len(), 1);
+    assert!(!workspace.join("brief.md").exists());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn record_ids_cannot_escape_storage_and_legacy_messages_load() {
+    let root = temp();
+    assert!(sessions::load_session(&root, "../../secret").is_err());
+    assert!(projects::load_project(&root, "/secret").is_err());
+    let legacy = r#"{"id":"legacy","title":"Old conversation","app_preset":"general","workspace_path":null,"messages":[{"id":"m","role":"user","content":"Hello","thinking":null,"tool_calls":[]}],"staged_edits":[],"updated_at":1}"#;
+    let session: ChatSession = serde_json::from_str(legacy).unwrap();
+    assert!(session.project_id.is_none() && session.messages[0].attachments.is_empty());
+    assert_eq!(session.messages[0].status, "complete");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn durable_memory_requires_an_explicit_request_and_is_applied_to_followup_context() {
+    let mut config = DesktopConfig::default();
+    assert!(!keel_core::context::remember_requested(&mut config, "I am vegetarian").unwrap());
+    assert!(
+        keel_core::context::remember_requested(&mut config, "Remember that I am vegetarian")
+            .unwrap()
+    );
+    assert!(
+        !keel_core::context::remember_requested(&mut config, "Remember that I am vegetarian")
+            .unwrap()
+    );
+    let mut session = empty_session();
+    session.messages.push(user("Suggest lunch"));
+    let history = keel_core::context::history_for_turn(&session, &config, None, 8192);
+    assert!(
+        history[0].content.contains("I am vegetarian")
+            && history[0].content.contains("Suggest lunch")
+    );
+}
