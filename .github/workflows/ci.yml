@@ -59,7 +59,8 @@ jobs:
 
   browser-smoke:
     name: Frontend Mode & Image Flows
-    runs-on: ubuntu-latest
+    # Keep the browser runner on an OS supported by the pinned Playwright release.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
