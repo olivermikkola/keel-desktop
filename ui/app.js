@@ -345,6 +345,7 @@ async function init() {
   wireUi();
   await images.reload();
   renderAll();
+  window.__KEEL_READY__ = { preset: appState.session.app_preset };
   setInterval(async () => {
     if (!appState.bootstrap) return;
     try {
@@ -1517,5 +1518,6 @@ window.addEventListener("unhandledrejection", (event) => {
 });
 
 init().catch((err) => {
+  window.__KEEL_STARTUP_ERROR__ = String(err);
   els.chatScroll.innerHTML = `<div class="empty-state"><h1>Keel Desktop</h1><p>${escapeHtml(String(err))}</p></div>`;
 });

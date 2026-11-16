@@ -15,3 +15,8 @@ test("escapes arbitrary HTML and rejects executable link schemes", () => {
   assert.ok(result.includes('https://example.com/?a=1&amp;b=2'));
   assert.ok(result.includes('<code>**literal**</code>'));
 });
+
+test("CSV previews keep multiline quoted fields in the same row", async () => {
+  const { parseCsv } = await import("../markdown.js");
+  assert.deepEqual(parseCsv('name,note\nA,"first\nsecond"\nB,"a ""quote"""'), [['name','note'],['A','first\nsecond'],['B','a "quote"']]);
+});

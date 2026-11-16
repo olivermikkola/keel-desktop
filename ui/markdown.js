@@ -58,31 +58,17 @@ export function renderMarkdown(raw = "") {
 }
 
 export function parseCsv(raw = "") {
-  const rows = [];
-  for (const line of String(raw).replace(/\r\n/g, "\n").split("\n")) {
-    if (!line.trim()) continue;
-    const fields = [];
-    let cur = "";
-    let inQuotes = false;
-    for (let i = 0; i < line.length; i += 1) {
-      const ch = line[i];
-      if (ch === '"') {
-        if (inQuotes && line[i + 1] === '"') {
-          cur += '"';
-          i += 1;
-        } else {
-          inQuotes = !inQuotes;
-        }
-      } else if (ch === "," && !inQuotes) {
-        fields.push(cur.trim());
-        cur = "";
-      } else {
-        cur += ch;
-      }
-    }
-    fields.push(cur.trim());
-    rows.push(fields);
+  const text = String(raw).replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
+  const rows = []; let row = [], field = "", quoted = false;
+  const pushRow = () => { row.push(field); if (row.some((value) => value.trim())) rows.push(row); row = []; field = ""; };
+  for (let i = 0; i < text.length; i += 1) {
+    const character = text[i];
+    if (character === '"') { if (quoted && text[i+1] === '"') { field += '"'; i += 1; } else quoted = !quoted; }
+    else if (character === "," && !quoted) { row.push(field); field = ""; }
+    else if (character === "\n" && !quoted) pushRow();
+    else field += character;
   }
+  if (field || row.length) pushRow();
   return rows;
 }
 

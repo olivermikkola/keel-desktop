@@ -85,6 +85,8 @@ impl RuntimeManager {
             .arg(self.port.to_string())
             .arg("-c")
             .arg(context_size.to_string())
+            .arg("--parallel")
+            .arg("1")
             .arg("--alias")
             .arg(model_id)
             .arg("--jinja")

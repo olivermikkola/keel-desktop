@@ -80,7 +80,7 @@ Creates `~/.local/bin/keel-desktop`, `~/.local/bin/keel-desktop-cli`, and a desk
 
 ### Prerequisites
 
-- Rust (`1.85+`, `clippy`, `rustfmt`)
+- Rust (stable, tested with `1.100`, plus `clippy` and `rustfmt`)
 - Node.js (`20+`, for `ui/tests/*.test.mjs`)
 - On Linux: `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev`
 - Local inference: guided setup installs a pinned `llama-server`; an existing executable on `PATH` or a custom path in Settings can also be used.

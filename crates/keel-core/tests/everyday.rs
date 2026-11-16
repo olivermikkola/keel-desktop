@@ -263,3 +263,48 @@ fn durable_memory_requires_an_explicit_request_and_is_applied_to_followup_contex
             && history[0].content.contains("Suggest lunch")
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn nested_creates_searches_and_csv_mounts_stay_inside_the_workspace() {
+    use std::os::unix::fs::symlink;
+    let root = temp();
+    let workspace = root.join("workspace");
+    let outside = root.join("outside");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("private.csv"), "secret\nOUTSIDE_MARKER\n").unwrap();
+    symlink(&outside, workspace.join("linked")).unwrap();
+    symlink(outside.join("private.csv"), workspace.join("private.csv")).unwrap();
+    symlink(outside.join("missing.txt"), workspace.join("broken.txt")).unwrap();
+    assert!(keel_core::tools::confine_path(&workspace, "linked/new/nested/file.txt").is_err());
+    assert!(keel_core::tools::confine_path(&workspace, "broken.txt").is_err());
+    assert!(
+        !keel_core::tools::search_workspace_files(&workspace, "OUTSIDE_MARKER")
+            .unwrap()
+            .contains("private.csv")
+    );
+    assert!(keel_core::sql_sandbox::run_sql_in_workspace(
+        Some(&workspace),
+        "SELECT * FROM private"
+    )
+    .is_err());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn csv_queries_treat_quoted_newlines_as_one_record() {
+    let root = temp();
+    std::fs::write(
+        root.join("notes.csv"),
+        "name,note,amount\nA,\"first line\nsecond line\",10\nB,\"quoted \"\"word\"\"\",20\n",
+    )
+    .unwrap();
+    let result = keel_core::sql_sandbox::run_sql_in_workspace(
+        Some(&root),
+        "SELECT COUNT(*) AS rows, SUM(amount) AS total FROM notes",
+    )
+    .unwrap();
+    assert!(result.contains("2 | 30"), "{result}");
+    std::fs::remove_dir_all(root).unwrap();
+}

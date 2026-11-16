@@ -85,18 +85,17 @@ pub fn confine_path(root: &Path, rel: &str) -> Result<PathBuf> {
         .with_context(|| format!("Workspace folder does not exist: {}", root.display()))?;
     let candidate = canonical_root.join(&clean);
 
-    // If the target already exists, verify its canonical path stays under canonical_root.
-    if candidate.exists() {
-        let canon = candidate.canonicalize()?;
-        if !canon.starts_with(&canonical_root) {
-            bail!("Symlink escapes workspace: {trimmed}");
-        }
-    } else if let Some(parent) = candidate.parent() {
-        if parent.exists() {
-            let canon_parent = parent.canonicalize()?;
-            if !canon_parent.starts_with(&canonical_root) {
-                bail!("Parent path escapes workspace: {trimmed}");
+    // Validate the nearest existing ancestor, including broken symlinks. A new
+    // nested file must not bypass confinement through an earlier linked folder.
+    for ancestor in candidate.ancestors() {
+        if std::fs::symlink_metadata(ancestor).is_ok() {
+            let canonical = ancestor
+                .canonicalize()
+                .with_context(|| format!("Cannot resolve workspace path: {trimmed}"))?;
+            if !canonical.starts_with(&canonical_root) {
+                bail!("Symlink escapes workspace: {trimmed}");
             }
+            break;
         }
     }
 
@@ -157,6 +156,9 @@ fn collect_files_recursive(root: &Path, dir: &Path, out: &mut Vec<String>) -> Re
     for entry in entries.flatten() {
         if out.len() > MAX_LIST_ENTRIES {
             break;
+        }
+        if entry.file_type().is_ok_and(|kind| kind.is_symlink()) {
+            continue;
         }
         let path = entry.path();
         let name = entry.file_name();
@@ -248,6 +250,9 @@ fn search_dir(root: &Path, dir: &Path, re: &Regex, out: &mut Vec<String>) {
     for entry in entries.flatten() {
         if out.len() >= MAX_SEARCH_MATCHES {
             break;
+        }
+        if entry.file_type().is_ok_and(|kind| kind.is_symlink()) {
+            continue;
         }
         let path = entry.path();
         let name = entry.file_name();

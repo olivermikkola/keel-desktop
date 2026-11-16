@@ -12,6 +12,7 @@ path = "src/bin/keel_desktop_cli.rs"
 [dependencies]
 anyhow = "1"
 base64 = "0.22"
+csv = "1"
 flate2 = "1"
 pdf-extract = "0.12"
 quick-xml = "0.37"
