@@ -5,7 +5,7 @@ export const TEXT_SIZES = ["small", "regular", "large"];
 
 export const APPEARANCE_DEFAULTS = {
   accent: "sage",
-  tone: "slate",
+  tone: "ink",
   density: "cozy",
   sidebar: true,
   textSize: "regular",
