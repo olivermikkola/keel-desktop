@@ -501,7 +501,7 @@ function renderSidebar() {
     row.innerHTML = `
       <span class="recent-mode">${MODES[modeForPreset(s.app_preset)].title}</span><span class="recent-title">${s.pinned ? "⌑ " : ""}${escapeHtml(s.title)}</span>
       <span class="recent-age">${escapeHtml(formatRelativeTime(s.updated_at))}</span>
-      <button class="recent-del" title="Delete thread" aria-label="Delete thread">&times;</button>
+      <button class="recent-del" title="Delete chat" aria-label="Delete chat">&times;</button>
     `;
     row.onclick = (e) => {
       if (e.target.closest(".recent-del")) return;
@@ -716,7 +716,7 @@ function renderApprovalCard(req) {
       <div><strong>Approval required:</strong> ${escapeHtml(req.summary)}</div>
       <div class="approval-actions">
         <button id="appr-once" class="btn btn-primary btn-sm">Allow once</button>
-        <button id="appr-always" class="btn btn-sm">Allow for this thread</button>
+        <button id="appr-always" class="btn btn-sm">Allow for this chat</button>
         <button id="appr-deny" class="btn btn-rust btn-sm">Deny</button>
       </div>
     </div>

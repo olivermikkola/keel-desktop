@@ -80,7 +80,7 @@ test("normalizes appearance settings and welcome state", () => {
   assert.deepEqual(DENSITY_MODES, ["cozy", "compact"]);
   assert.deepEqual(APPEARANCE_DEFAULTS, {
     accent: "sage",
-    tone: "slate",
+    tone: "ink",
     density: "cozy",
     sidebar: true,
     textSize: "regular",
