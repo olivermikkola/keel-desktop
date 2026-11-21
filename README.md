@@ -9,6 +9,8 @@ Use a shared text model across Chat, Work, and Code. Download a GGUF or connect 
 
 Built with **Tauri 2**, **Rust**, and **llama.cpp** (`llama-server`), carrying the **Keel** small-model harness and dark-mode workspace from Keel Mobile onto the desktop without iOS memory or sandbox restrictions.
 
+Keel Desktop is the everyday app of the Keel family — the Claude Desktop role to the [Keel CLI](https://github.com/olivermikkola/keel)'s Claude Code. Chat, Work, and Images are its own surface; **Code mode's canonical engine is the Keel CLI** ([canonical vision](https://github.com/olivermikkola/keel/blob/main/docs/VISION.md)).
+
 ## First 60 seconds
 
 1. **Install:** Download a prebuilt installer from [**GitHub Releases**](https://github.com/olivermikkola/keel-desktop/releases) (`.dmg` for macOS, `.deb`/`.AppImage`/`.rpm` for Linux, `.exe`/`.msi` for Windows), or run `./scripts/install-linux.sh` from source on Linux.
@@ -38,7 +40,7 @@ Built with **Tauri 2**, **Rust**, and **llama.cpp** (`llama-server`), carrying t
   - **Study** (interactive `Q:`/`A:` flashcards and multiple-choice quizzes)
   - **Slides** (HTML presentation preview with slide navigation & print/PDF export)
 - **Local `stdio` MCP servers:** Configure standard MCP servers in `.keel/mcp.json` or `~/.config/keel-desktop/mcp.json`.
-- **Harness-agnostic pass-through:** Use the built-in Keel Harness by default, or switch in **Code** to an external CLI harness (`opencode`, `keel`, etc.) when installed.
+- **Code mode engine:** Today the built-in Keel Harness (`keel-core`) is the default, with one-shot pass-through to an installed external CLI harness (`keel`, `opencode`, `claude`). The canonical direction is Code mode driving the [Keel CLI](https://github.com/olivermikkola/keel) end-to-end — streaming, approvals in the GUI, and shared resumable sessions ([vision](https://github.com/olivermikkola/keel/blob/main/docs/VISION.md)).
 
 See [everyday assistant validation](docs/everyday-readiness.md) for tested flows and real-model limitations.
 
@@ -109,6 +111,7 @@ cargo run -p keel-core --bin keel-desktop-cli -- --help
 
 ## Ecosystem
 
+- [**Keel**](https://github.com/olivermikkola/keel) — The CLI/TUI coding agent for small local models; Code mode's canonical engine.
 - [**Keel Arena**](https://github.com/olivermikkola/keel-arena) — Reproducible Edge AI & coding-agent benchmarks (7-suite gauntlet, frontier LLM judge, hardware profiling, SVG scorecards).
 
 ## License
