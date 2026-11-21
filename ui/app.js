@@ -359,7 +359,7 @@ async function setActiveView(view) {
   }
   appState.activeView = view;
   if (view === "code") {
-    appState.viewerOpen = true;
+    appState.viewerOpen = hasViewerContent();
     appState.viewerTab = (appState.session?.staged_edits?.length || 0) > 0 ? "diff" : "code";
   }
   renderAll();
@@ -428,13 +428,14 @@ async function refreshBootstrap() {
       workspacePath: appState.workspacePath,
     });
   }
-  if (!appState.selectedModelInspectorId && appState.bootstrap?.models?.length > 0) {
-    appState.selectedModelInspectorId =
-      appState.bootstrap.runtime.active_model_id ||
-      appState.bootstrap.config.selected_model_id ||
-      appState.bootstrap.models[0].id;
-  }
   await refreshWorkspaceFiles();
+}
+
+// The side panel only opens when it has something to show: a previewable file or pending edits.
+function hasViewerContent() {
+  if (modeForPreset(appState.session?.app_preset) === "chat") return false;
+  if ((appState.session?.staged_edits?.length || 0) > 0) return true;
+  return Boolean(detectViewerForPreset(appState.session?.app_preset, appState.workspaceFiles));
 }
 
 async function createNewSession(preset = "chat") {
@@ -447,7 +448,7 @@ async function createNewSession(preset = "chat") {
   });
   appState.selectedEditId = null;
   appState.activeView = modeForPreset(preset);
-  appState.viewerOpen = appState.activeView !== "chat";
+  appState.viewerOpen = hasViewerContent();
   appState.viewerTab = appState.activeView === "code" ? "code" : "preview";
   restoreDraft();
   await refreshBootstrap();
@@ -463,7 +464,7 @@ async function loadSession(id) {
   appState.workspacePath = appState.session.workspace_path || null;
   await refreshWorkspaceFiles();
   appState.activeView = modeForPreset(appState.session.app_preset);
-  appState.viewerOpen = appState.activeView !== "chat";
+  appState.viewerOpen = hasViewerContent();
   appState.viewerTab = appState.activeView === "code" ? "code" : "preview";
   appState.viewerFile = detectViewerForPreset(appState.session.app_preset, appState.workspaceFiles);
   restoreDraft();
@@ -552,7 +553,7 @@ function renderSidebar() {
     }
   }; });
   projectsList.querySelectorAll("[data-edit-project]").forEach((button) => { button.onclick = () => everyday.editProject(button.dataset.editProject); });
-  const visibleSessions = appState.searchResults || b.sessions.filter((session) => !appState.activeProjectId || session.project_id === appState.activeProjectId);
+  const visibleSessions = appState.searchResults || b.sessions.filter((session) => (!appState.activeProjectId || session.project_id === appState.activeProjectId) && (session.message_count > 0 || session.id === appState.session?.id || session.pinned));
   if (!visibleSessions.length) els.sessionsList.innerHTML = '<p class="sidebar-empty">No conversations found.</p>';
   for (const s of visibleSessions) {
     const row = document.createElement("div");
@@ -604,7 +605,7 @@ function renderSidebar() {
     <span class="status-dot ${status.key === "setup" || status.key === "waking" ? "starting" : rt.state}"></span>
     <div class="sidebar-runtime-meta">
       <div class="sidebar-runtime-name">${escapeHtml(runningLabel)}</div>
-      <div class="sidebar-runtime-bar"><div class="sidebar-runtime-fill ${isLive || status.key === "setup" ? "active" : ""}"${fill}></div></div>
+      ${status.key === "setup" ? `<div class="sidebar-runtime-bar"><div class="sidebar-runtime-fill active"${fill}></div></div>` : ""}
     </div>
     <span class="sidebar-runtime-state">${escapeHtml(status.label)}</span>
   `;
@@ -622,7 +623,7 @@ function renderHeader() {
     rt.state === "external"
       ? b.config.external_model_name || "External endpoint"
       : selected
-        ? `${selected.name} ${selected.quantization}`
+        ? selected.name
         : b.config.selected_model_id || "Select model";
 
   const shortWs = shortPath(appState.workspacePath);
@@ -630,15 +631,13 @@ function renderHeader() {
   els.composerWsChip.textContent = appState.workspacePath ? shortWs : "No folder";
 
   const harness = b.harnesses.find((h) => h.id === b.config.harness_mode);
-  els.harnessPillLabel.textContent = harness ? harness.name.replace(" Harness", "") : "Keel";
+  els.harnessPillLabel.textContent = `Engine: ${harness ? harness.name.replace(" Harness", "") : "Keel"}`;
 
   const counts = countStagedEdits(appState.session?.staged_edits ?? []);
   els.diffsPillLabel.textContent =
     counts.pending > 0
       ? `${counts.pending} pending`
-      : counts.applied > 0
-        ? `${counts.applied} applied`
-        : "Review changes";
+      : `${counts.applied} applied`;
   els.diffsPillBtn.classList.toggle("has-pending", counts.pending > 0);
   els.telemetryRight.textContent = `Keel v${b.version}`;
   if (!appState.streaming) {
@@ -648,11 +647,12 @@ function renderHeader() {
   }
   const mode = modeForPreset(appState.session?.app_preset);
   els.promptInput.placeholder = MODES[mode].placeholder;
-  els.composerWsChip.textContent = mode === "chat" ? "Chat · no workspace tools" : shortWs;
+  els.composerWsChip.textContent = shortWs;
+  els.composerWsChip.classList.toggle("hidden", mode === "chat");
   els.workspacePillBtn.classList.toggle("hidden", mode === "chat" && appState.activeView !== "tools");
   els.harnessPillBtn.classList.toggle("hidden", mode !== "code");
   els.toggleViewerBtn.classList.toggle("hidden", mode === "chat");
-  els.diffsPillBtn.classList.toggle("hidden", mode === "chat");
+  els.diffsPillBtn.classList.toggle("hidden", mode === "chat" || counts.pending + counts.applied === 0);
   els.newChatBtn.disabled = appState.streaming;
   els.newAgentBtn.disabled = appState.streaming;
 }
@@ -772,11 +772,15 @@ function handleAgentEvent(ev) {
   } else if (ev.type === "approval_required") {
     renderApprovalCard(ev);
   } else if (ev.type === "turn_finished") {
-    els.telemetryLeft.textContent = `${ev.prompt_tokens} prompt · ${ev.completion_tokens} completion · ${ev.tokens_per_sec.toFixed(1)} tok/s`;
+    els.telemetryLeft.textContent = "On this computer";
   }
   renderChat();
-  if (appState.viewerOpen && ["staged_edit_added", "turn_finished"].includes(ev.type)) {
-    renderViewerPane();
+  if (["staged_edit_added", "turn_finished"].includes(ev.type)) {
+    if (!appState.viewerOpen && ev.type === "staged_edit_added") {
+      appState.viewerOpen = true;
+      appState.viewerTab = modeForPreset(appState.session?.app_preset) === "code" ? "diff" : "preview";
+    }
+    if (appState.viewerOpen) renderViewerPane();
   }
 }
 
@@ -951,6 +955,7 @@ function renderModelsWorkspace() {
   const inspected =
     b.models.find((m) => m.id === appState.selectedModelInspectorId) ||
     b.models.find((m) => m.id === rt.active_model_id) ||
+    b.models.find((m) => m.id === b.config.selected_model_id) ||
     b.models[0];
 
   const rowsHtml = filtered
@@ -962,7 +967,7 @@ function renderModelsWorkspace() {
           <div>
             <div class="model-clean-title">
               <span>${escapeHtml(m.name)}</span>
-              <span class="model-clean-quant">${escapeHtml(m.quantization)}</span>
+              
             </div>
             <div class="model-clean-sub">
               ${escapeHtml(m.detail)} · ${formatBytes(m.bytes)}
@@ -971,8 +976,8 @@ function renderModelsWorkspace() {
           </div>
           ${
             m.installed
-              ? `<button class="pill-action-use" data-start-model="${escapeHtml(m.id)}">${isRunning ? "• Loaded" : "Load"}</button>`
-              : `<button class="pill-action-get" data-dl-model="${escapeHtml(m.id)}">Get</button>`
+              ? `<button class="pill-action-use" data-start-model="${escapeHtml(m.id)}">${isRunning ? "In use" : "Use"}</button>`
+              : `<button class="pill-action-get" data-dl-model="${escapeHtml(m.id)}">Download</button>`
           }
         </div>
       `;
@@ -981,18 +986,17 @@ function renderModelsWorkspace() {
 
   const isRunningExternal = rt.state === "external";
   const isRunningLocal = rt.state === "running";
-  const serverUrl = rt.base_url || b.config.external_base_url || "http://127.0.0.1:8080/v1";
 
   els.viewModels.innerHTML = `
     <div class="models-main-col">
-      <div class="model-setup-row"><div><strong>Start with a local assistant</strong><p class="muted">Recommended model, verified downloads, and the model runner in one setup.</p></div><button id="models-setup-btn" class="btn btn-primary btn-sm">Guided setup</button></div>
+      <div class="model-setup-row"><div><strong>Not sure which one?</strong><p class="muted">Keel picks the right model for this computer and sets everything up.</p></div><button id="models-setup-btn" class="btn ${isRunningLocal || isRunningExternal ? "" : "btn-primary "}btn-sm">Set it up for me</button></div>
       <div class="models-search-bar">
-        <input id="models-search-in" class="input grow" value="${escapeHtml(appState.modelSearchQuery)}" placeholder="Search local & catalog GGUF models..." />
+        <input id="models-search-in" class="input grow" value="${escapeHtml(appState.modelSearchQuery)}" placeholder="Search models" />
         <div class="models-filter-pills">
-          ${["all", "installed", "gguf"]
+          ${["all", "installed"]
             .map(
               (f) =>
-                `<button class="viewer-tab ${appState.modelFilter === f ? "active" : ""}" data-mfilter="${f}">${f.toUpperCase()}</button>`,
+                `<button class="viewer-tab ${appState.modelFilter === f ? "active" : ""}" data-mfilter="${f}">${f === "all" ? "All" : "Downloaded"}</button>`,
             )
             .join("")}
         </div>
@@ -1003,7 +1007,7 @@ function renderModelsWorkspace() {
       </div>
 
       <details class="card">
-        <summary class="import-gguf-toggle">+ Import .gguf or external OpenAI-compatible server</summary>
+        <summary class="import-gguf-toggle">Advanced: add your own model or use Ollama / LM Studio</summary>
         <div class="row" style="margin-top:8px">
           <input id="ws-hf-url" class="input grow" placeholder="Hugging Face URL or repo:owner/repo" />
           <button id="ws-hf-dl" class="btn btn-sm">Download</button>
@@ -1015,33 +1019,32 @@ function renderModelsWorkspace() {
         <div class="row">
           <input id="ws-ext-url" class="input grow mono" value="${escapeHtml(b.config.external_base_url || "")}" placeholder="http://127.0.0.1:8080/v1" />
           <input id="ws-ext-name" class="input" style="max-width:160px" value="${escapeHtml(b.config.external_model_name || "")}" placeholder="Model name" />
-          <button id="ws-ext-use" class="btn btn-primary btn-sm">Use Endpoint</button>
+          <button id="ws-ext-use" class="btn btn-primary btn-sm">Connect</button>
         </div>
       </details>
     </div>
 
     <aside class="models-inspector-col">
       <div>
-        <div class="sidebar-section-label">INSPECTOR</div>
+        <div class="sidebar-section-label">SELECTED</div>
         <h3 style="margin:6px 0 2px;font-size:17px">${escapeHtml(inspected ? inspected.name : "Local Runtime")}</h3>
-        <div style="font-size:12px;color:var(--muted)">${inspected ? `${escapeHtml(inspected.quantization)} · ${formatBytes(inspected.bytes)}` : "Configure runtime"}</div>
+        <div style="font-size:12px;color:var(--muted)">${inspected ? `${formatBytes(inspected.bytes)} download${inspected.installed ? " · on this computer" : ""}` : ""}</div>
       </div>
 
-      <p class="muted">Download only the models you need. Chat, Work, and Code share your selected text model.</p>
-      <p class="muted">Local inference needs llama-server from llama.cpp. Set its path in Settings, or connect an existing server below.</p>
+      <p class="muted">${inspected ? escapeHtml(inspected.detail) : ""}</p>
+      <p class="muted">Chat, Work, and Code all use the model you pick here.</p>
       <div class="card">
-        <div style="font-size:12px;color:var(--muted)">Local server</div>
-        <div class="mono" style="font-size:12px;word-break:break-all">${escapeHtml(serverUrl)}</div>
+        
         <div class="row" style="font-size:12px;color:var(--accent)">
           <span class="status-dot ${rt.state}"></span>
-          <span>${isRunningLocal ? "Serving OpenAI-compatible API" : isRunningExternal ? "Connected to external API" : "Stopped"}</span>
+          <span>${isRunningLocal ? "Running on this computer" : isRunningExternal ? "Using your own model server" : "Off"}</span>
         </div>
         <div class="row" style="margin-top:4px">
           ${
             isRunningLocal || isRunningExternal
-              ? `<button id="insp-stop-rt" class="btn btn-sm grow">Stop server</button>`
+              ? `<button id="insp-stop-rt" class="btn btn-sm grow">Turn off</button>`
               : inspected?.installed
-                ? `<button id="insp-start-rt" class="btn btn-primary btn-sm grow">Load &amp; Serve</button>`
+                ? `<button id="insp-start-rt" class="btn btn-primary btn-sm grow">Start</button>`
                 : ""
           }
         </div>
@@ -1049,7 +1052,8 @@ function renderModelsWorkspace() {
     </aside>
   `;
 
-  document.getElementById("models-setup-btn").onclick = () => welcome.show();
+  const modelsSetupBtn = document.getElementById("models-setup-btn");
+  if (modelsSetupBtn) modelsSetupBtn.onclick = () => welcome.show();
   const searchIn = document.getElementById("models-search-in");
   searchIn.oninput = () => {
     appState.modelSearchQuery = searchIn.value;
@@ -1139,24 +1143,24 @@ function renderConnectorsWorkspace() {
     <div class="connectors-inner">
       <div class="card">
         <div class="row">
-          <strong class="grow">Workspace Sandbox</strong>
+          <strong class="grow">Your folder</strong>
           <span class="status-dot ${appState.workspacePath ? "ready" : ""}"></span>
           <button id="conn-pick-ws" class="btn btn-sm">Change folder</button>
         </div>
-        <div class="mono" style="font-size:12.5px;color:var(--muted)">${escapeHtml(appState.workspacePath || "No folder selected")}</div>
+        <div class="mono" style="font-size:12.5px;color:var(--muted)">${escapeHtml(appState.workspacePath || "No folder chosen. Work and Code can only read and change files inside the folder you pick.")}</div>
       </div>
 
       <div class="card">
         <div class="row">
-          <strong class="grow">In-Memory SQLite Sandbox</strong>
+          <strong class="grow">Spreadsheets</strong>
           <span class="status-dot ready"></span>
-          <span style="font-size:12px;color:var(--accent)">Active</span>
+          <span style="font-size:12px;color:var(--accent)">On</span>
         </div>
-        <div style="font-size:12.5px;color:var(--muted)">Auto-mounts workspace CSV files as SQL tables during agent runs.</div>
+        <div style="font-size:12.5px;color:var(--muted)">Keel can read and analyse the CSV files in your folder.</div>
       </div>
 
       <div class="card">
-        <strong>Add Stdio MCP Server</strong>
+        <strong>Advanced: add a tool server (MCP)</strong>
         <div class="row">
           <input id="mcp-name" class="input" placeholder="name (e.g. filesystem)" />
           <input id="mcp-cmd" class="input mono" placeholder="command (e.g. npx)" />
@@ -1291,7 +1295,7 @@ function openDiffsModal() {
 
 function openCustomizeModal() {
   const b = appState.bootstrap;
-  openModal("Customize", (body) => {
+  openModal("Settings", (body) => {
     const ap = appState.appearance;
     const appearanceCard = document.createElement("div");
     appearanceCard.className = "card";
@@ -1367,21 +1371,21 @@ function openCustomizeModal() {
     const harnessOptions = b.harnesses
       .map(
         (h) =>
-          `<option value="${escapeHtml(h.id)}" ${h.id === b.config.harness_mode ? "selected" : ""}>${escapeHtml(h.name)}${h.available ? "" : " (CLI not detected)"}</option>`,
+          `<option value="${escapeHtml(h.id)}" ${h.id === b.config.harness_mode ? "selected" : ""}>${escapeHtml(h.name)}${h.available ? "" : " (not installed)"}</option>`,
       )
       .join("");
     const card = document.createElement("div");
     card.className = "card";
     card.innerHTML = `
-      <label><strong>Agent Harness</strong></label>
+      <label><strong>Engine for Code mode</strong></label>
       <select id="cust-harness" class="select-field">${harnessOptions}</select>
-      <label><strong>Custom Instructions</strong></label>
+      <label><strong>Things Keel should always know</strong></label>
       <textarea id="cust-inst" class="textarea-field" rows="3">${escapeHtml(b.config.custom_instructions)}</textarea>
-      <label class="row"><input id="cust-auto" type="checkbox" ${b.config.auto_apply_edits ? "checked" : ""} /> Auto-apply workspace file edits without review cards</label>
-      <label><strong>llama-server binary path (optional override)</strong></label>
+      <label class="row"><input id="cust-auto" type="checkbox" ${b.config.auto_apply_edits ? "checked" : ""} /> Apply file changes without asking me first</label>
+      <label><strong>Advanced: use your own llama-server program</strong></label>
       <input id="cust-llama" class="input mono" value="${escapeHtml(b.config.llama_server_path || "")}" placeholder="/path/to/llama-server" />
       <div class="row">
-        <button id="cust-reset-welcome" type="button" class="btn btn-ghost btn-sm">Reset Welcome</button>
+        <button id="cust-reset-welcome" type="button" class="btn btn-ghost btn-sm">Show the welcome screen again</button>
         <div class="spacer"></div>
         <button id="cust-save" class="btn btn-primary btn-sm">Save settings</button>
       </div>

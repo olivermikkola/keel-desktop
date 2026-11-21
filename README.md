@@ -73,7 +73,9 @@ See [the AI hub architecture and roadmap](docs/ai-hub.md) for current behavior, 
 Grab the latest installer from [**GitHub Releases**](https://github.com/olivermikkola/keel-desktop/releases):
 
 - **macOS:** `.dmg` (Apple Silicon `aarch64` or Intel `x86_64`) — drag **Keel Desktop** into Applications
-- **Linux:** `.deb`, `.AppImage`, or `.rpm`
+- **Fedora / RHEL:** `.rpm` — `sudo dnf install ./Keel.Desktop-*.x86_64.rpm` (pulls in everything Keel's model engine needs, including `openssl3-libs` on Fedora 45+)
+- **Ubuntu / Debian:** `.deb` — `sudo apt install ./Keel.Desktop_*_amd64.deb`
+- **Other Linux:** `.AppImage` (needs FUSE 2: `fuse-libs` on Fedora, `libfuse2` on Ubuntu). If the model engine is missing a system library, Keel tells you which one and the command that installs it.
 - **Windows:** `.exe` (NSIS setup) or `.msi`
 
 ### Install locally on Linux (from source)

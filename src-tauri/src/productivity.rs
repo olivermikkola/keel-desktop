@@ -242,6 +242,7 @@ pub async fn setup_local_ai(
         .await
         .map_err(|e| e.to_string())?
     };
+    keel_core::runtime::check_runner_starts(&runner).map_err(|e| e.to_string())?;
     {
         let mut cfg = state.config.lock().await;
         cfg.llama_server_path = Some(runner.to_string_lossy().into_owned());

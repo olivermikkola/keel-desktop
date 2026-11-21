@@ -91,3 +91,10 @@ test("the status label is one plain word or phrase", () => {
   assert.equal(assistantStatus({ runtime: { state: "stopped" }, waking: true }).label, "Waking up your AI…");
   assert.equal(assistantStatus({ runtime: { state: "stopped" }, setup: { busy: true, fraction: 0.426 } }).label, "Setting up… 43%");
 });
+
+test("a missing system library shows the exact fix command, not generic advice", () => {
+  const raw = "Keel's engine needs a system library this computer doesn't have yet (libssl.so.3). Open a terminal, run: sudo dnf install openssl3-libs — then press Try again.";
+  const e = friendlySetupError(raw);
+  assert.match(e.message, /sudo dnf install openssl3-libs/);
+  assert.equal(e.retry, true);
+});

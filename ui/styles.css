@@ -1,4 +1,5 @@
 :root {
+  color-scheme: dark;
   --ink: #0c1415;
   --sidebar-bg: #0f1719;
   --surface: #141f21;
@@ -1817,3 +1818,42 @@ button:disabled { opacity: .5; cursor: wait; }
 .library-card .mono { font-size: 10px; }
 .library-open { font-size: 11px; color: var(--accent); }
 .empty-state > .btn { margin: 4px 0 20px; }
+
+/* Native dropdowns: WebKitGTK paints <select> with the light system theme
+   (a bright white bar) unless we draw it ourselves. */
+select {
+  -webkit-appearance: none;
+  appearance: none;
+  background-color: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  padding: 7px 30px 7px 10px;
+  font: inherit;
+  font-size: 13px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238ca3a0' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  cursor: pointer;
+}
+select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+select option {
+  background: var(--surface-raised);
+  color: var(--text);
+}
+select.input,
+select.select-field,
+.viewer-header select {
+  padding-right: 30px;
+}
+/* One focus ring in the brand accent instead of each system's own colour. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+button:focus:not(:focus-visible) {
+  outline: none;
+}
