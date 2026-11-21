@@ -6,7 +6,6 @@ import {
   APPEARANCE_DEFAULTS,
   DENSITY_MODES,
   TONE_MODES,
-  computeWelcomeVisible,
   countStagedEdits,
   detectViewerForPreset,
   filterModels,
@@ -74,7 +73,7 @@ test("formats relative timestamps concisely", () => {
   assert.equal(formatRelativeTime(base - 40 * 86400, base), "1mo");
 });
 
-test("normalizes appearance settings and welcome state", () => {
+test("normalizes appearance settings", () => {
   assert.deepEqual(ACCENT_MODES, ["sage", "copper", "ice"]);
   assert.deepEqual(TONE_MODES, ["slate", "ink"]);
   assert.deepEqual(DENSITY_MODES, ["cozy", "compact"]);
@@ -105,9 +104,6 @@ test("normalizes appearance settings and welcome state", () => {
     normalizeAppearance({ accent: "bogus", tone: "x", density: "y", sidebar: "nope", textSize: null }),
     APPEARANCE_DEFAULTS,
   );
-  assert.equal(computeWelcomeVisible(null), true);
-  assert.equal(computeWelcomeVisible("0"), true);
-  assert.equal(computeWelcomeVisible("1"), false);
 });
 
 test("parses diff lines and filters models", () => {

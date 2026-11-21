@@ -222,12 +222,16 @@ pub async fn get_setup_plan(
 pub async fn setup_local_ai(
     app: AppHandle,
     state: State<'_, AppState>,
+    model_id: Option<String>,
 ) -> Result<keel_core::runtime::RuntimeStatus, String> {
     let cfg = state.config.lock().await.clone();
     let plan = keel_core::setup::plan(&state.data_dir, cfg.llama_server_path.as_deref());
+    let model =
+        keel_core::setup::resolve_model(&plan, model_id.as_deref()).map_err(|e| e.to_string())?;
     let runner = if let Some(path) = plan.runtime_path {
         std::path::PathBuf::from(path)
     } else {
+        let _ = app.emit("keel://setup-stage", "runner");
         let _ = app.emit(
             "keel://setup-progress",
             "Downloading and verifying the model runner…",
@@ -244,26 +248,21 @@ pub async fn setup_local_ai(
         sessions::save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
     }
     let models = keel_core::models::list_models(&state.data_dir, &cfg.custom_model_paths);
-    if !models
-        .iter()
-        .any(|m| m.id == plan.recommended_model.id && m.installed)
-    {
+    if !models.iter().any(|m| m.id == model.id && m.installed) {
+        let _ = app.emit("keel://setup-stage", "model");
         let _ = app.emit(
             "keel://setup-progress",
             "Downloading and verifying your recommended model…",
         );
-        crate::commands::download_catalog_model(
-            app.clone(),
-            state.clone(),
-            plan.recommended_model.id.clone(),
-        )
-        .await?;
+        crate::commands::download_catalog_model(app.clone(), state.clone(), model.id.clone())
+            .await?;
     }
+    let _ = app.emit("keel://setup-stage", "start");
     let _ = app.emit(
         "keel://setup-progress",
         "Loading your model. The first start can take a moment…",
     );
-    crate::commands::start_model(state, plan.recommended_model.id).await
+    crate::commands::start_model(state, model.id).await
 }
 
 #[tauri::command]

@@ -214,84 +214,14 @@
       </div>
     </div>
 
-    <!-- Desktop Asymmetric 2-Step Welcome Overlay -->
+    <!-- First-run welcome and guided setup -->
     <div id="welcome-overlay" class="welcome-overlay hidden" role="dialog" aria-modal="true" aria-label="Welcome to Keel Desktop">
       <svg class="welcome-sail-bg" viewBox="0 0 512 512" preserveAspectRatio="xMaxYMax slice" aria-hidden="true">
         <path class="sail-jade" d="M86 460L500 56V312C500 382 320 370 198 418C152 436 116 450 86 460Z"></path>
         <path class="sail-rust" d="M86 460C226 392 346 394 500 426V294C488 378 242 368 86 460Z"></path>
       </svg>
 
-      <div id="welcome-step-1" class="welcome-desktop-left">
-        <div class="welcome-eyebrow">KEEL</div>
-        <h1 class="welcome-headline">Local models that actually do the work.</h1>
-        <p class="welcome-sub">
-          Chat, get work done, and build software — with local models and your approval.
-        </p>
-        <div class="welcome-desktop-actions">
-          <button id="welcome-next-btn" class="welcome-btn-white">Get started</button>
-          <button id="welcome-skip-btn" class="btn btn-ghost btn-sm">Skip</button>
-        </div>
-        <div class="welcome-desktop-foot">Local by default. You choose your connections.</div>
-      </div>
-
-      <div id="welcome-step-2" class="welcome-desktop-left hidden">
-        <div class="brand-mark-wrap welcome-badge">
-          <img src="assets/mark.svg" alt="Keel mark" />
-        </div>
-        <h1 class="welcome-headline">Your models. Your machine.</h1>
-        <div class="welcome-features">
-          <div class="welcome-feature-row">
-            <span class="wf-icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
-                <polyline points="2 17 12 22 22 17"></polyline>
-                <polyline points="2 12 12 17 22 12"></polyline>
-              </svg>
-            </span>
-            <div>
-              <div class="wf-title">On-device runtime</div>
-              <div class="wf-sub">llama.cpp · Metal, CUDA, Vulkan, or CPU</div>
-            </div>
-          </div>
-          <div class="welcome-feature-row">
-            <span class="wf-icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                <polyline points="14 2 14 8 20 8"></polyline>
-              </svg>
-            </span>
-            <div>
-              <div class="wf-title">Workspace sandboxes</div>
-              <div class="wf-sub">Confined file tools · in-memory SQLite</div>
-            </div>
-          </div>
-          <div class="welcome-feature-row">
-            <span class="wf-icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="12" cy="12" r="3"></circle>
-                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83"></path>
-                <path d="M4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83"></path>
-              </svg>
-            </span>
-            <div>
-              <div class="wf-title">Connectors &amp; MCP</div>
-              <div class="wf-sub">Stdio servers · local workspace config</div>
-            </div>
-          </div>
-          <div class="welcome-feature-row">
-            <span class="wf-icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="20 6 9 17 4 12"></polyline>
-              </svg>
-            </span>
-            <div>
-              <div class="wf-title">Explicit file approvals</div>
-              <div class="wf-sub">Review inline + / - diffs before writing</div>
-            </div>
-          </div>
-        </div>
-        <button id="welcome-done-btn" class="welcome-btn-mint">Continue</button>
-      </div>
+      <div id="welcome-body" class="welcome-desktop-left"></div>
     </div>
 
     <script type="module" src="app.js"></script>

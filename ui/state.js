@@ -21,10 +21,6 @@ export function normalizeAppearance(raw = {}) {
   };
 }
 
-export function computeWelcomeVisible(storageValue) {
-  return storageValue !== "1";
-}
-
 export function formatRelativeTime(epochSecs, nowSecs = Math.floor(Date.now() / 1000)) {
   if (!Number.isFinite(epochSecs) || epochSecs <= 0) return "now";
   const diff = Math.max(0, Math.floor(nowSecs - epochSecs));

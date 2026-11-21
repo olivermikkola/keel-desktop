@@ -24,6 +24,8 @@ pub struct SetupPlan {
     pub runtime_asset: Option<RuntimeAsset>,
     pub runtime_path: Option<String>,
     pub recommended_model: CatalogModel,
+    /// A smaller, quicker download offered when the recommendation is the larger model.
+    pub fast_model: Option<CatalogModel>,
     pub context_size: u32,
 }
 
@@ -42,6 +44,11 @@ pub fn plan(data: &Path, explicit: Option<&str>) -> SetupPlan {
     } else {
         "bonsai-4b"
     };
+    let find = |id: &str| {
+        crate::models::default_catalog()
+            .into_iter()
+            .find(|m| m.id == id)
+    };
     SetupPlan {
         memory_bytes: memory,
         platform: platform.clone(),
@@ -49,11 +56,27 @@ pub fn plan(data: &Path, explicit: Option<&str>) -> SetupPlan {
         runtime_path: crate::runtime::find_llama_server(explicit)
             .or_else(|| installed_runtime(data))
             .map(|p| p.to_string_lossy().into_owned()),
-        recommended_model: crate::models::default_catalog()
-            .into_iter()
-            .find(|m| m.id == recommended)
-            .unwrap(),
+        recommended_model: find(recommended).unwrap(),
+        fast_model: if recommended == "bonsai-4b" {
+            None
+        } else {
+            find("bonsai-4b")
+        },
         context_size: 8192,
+    }
+}
+
+/// Picks the model guided setup downloads: the recommendation, or the smaller
+/// option when the person asked for it. Anything else is rejected so the
+/// first-run screen can only install curated, checksum-verified models.
+pub fn resolve_model(plan: &SetupPlan, requested: Option<&str>) -> Result<CatalogModel> {
+    match requested {
+        None => Ok(plan.recommended_model.clone()),
+        Some(id) if id == plan.recommended_model.id => Ok(plan.recommended_model.clone()),
+        Some(id) => match &plan.fast_model {
+            Some(fast) if fast.id == id => Ok(fast.clone()),
+            _ => bail!("`{id}` is not offered by guided setup on this computer"),
+        },
     }
 }
 
@@ -163,4 +186,61 @@ pub fn unpack_runtime(archive: &Path, destination: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn plan_for(recommended: &str) -> SetupPlan {
+        let find = |id: &str| {
+            crate::models::default_catalog()
+                .into_iter()
+                .find(|m| m.id == id)
+                .unwrap()
+        };
+        SetupPlan {
+            memory_bytes: 16 << 30,
+            platform: "test".into(),
+            runtime_asset: None,
+            runtime_path: None,
+            recommended_model: find(recommended),
+            fast_model: (recommended != "bonsai-4b").then(|| find("bonsai-4b")),
+            context_size: 8192,
+        }
+    }
+
+    #[test]
+    fn guided_setup_defaults_to_the_recommendation() {
+        let plan = plan_for("bonsai-9b");
+        assert_eq!(resolve_model(&plan, None).unwrap().id, "bonsai-9b");
+        assert_eq!(
+            resolve_model(&plan, Some("bonsai-9b")).unwrap().id,
+            "bonsai-9b"
+        );
+    }
+
+    #[test]
+    fn guided_setup_offers_the_smaller_download_on_big_machines_only() {
+        let big = plan_for("bonsai-9b");
+        let fast = resolve_model(&big, Some("bonsai-4b")).unwrap();
+        assert!(fast.bytes < big.recommended_model.bytes);
+        assert!(plan_for("bonsai-4b").fast_model.is_none());
+    }
+
+    #[test]
+    fn guided_setup_rejects_models_it_did_not_offer() {
+        let plan = plan_for("bonsai-9b");
+        assert!(resolve_model(&plan, Some("bonsai-27b")).is_err());
+        assert!(resolve_model(&plan, Some("../../etc/passwd")).is_err());
+        assert!(resolve_model(&plan_for("bonsai-4b"), Some("lfm3-1.7b")).is_err());
+    }
+
+    #[test]
+    fn real_plan_matches_this_computers_memory() {
+        let dir = std::env::temp_dir();
+        let plan = plan(&dir, None);
+        let offered_fast = plan.fast_model.is_some();
+        assert_eq!(offered_fast, plan.recommended_model.id != "bonsai-4b");
+    }
 }

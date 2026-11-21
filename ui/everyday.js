@@ -1,47 +1,10 @@
 import { escapeHtml, renderMarkdown } from "./markdown.js";
-import { formatBytes } from "./state.js";
 
 export function createEveryday(api) {
-  let setupBusy = false;
   let library = [];
   let searchVersion = 0;
   const { invoke, state, refresh, render, modal, closeModal, toast } = api;
   const safe = escapeHtml;
-
-  async function setup() {
-    const plan = await invoke("get_setup_plan");
-    modal("Make yourself at home", (body) => {
-      body.innerHTML = `<div class="setup-intro"><div class="eyebrow">YOUR AI, ON YOUR COMPUTER</div><h2>Start a conversation.</h2><p>Keel can set up a local assistant for you. Your conversations stay on your computer unless you choose to connect an external service.</p></div>
-      <div class="setup-recommendation"><strong>${safe(plan.recommended_model.name)}</strong><span class="capability-badge">Recommended for ${formatBytes(plan.memory_bytes)} RAM</span><p>${safe(plan.recommended_model.detail)}</p><p class="muted">Model: ${formatBytes(plan.recommended_model.bytes)}${plan.runtime_path ? " · Model runner already available" : ` · Runner: ${formatBytes(plan.runtime_asset?.bytes || 0)}`}. Download happens only when you choose setup.</p><button id="setup-start" class="btn btn-primary" ${setupBusy || (!plan.runtime_path && !plan.runtime_asset) ? "disabled" : ""}>${setupBusy ? "Setting up…" : "Download & set up local AI"}</button><p id="setup-progress" class="muted" role="status"></p><progress id="setup-download" class="setup-progress hidden"></progress></div>
-      <details class="existing-server"><summary>I already use Ollama, LM Studio, or another server</summary><p class="muted">Use an existing model without downloading another copy. Your selected server handles inference.</p><label for="setup-url">Server address</label><input id="setup-url" class="input mono" value="http://127.0.0.1:11434/v1"/><label for="setup-model">Model name (optional)</label><input id="setup-model" class="input" placeholder="Use the server's first available model"/><button id="setup-connect" class="btn">Connect existing server</button></details>`;
-      body.querySelector("#setup-start").onclick = async (event) => {
-        if (setupBusy) return;
-        setupBusy = true; event.target.disabled = true;
-        body.querySelector("#setup-progress").textContent = "Getting your local assistant ready…";
-        try { await invoke("setup_local_ai"); await refresh(); render(); closeModal(); toast("Your local assistant is ready. Ask your first question."); }
-        catch (error) { body.querySelector("#setup-progress").textContent = String(error); }
-        finally { setupBusy = false; event.target.disabled = false; }
-      };
-      body.querySelector("#setup-connect").onclick = async (event) => {
-        event.target.disabled = true;
-        try { await invoke("set_external_endpoint", { baseUrl: body.querySelector("#setup-url").value, modelName: body.querySelector("#setup-model").value || null }); await refresh(); render(); closeModal(); toast("Model server connected."); }
-        catch (error) { body.querySelector("#setup-progress").textContent = String(error); }
-        finally { event.target.disabled = false; }
-      };
-    });
-  }
-
-  function setupProgress(text) {
-    const label = document.getElementById("setup-progress");
-    if (label) label.textContent = text;
-  }
-  function downloadProgress(progress) {
-    if (!setupBusy) return;
-    const label = document.getElementById("setup-progress");
-    const bar = document.getElementById("setup-download");
-    if (label) label.textContent = `${progress.model_id === "runtime" ? "Model runner" : "Model"}: ${formatBytes(progress.downloaded_bytes)}${progress.total_bytes ? ` of ${formatBytes(progress.total_bytes)}` : ""}${progress.done ? " · Verified" : ""}`;
-    if (bar) { bar.classList.remove("hidden"); if (progress.total_bytes) { bar.max = progress.total_bytes; bar.value = progress.downloaded_bytes; } else bar.removeAttribute("value"); }
-  }
 
   async function editProject(id = null) {
     const project = id ? await invoke("get_project", { id }) : { id: crypto.randomUUID(), name: "", instructions: "", documents: [], workspace_path: null };
@@ -106,5 +69,5 @@ export function createEveryday(api) {
     draw();
   }
 
-  return { setup, setupProgress, downloadProgress, editProject, preferences, threadSettings, search, previewSource, renderLibrary };
+  return { editProject, preferences, threadSettings, search, previewSource, renderLibrary };
 }

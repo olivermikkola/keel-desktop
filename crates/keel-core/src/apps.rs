@@ -70,9 +70,10 @@ impl AppPreset {
     pub fn starters(self) -> &'static [&'static str] {
         match self {
             AppPreset::Chat => &[
-                "Explain something complicated in simple terms",
-                "Help me think through an idea",
-                "Help me draft a thoughtful message",
+                "Write a friendly text saying I'll be 10 minutes late",
+                "Explain how the internet works like I'm 12",
+                "Give me 5 easy dinner ideas using rice and eggs",
+                "Plan a relaxed weekend in Helsinki",
             ],
             AppPreset::General => &[
                 "Summarize the documents in this folder",
