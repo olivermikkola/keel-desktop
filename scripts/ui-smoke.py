@@ -16,7 +16,7 @@ let runtime = {state:'stopped',active_model_id:null,base_url:'http://127.0.0.1:1
 const presets = ['chat','general','code','websites','docs','sheets','study','slides'].map(id => ({id,title:({chat:'Chat',general:'Work',code:'Code'})[id] || id[0].toUpperCase()+id.slice(1),summary:'A useful local workspace',starters:['Help me get started'],tools:[]}));
 let files = [], fileContent = {};
 const emit = (event,payload) => (listeners[event] || []).forEach(fn => fn({payload}));
-window.__test = {calls:[]};
+window.__test = {calls:[], emit};
 window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []).push(fn); }},core:{invoke:async (cmd,args={}) => {
  window.__test.calls.push({cmd,args});
  let result;
@@ -66,25 +66,141 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
 }}};
 })();'''
 
+
+FIRST_RUN_LAYER = r'''(() => {
+const t = window.__test, core = window.__TAURI__.core, base = core.invoke;
+const big = {id:'bonsai-9b',name:'Bonsai 2 · 9B',detail:'Recommended everyday agent model.',bytes:2556640128};
+const fast = {id:'bonsai-4b',name:'Bonsai 2 · 4B',detail:'Fast local starter model.',bytes:1212103520};
+core.invoke = async (cmd,args={}) => {
+ if (cmd==='get_bootstrap_state') { const r=await base(cmd,args); if(t.firstRun && !t.setupDone) r.models.forEach(m=>m.installed=false); return r; }
+ if (cmd==='get_setup_plan') { t.calls.push({cmd,args}); return {memory_bytes:17179869184,platform:'test',runtime_path:null,runtime_asset:{bytes:20000000},recommended_model:big,fast_model:fast,context_size:8192}; }
+ if (cmd==='setup_local_ai') {
+  t.calls.push({cmd,args}); t.emit('keel://setup-stage','runner');
+  return new Promise((resolve,reject) => { t.finishSetup=async()=>{ t.setupDone=true; resolve(await base('setup_local_ai',args)); }; t.failSetup=(message)=>reject(message); });
+ }
+ if (cmd==='start_model' && t.holdStart) {
+  t.calls.push({cmd,args});
+  return new Promise((resolve) => { t.releaseStart=async()=>{ resolve(await base(cmd,args)); }; });
+ }
+ return base(cmd,args);
+};
+})();'''
+
+def mock_for(first_run=False, hold_start=False):
+    script = MOCK
+    if first_run:
+        script = script.replace("localStorage.setItem('keel_welcome_done', '1');", "")
+    return script + FIRST_RUN_LAYER + f"window.__test.firstRun={'true' if first_run else 'false'};window.__test.holdStart={'true' if hold_start else 'false'};"
+
+async def new_page(browser, port, **options):
+    page = await browser.new_page(viewport={'width':1440,'height':1000})
+    page.errors=[]
+    page.on('pageerror', lambda e:page.errors.append(str(e)))
+    await page.add_init_script(mock_for(**options))
+    page.set_default_timeout(10000)
+    await page.goto(f'http://127.0.0.1:{port}')
+    return page
+
+async def first_run(browser, port):
+    """A brand-new person: welcome, one-click setup, live progress, a question asked while waiting, and a failed download."""
+    page = await new_page(browser, port, first_run=True)
+    await page.locator('#welcome-start').wait_for()
+    overlay = await page.locator('#welcome-overlay').inner_text()
+    assert 'Your own private AI.' in overlay, overlay
+    for jargon in ('llama.cpp','MCP','sandbox','Metal','CUDA','stdio'):
+        assert jargon not in overlay, jargon
+    await page.screenshot(path=str(OUTPUT / 'first-run-welcome.png'))
+    # The lighter download is one click away and is what gets installed when chosen.
+    await page.locator('#welcome-size').click()
+    await page.get_by_text('Use the smarter one instead', exact=False).wait_for()
+    await page.locator('#welcome-start').click()
+    await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='setup_local_ai'&&c.args.modelId==='bonsai-4b')")
+    await page.locator('#welcome-bar').wait_for()
+    # Live numbers: percent, speed and time left.
+    await page.evaluate("window.__test.emit('keel://download-progress',{model_id:'runtime',downloaded_bytes:20000000,total_bytes:20000000,done:true})")
+    await page.evaluate("window.__test.emit('keel://setup-stage','model')")
+    await page.evaluate("window.__test.emit('keel://download-progress',{model_id:'bonsai-4b',downloaded_bytes:100000000,total_bytes:1212103520,done:false})")
+    await page.wait_for_timeout(1300)
+    await page.evaluate("window.__test.emit('keel://download-progress',{model_id:'bonsai-4b',downloaded_bytes:400000000,total_bytes:1212103520,done:false})")
+    await page.wait_for_function("document.querySelector('#welcome-meter').textContent.includes('/s') && document.querySelector('#welcome-meter').textContent.includes('left')")
+    meter = await page.locator('#welcome-meter').inner_text()
+    pct = await page.locator('#welcome-pct').inner_text()
+    assert pct.endswith('%') and 0 < int(pct[:-1]) < 100, pct
+    assert 'of' in meter, meter
+    await page.screenshot(path=str(OUTPUT / 'first-run-downloading.png'))
+    # Boredom escape hatch: ask a question now; it is sent the moment the AI is ready.
+    await page.locator('[data-chip="0"]').click()
+    await page.locator('#welcome-overlay').wait_for(state='hidden')
+    await page.get_by_text('Your message sends as soon as your AI is ready', exact=True).wait_for()
+    assert await page.locator('#prompt-input').input_value() != ''
+    assert not await page.evaluate("window.__test.calls.some(c=>c.cmd==='send_message')")
+    await page.locator('.sidebar-runtime-state').get_by_text('Setting up', exact=False).wait_for()
+    await page.screenshot(path=str(OUTPUT / 'first-run-waiting.png'))
+    await page.evaluate("window.__test.finishSetup()")
+    await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='send_message')")
+    await page.get_by_text('Ready to help.', exact=True).wait_for()
+    assert await page.evaluate("localStorage.getItem('keel_welcome_done')") == '1'
+    assert not page.errors, page.errors
+    await page.close()
+
+    # A failed download explains itself in plain words and can be retried.
+    page = await new_page(browser, port, first_run=True)
+    await page.locator('#welcome-start').click()
+    await page.locator('#welcome-bar').wait_for()
+    await page.evaluate("window.__test.failSetup('error sending request for url (https://huggingface.co/x)')")
+    await page.locator('#welcome-retry').wait_for()
+    text = await page.locator('#welcome-overlay').inner_text()
+    assert "couldn't reach the download server" in text and 'huggingface' not in text.split('Technical details')[0], text
+    await page.screenshot(path=str(OUTPUT / 'first-run-error.png'))
+    await page.locator('#welcome-retry').click()
+    await page.wait_for_function("window.__test.calls.filter(c=>c.cmd==='setup_local_ai').length===2")
+    await page.evaluate("window.__test.finishSetup()")
+    await page.locator('#welcome-overlay').wait_for(state='hidden')
+    assert not page.errors, page.errors
+    await page.close()
+
+    # Skipping is fine: the empty chat keeps a one-click way back, and the app never nags with the welcome again.
+    page = await new_page(browser, port, first_run=True)
+    await page.locator('#welcome-skip').click()
+    await page.locator('#welcome-overlay').wait_for(state='hidden')
+    await page.locator('#chat-setup-btn').get_by_text('Set up my AI', exact=True).wait_for()
+    await page.reload()
+    await page.get_by_role('heading', name='What can I help with?', exact=True).wait_for()
+    assert await page.locator('#welcome-overlay').is_hidden()
+    assert not page.errors, page.errors
+    await page.close()
+
+async def second_launch(browser, port):
+    """The model is already installed: opening the app starts it, and a message typed early is not lost."""
+    page = await new_page(browser, port, hold_start=True)
+    await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='start_model')")
+    await page.locator('#model-pill-label').get_by_text('Waking up your AI', exact=False).wait_for()
+    await page.locator('#prompt-input').fill('Hello early Keel')
+    await page.locator('#send-btn').click()
+    await page.get_by_text('Your message sends as soon as your AI is ready', exact=True).wait_for()
+    assert not await page.evaluate("window.__test.calls.some(c=>c.cmd==='send_message')")
+    await page.screenshot(path=str(OUTPUT / 'second-launch-waking.png'))
+    await page.evaluate("window.__test.releaseStart()")
+    await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='send_message'&&c.args.input.prompt==='Hello early Keel')")
+    await page.get_by_text('Ready to help.', exact=True).wait_for()
+    assert not page.errors, page.errors
+    await page.close()
+
 async def main(port):
     async with async_playwright() as p:
         browser = await p.chromium.launch(executable_path=os.environ.get('CHROMIUM_BIN') or shutil.which('chromium'), args=['--no-sandbox'])
         page = await browser.new_page(viewport={'width':1440,'height':1000})
         errors=[]
         page.on('pageerror', lambda e:errors.append(str(e)))
-        await page.add_init_script(MOCK)
+        await page.add_init_script(mock_for())
         page.set_default_timeout(10000)
         await page.goto(f'http://127.0.0.1:{port}')
-        await page.get_by_role('heading', name='Chat', exact=True).wait_for()
+        await page.get_by_role('heading', name='What can I help with?', exact=True).wait_for()
         assert await page.locator('#workspace-pill-btn').is_hidden()
+        # The installed model starts by itself on launch; nobody has to find a button.
+        await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='start_model')")
+        await page.locator('#model-pill-label').get_by_text('Test local model', exact=False).wait_for()
         await page.locator('#prompt-input').fill('Hello Keel')
-        await page.locator('#send-btn').click()
-        await page.get_by_text('Load a model or connect an existing server in Models.',exact=True).wait_for()
-        assert not await page.evaluate("window.__test.calls.some(c=>c.cmd==='send_message')")
-        await page.locator('[data-view=models]').click()
-        await page.locator('[data-start-model]').click()
-        await page.get_by_text('• Loaded',exact=True).wait_for()
-        await page.locator('[data-view=chat]').click()
         await page.locator('#send-btn').click()
         await page.get_by_text('Ready to help.',exact=True).wait_for()
         assert await page.locator('#viewer-pane').is_hidden()
@@ -162,13 +278,16 @@ async def main(port):
         await page.screenshot(path=str(OUTPUT / 'library.png'))
         await page.locator('[data-view=models]').click()
         await page.locator('#models-setup-btn').click()
-        await page.locator('#setup-start').wait_for()
+        await page.locator('#welcome-start').wait_for()
         await page.screenshot(path=str(OUTPUT / 'setup.png'))
-        await page.locator('#setup-start').click()
+        await page.locator('#welcome-start').click()
         await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='setup_local_ai')")
-        await page.locator('#modal-backdrop').wait_for(state='hidden')
+        await page.evaluate("window.__test.finishSetup()")
+        await page.locator('#welcome-overlay').wait_for(state='hidden')
         assert not errors,errors
-        print('PASS: setup, attachments, source preview, saved preferences, projects, thread rename/pin/search, Chat/Work/Code, file approval, Library, Images, safe HTML previews; no browser errors.')
+        await first_run(browser, port)
+        await second_launch(browser, port)
+        print('PASS: first-run welcome and setup (progress, queued first question, error and skip), launch wake-up, attachments, source preview, saved preferences, projects, thread rename/pin/search, Chat/Work/Code, file approval, Library, Images, safe HTML previews; no browser errors.')
         await browser.close()
 
 if __name__ == '__main__':

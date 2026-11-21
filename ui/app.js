@@ -1,5 +1,6 @@
 import { createEveryday } from "./everyday.js";
 import { createImageWorkspace } from "./images.js";
+import { assistantStatus, friendlySetupError, isFirstRun, modelToWake } from "./onboarding.js";
 import { MODES, modeForPreset, isRuntimeLive, promptBlockReason } from "./modes.js";
 import { escapeHtml, renderMarkdown } from "./markdown.js";
 import {
@@ -8,7 +9,6 @@ import {
   DENSITY_MODES,
   TEXT_SIZES,
   TONE_MODES,
-  computeWelcomeVisible,
   countStagedEdits,
   detectViewerForPreset,
   filterModels,
@@ -18,6 +18,7 @@ import {
   shortPath,
 } from "./state.js";
 import { renderCodeView, renderDiffHtml, renderDiffView, renderViewer, inlineWorkspaceImages } from "./viewers.js";
+import { createWelcome } from "./welcome.js";
 
 const tauri = window.__TAURI__?.core;
 const events = window.__TAURI__?.event;
@@ -46,6 +47,8 @@ const appState = {
   streamingThinking: "",
   streamingTools: [],
   downloadProgress: {},
+  waking: false,
+  sendWhenReady: false,
   appearance: loadAppearance(),
 };
 
@@ -90,11 +93,6 @@ const els = {
   modalTitle: document.getElementById("modal-title"),
   modalBody: document.getElementById("modal-body"),
   welcomeOverlay: document.getElementById("welcome-overlay"),
-  welcomeStep1: document.getElementById("welcome-step-1"),
-  welcomeStep2: document.getElementById("welcome-step-2"),
-  welcomeNextBtn: document.getElementById("welcome-next-btn"),
-  welcomeSkipBtn: document.getElementById("welcome-skip-btn"),
-  welcomeDoneBtn: document.getElementById("welcome-done-btn"),
 };
 
 const images = createImageWorkspace({
@@ -125,6 +123,24 @@ const everyday = createEveryday({
     await createNewSession(item.kind === "html" ? "websites" : item.kind === "csv" ? "sheets" : item.kind === "md" ? "docs" : "general");
     appState.viewerFile = item.path; appState.viewerOpen = true; appState.viewerTab = "preview"; renderAll();
   },
+});
+
+const welcome = createWelcome({
+  invoke,
+  root: els.welcomeOverlay,
+  toast: showToast,
+  bootstrap: () => appState.bootstrap,
+  refresh: refreshBootstrap,
+  starters: () => appState.bootstrap?.presets?.find((p) => p.id === "chat")?.starters || [],
+  markDone: markWelcomeDone,
+  changed: () => {
+    if (!appState.bootstrap) return;
+    renderHeader();
+    renderSidebar();
+    if (appState.session && !appState.session.messages.length && !appState.streaming) renderChat();
+  },
+  queuePrompt: queueFirstPrompt,
+  ready: async () => { renderAll(); await sendQueuedPrompt(); els.promptInput.focus(); },
 });
 
 function saveDraft() {
@@ -170,26 +186,65 @@ function applyAppearance(next) {
   }
 }
 
-function syncWelcomeOverlay(forceShow = false) {
-  let doneVal = null;
-  try {
-    doneVal = localStorage.getItem(WELCOME_STORAGE_KEY);
-  } catch {
-    doneVal = "1";
-  }
-  const visible = forceShow || computeWelcomeVisible(doneVal);
-  els.welcomeOverlay.classList.toggle("hidden", !visible);
-  els.welcomeStep1.classList.remove("hidden");
-  els.welcomeStep2.classList.add("hidden");
-}
-
-function dismissWelcome() {
+function markWelcomeDone() {
   try {
     localStorage.setItem(WELCOME_STORAGE_KEY, "1");
   } catch {
     // Ignore storage errors.
   }
-  els.welcomeOverlay.classList.add("hidden");
+}
+
+function welcomeFlag() {
+  try {
+    return localStorage.getItem(WELCOME_STORAGE_KEY);
+  } catch {
+    return "1";
+  }
+}
+
+/** Starts the installed model without the person having to find a button. */
+async function wakeAssistant() {
+  const id = modelToWake(appState.bootstrap);
+  if (!id || appState.waking) return false;
+  appState.waking = true;
+  renderAll();
+  try {
+    await invoke("start_model", { modelId: id });
+    appState.waking = false;
+    await refreshBootstrap();
+    renderAll();
+    await sendQueuedPrompt();
+    return true;
+  } catch (err) {
+    appState.waking = false;
+    appState.sendWhenReady = false;
+    renderAll();
+    showNotice(`Your AI didn't start: ${friendlySetupError(err).detail || "unknown problem"}. Tap the model name at the top to try again or pick another.`);
+    return false;
+  }
+}
+
+/** The composer keeps what was typed; it is sent as soon as the assistant is ready. */
+function queueFirstPrompt(text) {
+  els.promptInput.value = text;
+  autoSizePromptInput();
+  saveDraft();
+  waitForAssistant();
+}
+
+function waitForAssistant() {
+  appState.sendWhenReady = true;
+  if (welcome.status().busy || appState.waking) { renderHeader(); return; }
+  if (modelToWake(appState.bootstrap)) { wakeAssistant(); return; }
+  renderHeader();
+  welcome.show();
+}
+
+async function sendQueuedPrompt() {
+  if (!appState.sendWhenReady) return;
+  appState.sendWhenReady = false;
+  if (isRuntimeLive(appState.bootstrap?.runtime) && els.promptInput.value.trim()) await sendCurrentPrompt();
+  renderHeader();
 }
 
 async function invoke(cmd, args = {}) {
@@ -312,17 +367,16 @@ async function setActiveView(view) {
 
 async function init() {
   applyAppearance(appState.appearance);
-  syncWelcomeOverlay(false);
 
   if (events) {
     await events.listen("keel://preference-saved", () => showToast("Saved to preferences. You can edit or remove it in the sidebar."));
-    await events.listen("keel://setup-progress", (event) => everyday.setupProgress(event.payload));
+    await events.listen("keel://setup-stage", (event) => welcome.stage(event.payload));
     await events.listen("keel://image-job", () => images.onJob());
     await events.listen("keel://agent-event", (ev) => handleAgentEvent(ev.payload));
     await events.listen("keel://download-progress", (ev) => {
       const p = ev.payload;
       appState.downloadProgress[p.model_id] = p;
-      everyday.downloadProgress(p);
+      welcome.download(p);
       const bar = document.getElementById(`dl-prog-${p.model_id}`);
       if (bar) {
         const pct = p.total_bytes ? Math.round((p.downloaded_bytes / p.total_bytes) * 100) : 0;
@@ -346,6 +400,11 @@ async function init() {
   await images.reload();
   renderAll();
   window.__KEEL_READY__ = { preset: appState.session.app_preset };
+  if (isFirstRun(welcomeFlag(), appState.bootstrap)) welcome.show();
+  else {
+    markWelcomeDone();
+    wakeAssistant();
+  }
   setInterval(async () => {
     if (!appState.bootstrap) return;
     try {
@@ -531,18 +590,23 @@ function renderSidebar() {
 
   const rt = b.runtime;
   const activeModel = b.models.find((m) => m.id === (rt.active_model_id || b.config.selected_model_id));
+  const setup = welcome.status();
+  const status = assistantStatus({ runtime: rt, waking: appState.waking, setup });
   const runningLabel =
     rt.state === "external"
       ? b.config.external_model_name || "External API"
-      : rt.state === "running" ? activeModel?.name || "Local model" : "No model loaded";
+      : rt.state === "running" ? activeModel?.name || "Local model" : status.key === "setup" ? "Setting up your AI" : "No model loaded";
   const isLive = isRuntimeLive(rt);
+  const fill = status.key === "setup" ? ` style="width:${Math.round(setup.fraction * 100)}%"` : "";
+  els.sidebarRuntimeBox.classList.toggle("clickable", status.key === "setup");
+  els.sidebarRuntimeBox.onclick = status.key === "setup" ? () => welcome.show() : null;
   els.sidebarRuntimeBox.innerHTML = `
-    <span class="status-dot ${rt.state}"></span>
+    <span class="status-dot ${status.key === "setup" || status.key === "waking" ? "starting" : rt.state}"></span>
     <div class="sidebar-runtime-meta">
       <div class="sidebar-runtime-name">${escapeHtml(runningLabel)}</div>
-      <div class="sidebar-runtime-bar"><div class="sidebar-runtime-fill ${isLive ? "active" : ""}"></div></div>
+      <div class="sidebar-runtime-bar"><div class="sidebar-runtime-fill ${isLive || status.key === "setup" ? "active" : ""}"${fill}></div></div>
     </div>
-    <span class="mono" style="font-size:11px">${escapeHtml(rt.state)}</span>
+    <span class="sidebar-runtime-state">${escapeHtml(status.label)}</span>
   `;
 }
 
@@ -554,7 +618,7 @@ function renderHeader() {
   const selected = b.models.find(
     (m) => m.id === (rt.active_model_id || b.config.selected_model_id),
   );
-  els.modelPillLabel.textContent = rt.state === "stopped" ? "Choose a model" : rt.state === "error" ? "Model needs attention" :
+  els.modelPillLabel.textContent = welcome.status().busy ? assistantStatus({ runtime: rt, setup: welcome.status() }).label : appState.waking ? "Waking up your AI…" : rt.state === "stopped" ? (b.models.some((m) => m.installed) ? "Start your AI" : "Set up your AI") : rt.state === "error" ? "Model needs attention" :
     rt.state === "external"
       ? b.config.external_model_name || "External endpoint"
       : selected
@@ -580,7 +644,7 @@ function renderHeader() {
   if (!appState.streaming) {
     let location = "On this computer";
     try { if (!["localhost", "127.0.0.1", "[::1]"].includes(new URL(rt.base_url).hostname)) location = "Your external model server"; } catch { /* Setup can correct an invalid endpoint. */ }
-    els.telemetryLeft.textContent = isRuntimeLive(rt) ? `${location} · ${appState.session?.messages.length || 0} messages` : "Set up a local assistant to get started";
+    els.telemetryLeft.textContent = appState.sendWhenReady ? "Your message sends as soon as your AI is ready" : appState.waking ? "Waking up your AI. This takes a few seconds." : isRuntimeLive(rt) ? `${location} · ${appState.session?.messages.length || 0} messages` : "Your AI is off. Send a message to start it.";
   }
   const mode = modeForPreset(appState.session?.app_preset);
   els.promptInput.placeholder = MODES[mode].placeholder;
@@ -607,16 +671,22 @@ function renderChat() {
           `<button class="starter-card" data-starter="${escapeHtml(st)}">${escapeHtml(st)}</button>`,
       )
       .join("");
+    const live = isRuntimeLive(b.runtime);
+    const setupBusy = welcome.status().busy;
+    const canWake = Boolean(modelToWake(b));
+    const action = live || appState.waking ? "" : setupBusy ? '<button class="btn btn-primary" id="chat-setup-btn">See setup progress</button>' : canWake ? '<button class="btn btn-primary" id="chat-setup-btn">Start your AI</button>' : '<button class="btn btn-primary" id="chat-setup-btn">Set up my AI</button>';
+    const status = appState.waking ? '<p class="empty-status" role="status">Waking up your AI. You can type your question now.</p>' : "";
+    const heading = preset.id === "chat" && !project ? "What can I help with?" : preset.title;
     els.chatScroll.innerHTML = `
       <div class="empty-state">
         ${project ? `<span class="eyebrow">${escapeHtml(project.name)}</span>` : ""}
-        <h1>${escapeHtml(preset.title)}</h1>
+        <h1>${escapeHtml(heading)}</h1>
         <p>${escapeHtml(preset.summary)}</p>
-        ${!isRuntimeLive(b.runtime) ? '<button class="btn btn-primary" id="chat-setup-btn">Set up your assistant</button>' : ""}
+        ${action}${status}
         <div class="starters-grid">${starters}</div>
       </div>
     `;
-    els.chatScroll.querySelector("#chat-setup-btn")?.addEventListener("click", () => everyday.setup());
+    els.chatScroll.querySelector("#chat-setup-btn")?.addEventListener("click", () => (canWake && !setupBusy ? wakeAssistant() : welcome.show()));
     els.chatScroll.querySelectorAll("[data-starter]").forEach((btn) => {
       btn.onclick = () => {
         els.promptInput.value = btn.getAttribute("data-starter");
@@ -734,10 +804,14 @@ async function sendCurrentPrompt() {
   if (appState.streaming || !appState.session) return;
   const prompt = els.promptInput.value.trim() || (appState.pendingDocuments.length ? "Summarize the attached documents and highlight the key points." : "");
   if (!prompt) return;
+  const harnessMode = appState.bootstrap.config.harness_mode;
   const blocked = promptBlockReason(appState.session, appState.bootstrap.runtime,
-    appState.workspacePath, appState.bootstrap.config.harness_mode);
+    appState.workspacePath, harnessMode);
   if (blocked) {
-    showNotice(blocked);
+    // A stopped model is not a dead end: start it (or finish setup) and send afterwards.
+    const otherReason = promptBlockReason(appState.session, { state: "running" }, appState.workspacePath, harnessMode);
+    if (otherReason) showNotice(otherReason);
+    else waitForAssistant();
     return;
   }
   els.approvalSlot.innerHTML = "";
@@ -975,7 +1049,7 @@ function renderModelsWorkspace() {
     </aside>
   `;
 
-  document.getElementById("models-setup-btn").onclick = everyday.setup;
+  document.getElementById("models-setup-btn").onclick = () => welcome.show();
   const searchIn = document.getElementById("models-search-in");
   searchIn.oninput = () => {
     appState.modelSearchQuery = searchIn.value;
@@ -1319,7 +1393,7 @@ function openCustomizeModal() {
         // Ignore storage errors.
       }
       closeModal();
-      syncWelcomeOverlay(true);
+      welcome.show();
     };
     card.querySelector("#cust-save").onclick = async () => {
       await invoke("save_customize_settings", {
@@ -1399,15 +1473,21 @@ function wireUi() {
     };
   });
 
-  els.modelPillBtn.onclick = () => setActiveView("models");
+  els.modelPillBtn.onclick = () => {
+    const rt = appState.bootstrap.runtime;
+    if (isRuntimeLive(rt) || appState.waking) setActiveView("models");
+    else if (modelToWake(appState.bootstrap)) wakeAssistant();
+    else if (!appState.bootstrap.models.some((m) => m.installed)) welcome.show();
+    else setActiveView("models");
+  };
   document.getElementById("open-customize-btn").onclick = openCustomizeModal;
   els.harnessPillBtn.onclick = openCustomizeModal;
   els.diffsPillBtn.onclick = openDiffsModal;
   document.getElementById("modal-close-btn").onclick = closeModal;
 
-  els.welcomeNextBtn.onclick = () => { dismissWelcome(); everyday.setup(); };
-  els.welcomeSkipBtn.onclick = dismissWelcome;
-  els.welcomeDoneBtn.onclick = dismissWelcome;
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && welcome.isOpen()) welcome.handleEscape();
+  });
 
   els.chatScroll.addEventListener("click", async (e) => {
     const copyCode = e.target.closest("[data-copy-code]");
