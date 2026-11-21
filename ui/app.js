@@ -631,7 +631,7 @@ function renderHeader() {
   els.composerWsChip.textContent = appState.workspacePath ? shortWs : "No folder";
 
   const harness = b.harnesses.find((h) => h.id === b.config.harness_mode);
-  els.harnessPillLabel.textContent = harness ? harness.name.replace(" Harness", "") : "Keel";
+  els.harnessPillLabel.textContent = `Engine: ${harness ? harness.name.replace(" Harness", "") : "Keel"}`;
 
   const counts = countStagedEdits(appState.session?.staged_edits ?? []);
   els.diffsPillLabel.textContent =
@@ -650,7 +650,7 @@ function renderHeader() {
   els.composerWsChip.textContent = shortWs;
   els.composerWsChip.classList.toggle("hidden", mode === "chat");
   els.workspacePillBtn.classList.toggle("hidden", mode === "chat" && appState.activeView !== "tools");
-  els.harnessPillBtn.classList.toggle("hidden", mode !== "code" || !harness || harness.id === b.harnesses[0]?.id);
+  els.harnessPillBtn.classList.toggle("hidden", mode !== "code");
   els.toggleViewerBtn.classList.toggle("hidden", mode === "chat");
   els.diffsPillBtn.classList.toggle("hidden", mode === "chat" || counts.pending + counts.applied === 0);
   els.newChatBtn.disabled = appState.streaming;
@@ -778,7 +778,7 @@ function handleAgentEvent(ev) {
   if (["staged_edit_added", "turn_finished"].includes(ev.type)) {
     if (!appState.viewerOpen && ev.type === "staged_edit_added") {
       appState.viewerOpen = true;
-      appState.viewerTab = "diff";
+      appState.viewerTab = modeForPreset(appState.session?.app_preset) === "code" ? "diff" : "preview";
     }
     if (appState.viewerOpen) renderViewerPane();
   }
@@ -989,7 +989,7 @@ function renderModelsWorkspace() {
 
   els.viewModels.innerHTML = `
     <div class="models-main-col">
-      ${isRunningLocal || isRunningExternal ? "" : `<div class="model-setup-row"><div><strong>Not sure which one?</strong><p class="muted">Keel picks the right model for this computer and sets everything up.</p></div><button id="models-setup-btn" class="btn btn-primary btn-sm">Set it up for me</button></div>`}
+      <div class="model-setup-row"><div><strong>Not sure which one?</strong><p class="muted">Keel picks the right model for this computer and sets everything up.</p></div><button id="models-setup-btn" class="btn ${isRunningLocal || isRunningExternal ? "" : "btn-primary "}btn-sm">Set it up for me</button></div>
       <div class="models-search-bar">
         <input id="models-search-in" class="input grow" value="${escapeHtml(appState.modelSearchQuery)}" placeholder="Search models" />
         <div class="models-filter-pills">

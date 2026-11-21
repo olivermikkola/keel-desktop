@@ -422,7 +422,7 @@ mod runner_check_tests {
     #[cfg(unix)]
     #[test]
     fn a_working_program_passes_the_check() {
-        check_runner_starts(Path::new("/bin/true")).unwrap();
-        assert!(check_runner_starts(Path::new("/bin/false")).is_err());
+        check_runner_starts(Path::new("/usr/bin/true")).unwrap();
+        assert!(check_runner_starts(Path::new("/usr/bin/false")).is_err());
     }
 }
