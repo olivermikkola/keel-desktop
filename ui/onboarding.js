@@ -81,6 +81,9 @@ export function friendlySetupError(raw) {
   if (/no space|disk (is )?full|ENOSPC|not enough (disk )?space/i.test(text)) {
     return { message: "Your disk is full, so the download couldn't finish. Free up a few GB, then try again.", retry: true, existing: false, detail };
   }
+  if (/needs a system library/i.test(text)) {
+    return { message: detail, retry: true, existing: false, detail: "" };
+  }
   if (/sha-?256|checksum|did not match|mismatch/i.test(text)) {
     return { message: "The download didn't pass Keel's safety check, so it was thrown away. Try again to get a clean copy.", retry: true, existing: false, detail };
   }

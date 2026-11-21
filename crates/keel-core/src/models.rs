@@ -49,8 +49,7 @@ pub fn default_catalog() -> Vec<CatalogModel> {
             quantization: "Q2_0".to_string(),
             context_size: 16_384,
             tier: "fast".to_string(),
-            detail: "Fast local starter model. 16K context, small download, quick tool calls."
-                .to_string(),
+            detail: "Small and quick. A good start for most laptops.".to_string(),
             local_path: None,
             installed: false,
         },
@@ -67,7 +66,7 @@ pub fn default_catalog() -> Vec<CatalogModel> {
             quantization: "Q2_0".to_string(),
             context_size: 32_768,
             tier: "balanced".to_string(),
-            detail: "Recommended everyday agent model. 32K context and strong tool reliability."
+            detail: "Recommended. Smarter everyday helper; best with 12 GB of memory or more."
                 .to_string(),
             local_path: None,
             installed: false,
@@ -85,7 +84,7 @@ pub fn default_catalog() -> Vec<CatalogModel> {
             quantization: "Q4_K_M".to_string(),
             context_size: 8_192,
             tier: "fast".to_string(),
-            detail: "Compact low-RAM text and tool model with 8K context.".to_string(),
+            detail: "Very small. For older computers with little memory.".to_string(),
             local_path: None,
             installed: false,
         },
@@ -102,8 +101,7 @@ pub fn default_catalog() -> Vec<CatalogModel> {
             quantization: "Q4_K_M".to_string(),
             context_size: 8_192,
             tier: "fast".to_string(),
-            detail: "Compact 2B tool-capable model. Good for light laptops and quick checks."
-                .to_string(),
+            detail: "Small and light. Good for thin laptops.".to_string(),
             local_path: None,
             installed: false,
         },
@@ -118,7 +116,7 @@ pub fn default_catalog() -> Vec<CatalogModel> {
             quantization: "Q2_0".to_string(),
             context_size: 32_768,
             tier: "desktop".to_string(),
-            detail: "Desktop-tier ternary model for 16 GB+ machines. Higher coding accuracy."
+            detail: "Largest and smartest. Needs a powerful computer with 16 GB of memory or more."
                 .to_string(),
             local_path: None,
             installed: false,
@@ -215,7 +213,7 @@ pub fn list_models(data_dir: &Path, custom_paths: &HashMap<String, String>) -> V
                         quantization: "GGUF".to_string(),
                         context_size: 16_384,
                         tier: "custom".to_string(),
-                        detail: "Imported local GGUF model.".to_string(),
+                        detail: "Your own model file.".to_string(),
                         local_path: Some(path.to_string_lossy().to_string()),
                         installed: true,
                     });

@@ -42,7 +42,17 @@
     },
     "linux": {
       "deb": {
-        "section": "devel"
+        "section": "devel",
+        "depends": [
+          "libssl3 | libssl3t64",
+          "libgomp1"
+        ]
+      },
+      "rpm": {
+        "depends": [
+          "libssl.so.3()(64bit)",
+          "libgomp.so.1()(64bit)"
+        ]
       }
     }
   }

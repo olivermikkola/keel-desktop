@@ -68,6 +68,9 @@ impl RuntimeManager {
         )?;
         self.stop().await;
         self.llama_server_bin = Some(bin.to_string_lossy().to_string());
+        // A leftover runner (or a second Keel window) can still hold the usual
+        // port; take a free one instead of failing with "exit status 1".
+        self.port = free_port(self.port);
         self.base_url = format!("http://127.0.0.1:{}/v1", self.port);
 
         let log_dir = dirs::cache_dir()
@@ -120,7 +123,10 @@ impl RuntimeManager {
                         .rev()
                         .collect::<Vec<_>>()
                         .join("\n");
-                    self.last_error = Some(format!("Model runner exited ({exit}). {details}"));
+                    self.last_error = Some(
+                        missing_library_hint(&details, &os_release())
+                            .unwrap_or_else(|| format!("Model runner exited ({exit}). {details}")),
+                    );
                     bail!(
                         "{}",
                         self.last_error.as_deref().unwrap_or("Model runner failed")
@@ -276,5 +282,147 @@ mod tests {
         assert_eq!(runtime.base_url, "http://127.0.0.1:8080/v1");
         runtime.stop_sync();
         assert_eq!(runtime.status().state, "stopped");
+    }
+}
+
+/// Returns `preferred` if nothing is listening there, otherwise any free loopback port.
+pub fn free_port(preferred: u16) -> u16 {
+    if std::net::TcpListener::bind(("127.0.0.1", preferred)).is_ok() {
+        return preferred;
+    }
+    std::net::TcpListener::bind(("127.0.0.1", 0))
+        .and_then(|l| l.local_addr())
+        .map(|a| a.port())
+        .unwrap_or(preferred)
+}
+
+/// Starts the model runner once with `--version` to prove it can load on this
+/// computer. A Linux build can fail here when the system lacks a shared
+/// library it was linked against (current Fedora ships OpenSSL 4, while the
+/// llama.cpp Linux build needs OpenSSL 3), so the person gets the fix before
+/// a multi-gigabyte model download instead of a silent "model won't load".
+pub fn check_runner_starts(bin: &Path) -> Result<()> {
+    let output = std::process::Command::new(bin)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| format!("Keel's engine could not be started ({})", bin.display()))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    if let Some(hint) = missing_library_hint(&text, &os_release()) {
+        bail!("{hint}");
+    }
+    bail!(
+        "Keel's engine could not start on this computer: {}",
+        text.trim()
+    );
+}
+
+/// Turns a dynamic-loader failure into a plain sentence with the exact command
+/// that installs the missing library on this Linux distribution.
+pub fn missing_library_hint(output: &str, os_release: &str) -> Option<String> {
+    let marker = "error while loading shared libraries: ";
+    let start = output.find(marker)? + marker.len();
+    let library = output[start..].split(':').next()?.trim().to_string();
+    let field = |key: &str| {
+        os_release
+            .lines()
+            .find_map(|l| l.strip_prefix(&format!("{key}=")))
+            .unwrap_or("")
+            .trim_matches('"')
+            .to_lowercase()
+    };
+    let family = format!("{} {}", field("ID"), field("ID_LIKE"));
+    let is = |name: &str| family.split_whitespace().any(|w| w == name);
+    let package = |fedora: &str, debian: &str, arch: &str| {
+        if is("fedora") || is("rhel") {
+            Some(format!("sudo dnf install {fedora}"))
+        } else if is("debian") || is("ubuntu") {
+            Some(format!("sudo apt install {debian}"))
+        } else if is("arch") {
+            Some(format!("sudo pacman -S {arch}"))
+        } else {
+            None
+        }
+    };
+    let command = match library.as_str() {
+        "libssl.so.3" | "libcrypto.so.3" => package("openssl3-libs", "libssl3", "openssl"),
+        "libgomp.so.1" => package("libgomp", "libgomp1", "gcc-libs"),
+        "libstdc++.so.6" => package("libstdc++", "libstdc++6", "gcc-libs"),
+        "libzstd.so.1" => package("libzstd", "libzstd1", "zstd"),
+        "libz.so.1" => package("zlib-ng-compat", "zlib1g", "zlib"),
+        _ => None,
+    };
+    Some(match command {
+        Some(cmd) => format!(
+            "Keel's engine needs a system library this computer doesn't have yet ({library}). Open a terminal, run: {cmd} — then press Try again."
+        ),
+        None => format!(
+            "Keel's engine needs a system library this computer doesn't have yet ({library}). Install it with your system's package manager, then press Try again."
+        ),
+    })
+}
+
+fn os_release() -> String {
+    std::fs::read_to_string("/etc/os-release").unwrap_or_default()
+}
+
+#[cfg(test)]
+mod runner_check_tests {
+    use super::*;
+
+    const FEDORA: &str = "NAME=\"Fedora Linux\"\nID=fedora\nVERSION_ID=45\n";
+    const UBUNTU: &str = "ID=ubuntu\nID_LIKE=debian\n";
+
+    #[test]
+    fn fedora_openssl3_gap_names_the_compat_package() {
+        let out = "/r/llama-server: error while loading shared libraries: libssl.so.3: cannot open shared object file: No such file or directory";
+        let hint = missing_library_hint(out, FEDORA).unwrap();
+        assert!(hint.contains("libssl.so.3"), "{hint}");
+        assert!(hint.contains("sudo dnf install openssl3-libs"), "{hint}");
+    }
+
+    #[test]
+    fn debian_family_gets_apt() {
+        let out = "x: error while loading shared libraries: libgomp.so.1: cannot open";
+        let hint = missing_library_hint(out, UBUNTU).unwrap();
+        assert!(hint.contains("sudo apt install libgomp1"), "{hint}");
+    }
+
+    #[test]
+    fn unknown_library_still_explains_without_a_guess() {
+        let out = "x: error while loading shared libraries: libweird.so.9: cannot open";
+        let hint = missing_library_hint(out, FEDORA).unwrap();
+        assert!(
+            hint.contains("libweird.so.9") && !hint.contains("sudo"),
+            "{hint}"
+        );
+    }
+
+    #[test]
+    fn other_failures_are_not_called_missing_libraries() {
+        assert!(missing_library_hint("Segmentation fault", FEDORA).is_none());
+    }
+
+    #[test]
+    fn a_busy_port_is_swapped_for_a_free_one() {
+        let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let busy = held.local_addr().unwrap().port();
+        let chosen = free_port(busy);
+        assert_ne!(chosen, busy);
+        assert!(std::net::TcpListener::bind(("127.0.0.1", chosen)).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_working_program_passes_the_check() {
+        check_runner_starts(Path::new("/bin/true")).unwrap();
+        assert!(check_runner_starts(Path::new("/bin/false")).is_err());
     }
 }
