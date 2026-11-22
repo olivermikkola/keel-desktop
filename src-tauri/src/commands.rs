@@ -215,6 +215,9 @@ pub async fn create_session(
         app_preset: preset,
         workspace_path,
         keel_session_log: None,
+        code_checkout: None,
+        applied_code_patch: None,
+        last_code_test: None,
         messages: Vec::new(),
         staged_edits: Vec::new(),
         updated_at: now_epoch(),
@@ -268,6 +271,9 @@ pub async fn import_keel_session(
         app_preset: AppPreset::Code,
         workspace_path: Some(root.to_string_lossy().into_owned()),
         keel_session_log: Some(path),
+        code_checkout: None,
+        applied_code_patch: None,
+        last_code_test: None,
         messages,
         staged_edits: Vec::new(),
         updated_at: now_epoch(),
@@ -624,7 +630,7 @@ pub async fn send_message(
     let ws_path = if session.app_preset == AppPreset::Chat {
         None
     } else {
-        session.workspace_path.as_deref().map(PathBuf::from)
+        session.active_workspace()
     };
     let mcp_cfg: McpConfigFile = load_mcp_configs(&state.config_dir, ws_path.as_deref());
     let mcp_statuses = if session.app_preset == AppPreset::Chat {
@@ -775,10 +781,8 @@ async fn stream_keel_cli(
     runtime: &RuntimeStatus,
 ) -> Result<ChatSession, String> {
     let root = session
-        .workspace_path
-        .as_deref()
-        .ok_or("Choose a Code folder first")?
-        .to_owned();
+        .active_workspace()
+        .ok_or("Choose a Code folder first")?;
     let model = runtime
         .active_model_id
         .as_deref()
@@ -790,7 +794,7 @@ async fn stream_keel_cli(
     let mut recording_error = None;
     let result = run_keel_cli_turn(
         KeelCliTurn {
-            root: Path::new(&root),
+            root: &root,
             log,
             prompt,
             base_url: &runtime.base_url,
@@ -888,11 +892,9 @@ pub async fn apply_staged_edit_cmd(
         .try_lock()
         .map_err(|_| "Wait for the current reply to finish before changing this thread")?;
     let mut session = load_session(&state.data_dir, &session_id).map_err(|e| e.to_string())?;
-    let ws = session
-        .workspace_path
-        .clone()
+    let root = session
+        .active_workspace()
         .ok_or_else(|| "No workspace folder selected".to_string())?;
-    let root = PathBuf::from(ws);
 
     let edit = session
         .staged_edits
@@ -938,11 +940,9 @@ pub async fn apply_all_staged_edits(
         .try_lock()
         .map_err(|_| "Wait for the current reply to finish before changing this thread")?;
     let mut session = load_session(&state.data_dir, &session_id).map_err(|e| e.to_string())?;
-    let ws = session
-        .workspace_path
-        .clone()
+    let root = session
+        .active_workspace()
         .ok_or_else(|| "No workspace folder selected".to_string())?;
-    let root = PathBuf::from(ws);
 
     for edit in &mut session.staged_edits {
         if edit.status == StagedEditStatus::Pending {
@@ -1098,6 +1098,158 @@ pub async fn read_workspace_png(
 #[tauri::command]
 pub async fn get_runtime_status(state: State<'_, AppState>) -> Result<RuntimeStatus, String> {
     Ok(state.runtime.lock().await.status())
+}
+
+#[tauri::command]
+pub async fn create_code_worktree(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<ChatSession, String> {
+    let _guard = state
+        .turn_lock
+        .try_lock()
+        .map_err(|_| "Wait for the current reply to finish before creating an isolated checkout")?;
+    let mut session = load_session(&state.data_dir, &session_id).map_err(|e| e.to_string())?;
+    if session.app_preset != AppPreset::Code {
+        return Err("Isolated checkouts are available in Code mode".to_string());
+    }
+    if session.code_checkout.is_some() {
+        return Ok(session);
+    }
+    let folder = session
+        .workspace_path
+        .clone()
+        .ok_or_else(|| "Choose a Git repository folder first".to_string())?;
+    let destination = state.data_dir.join("worktrees").join(&session.id);
+    let checkout = tokio::task::spawn_blocking(move || {
+        keel_core::worktrees::CodeCheckout::create(Path::new(&folder), &destination)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    session.code_checkout = Some(checkout);
+    session.applied_code_patch = None;
+    session.last_code_test = None;
+    session.updated_at = now_epoch();
+    save_session(&state.data_dir, &session).map_err(|e| e.to_string())?;
+    Ok(session)
+}
+
+#[tauri::command]
+pub async fn review_code_worktree(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<keel_core::worktrees::CodePatch, String> {
+    let session = load_session(&state.data_dir, &session_id).map_err(|e| e.to_string())?;
+    let checkout = session
+        .code_checkout
+        .ok_or_else(|| "Start an isolated checkout first".to_string())?;
+    tokio::task::spawn_blocking(move || checkout.review())
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn run_code_test(
+    state: State<'_, AppState>,
+    session_id: String,
+    command: String,
+) -> Result<ChatSession, String> {
+    let _guard = state
+        .turn_lock
+        .try_lock()
+        .map_err(|_| "Wait for the current reply to finish before running tests")?;
+    let mut session = load_session(&state.data_dir, &session_id).map_err(|e| e.to_string())?;
+    let checkout = session
+        .code_checkout
+        .clone()
+        .ok_or_else(|| "Start an isolated checkout first".to_string())?;
+    let result = tokio::task::spawn_blocking(move || checkout.run_test(&command))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    session.last_code_test = Some(result);
+    session.updated_at = now_epoch();
+    save_session(&state.data_dir, &session).map_err(|e| e.to_string())?;
+    Ok(session)
+}
+
+#[tauri::command]
+pub async fn apply_code_worktree(
+    state: State<'_, AppState>,
+    session_id: String,
+    patch: keel_core::worktrees::CodePatch,
+) -> Result<ChatSession, String> {
+    let _guard = state
+        .turn_lock
+        .try_lock()
+        .map_err(|_| "Wait for the current reply to finish before applying changes")?;
+    let mut session = load_session(&state.data_dir, &session_id).map_err(|e| e.to_string())?;
+    let checkout = session
+        .code_checkout
+        .clone()
+        .ok_or_else(|| "Start an isolated checkout first".to_string())?;
+    let patch_clone = patch.clone();
+    tokio::task::spawn_blocking(move || checkout.apply(&patch_clone))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    session.applied_code_patch = Some(patch);
+    session.updated_at = now_epoch();
+    save_session(&state.data_dir, &session).map_err(|e| e.to_string())?;
+    Ok(session)
+}
+
+#[tauri::command]
+pub async fn undo_code_worktree(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<ChatSession, String> {
+    let _guard = state
+        .turn_lock
+        .try_lock()
+        .map_err(|_| "Wait for the current reply to finish before undoing changes")?;
+    let mut session = load_session(&state.data_dir, &session_id).map_err(|e| e.to_string())?;
+    let checkout = session
+        .code_checkout
+        .clone()
+        .ok_or_else(|| "No isolated checkout on this thread".to_string())?;
+    let applied = session
+        .applied_code_patch
+        .clone()
+        .ok_or_else(|| "No applied patch to undo".to_string())?;
+    tokio::task::spawn_blocking(move || checkout.undo(&applied))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    session.applied_code_patch = None;
+    session.updated_at = now_epoch();
+    save_session(&state.data_dir, &session).map_err(|e| e.to_string())?;
+    Ok(session)
+}
+
+#[tauri::command]
+pub async fn remove_code_worktree(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<ChatSession, String> {
+    let _guard = state
+        .turn_lock
+        .try_lock()
+        .map_err(|_| "Wait for the current reply to finish before removing checkout")?;
+    let mut session = load_session(&state.data_dir, &session_id).map_err(|e| e.to_string())?;
+    if let Some(checkout) = session.code_checkout.take() {
+        tokio::task::spawn_blocking(move || checkout.remove())
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+    }
+    session.applied_code_patch = None;
+    session.last_code_test = None;
+    session.updated_at = now_epoch();
+    save_session(&state.data_dir, &session).map_err(|e| e.to_string())?;
+    Ok(session)
 }
 
 #[tauri::command]

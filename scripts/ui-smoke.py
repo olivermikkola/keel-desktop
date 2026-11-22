@@ -61,6 +61,12 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  s.messages.push({id:'a'+Date.now(),role:'assistant',content:'Ready to help.',tool_calls});s.title=args.input.prompt;
  result=s;break;}
  case 'apply_staged_edit_cmd': {const s=sessions.find(s=>s.id===args.sessionId);s.staged_edits.find(e=>e.id===args.editId).status='applied'; files.push('brief.md');fileContent['brief.md']='# Brief';result=s;break;}
+ case 'create_code_worktree': {const s=sessions.find(s=>s.id===args.sessionId);s.code_checkout={original:s.workspace_path,isolated:'/test/worktrees/'+s.id,base:'deadbeef12345678'};s.applied_code_patch=null;s.last_code_test=null;result=s;break;}
+ case 'review_code_worktree': {result={paths:['calc.py','test_calc.py'],diff:'--- a/calc.py\n+++ b/calc.py\n@@ -1 +1 @@\n-return a - b\n+return a + b\n'};break;}
+ case 'run_code_test': {const s=sessions.find(s=>s.id===args.sessionId);const pass=!args.command.includes('fail');s.last_code_test={command:args.command,exit_code:pass?0:1,output:pass?'2 passed':'1 failed',passed:pass};result=s;break;}
+ case 'apply_code_worktree': {const s=sessions.find(s=>s.id===args.sessionId);s.applied_code_patch=args.patch;result=s;break;}
+ case 'undo_code_worktree': {const s=sessions.find(s=>s.id===args.sessionId);s.applied_code_patch=null;result=s;break;}
+ case 'remove_code_worktree': {const s=sessions.find(s=>s.id===args.sessionId);s.code_checkout=null;s.applied_code_patch=null;s.last_code_test=null;result=s;break;}
  case 'inspect_publish_status': {result={repo_root:'/test/project',branch:'main',head:'abc1234',dirty_files:['brief.md'],remote_name:'origin',remote_url:'https://github.com/example/repo.git',gh_available:true,gh_authenticated:true};break;}
  case 'publish_code_changes': {result={branch:args.plan.branch_name,commit_sha:'def5678',pushed:args.plan.push_remote,pr_url:args.plan.open_pr?'https://github.com/example/repo/pull/99':null,next_command:null};break;}
  case 'start_image_job': {
@@ -271,12 +277,24 @@ async def main(port):
         await page.locator('#prompt-input').fill('Inspect this repository')
         await page.locator('#send-btn').click()
         await page.get_by_text('Ready to help.',exact=True).wait_for()
+        await page.locator('[data-viewer-tab=diff]').click()
+        await page.locator('#code-worktree-create').click()
+        await page.locator('#code-test-cmd').fill('pytest -q --fail')
+        await page.locator('#code-test-run').click()
+        await page.locator('.worktree-test-result.failed').get_by_text('exit 1', exact=False).wait_for()
+        await page.locator('#code-test-cmd').fill('pytest -q')
+        await page.locator('#code-test-run').click()
+        await page.locator('.worktree-test-result.passed').get_by_text('exit 0', exact=False).wait_for()
+        await page.locator('#code-patch-apply').click()
+        await page.locator('#code-patch-undo').wait_for()
         await page.locator('#publish-pr-btn').click()
         await page.locator('#pub-commit').fill('Update brief')
         await page.locator('#pub-submit').click()
         await page.locator('#pub-status').get_by_text('https://github.com/example/repo/pull/99', exact=False).wait_for()
         await page.locator('#modal-close-btn').click()
         await page.screenshot(path=str(OUTPUT / 'code.png'))
+        await page.locator('#code-patch-undo').click()
+        await page.locator('#code-patch-undo').wait_for(state='hidden')
         await page.locator('[data-view=tools]').click()
         await page.locator('#image-connect').click()
         await page.get_by_text('Image server connected. Choose a checkpoint and output folder.',exact=True).wait_for()

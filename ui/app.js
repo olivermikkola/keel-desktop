@@ -362,7 +362,7 @@ async function setActiveView(view) {
   appState.activeView = view;
   if (view === "code") {
     appState.viewerOpen = hasViewerContent();
-    appState.viewerTab = (appState.session?.staged_edits?.length || 0) > 0 ? "diff" : "code";
+    appState.viewerTab = (appState.session?.staged_edits?.length || 0) > 0 || appState.session?.code_checkout ? "diff" : "code";
   }
   renderAll();
 }
@@ -845,9 +845,10 @@ function handleAgentEvent(ev) {
       last.edit_id = ev.edit_id || last.edit_id || null;
     }
   } else if (ev.type === "approval_required") {
+    els.telemetryLeft.textContent = "Waiting for approval";
     renderApprovalCard(ev);
   } else if (ev.type === "turn_finished") {
-    els.telemetryLeft.textContent = modelLocation(appState.bootstrap.runtime);
+    els.telemetryLeft.textContent = `${modelLocation(appState.bootstrap.runtime)} · Finished`;
   }
   renderChat();
   if (["staged_edit_added", "turn_finished"].includes(ev.type)) {
@@ -994,6 +995,10 @@ async function loadViewerContent() {
       edits.find((e) => e.path === appState.viewerFile) ||
       edits[edits.length - 1] ||
       null;
+    if (modeForPreset(appState.session?.app_preset) === "code") {
+      await renderCodeWorktreePane(els.viewerContent, activeEdit);
+      return;
+    }
     renderDiffView(els.viewerContent, activeEdit);
     return;
   }
@@ -1025,6 +1030,148 @@ async function loadViewerContent() {
   } catch (err) {
     els.viewerContent.innerHTML = `<div class="viewer-empty">${escapeHtml(String(err))}</div>`;
   }
+}
+
+async function renderCodeWorktreePane(container, activeEdit) {
+  const session = appState.session;
+  const checkout = session?.code_checkout;
+  const wrap = document.createElement("div");
+  wrap.className = "viewer-scroll diff-pane-wrap";
+
+  const card = document.createElement("div");
+  card.id = "code-worktree-card";
+  card.className = "worktree-card";
+
+  if (!checkout) {
+    card.innerHTML = `
+      <div class="worktree-head">
+        <strong>Isolated checkout</strong>
+        <span class="muted">Protects your working tree</span>
+      </div>
+      <p class="muted">Run Code edits and tests in a detached Git worktree from HEAD, review the full patch, and apply or undo cleanly.</p>
+      <div class="worktree-actions">
+        <button id="code-worktree-create" class="btn btn-primary btn-sm" ${appState.workspacePath ? "" : "disabled"}>Start isolated checkout</button>
+      </div>
+    `;
+    card.querySelector("#code-worktree-create").onclick = async (event) => {
+      event.target.disabled = true;
+      try {
+        appState.session = await invoke("create_code_worktree", { sessionId: session.id });
+        showToast("Isolated checkout ready.");
+        await loadViewerContent();
+      } catch (err) {
+        showNotice(String(err));
+        event.target.disabled = false;
+      }
+    };
+  } else {
+    let patch = null;
+    let patchError = null;
+    try {
+      patch = await invoke("review_code_worktree", { sessionId: session.id });
+    } catch (err) {
+      patchError = String(err);
+    }
+    const testRun = session.last_code_test;
+    const applied = session.applied_code_patch;
+    const baseShort = (checkout.base || "").slice(0, 8);
+    card.innerHTML = `
+      <div class="worktree-head">
+        <div>
+          <strong>Isolated checkout</strong>
+          <span class="worktree-badge mono">base ${escapeHtml(baseShort)}</span>
+          ${applied ? '<span class="worktree-badge worktree-badge-ok">Applied</span>' : ""}
+        </div>
+        <button id="code-worktree-remove" class="btn btn-ghost btn-sm">Discard checkout</button>
+      </div>
+      <div class="worktree-test-row">
+        <input id="code-test-cmd" class="input grow mono" value="${escapeHtml(testRun?.command || "")}" placeholder="Test command (e.g. pytest -q or cargo test)" />
+        <button id="code-test-run" class="btn btn-sm">Run test</button>
+      </div>
+      ${
+        testRun
+          ? `<div class="worktree-test-result ${testRun.passed ? "passed" : "failed"}">
+              <div class="worktree-test-meta">
+                <strong>${testRun.passed ? "Passed" : "Failed"}</strong>
+                <span class="mono">exit ${testRun.exit_code} · ${escapeHtml(testRun.command)}</span>
+              </div>
+              ${testRun.output ? `<pre class="worktree-test-out mono">${escapeHtml(testRun.output)}</pre>` : ""}
+            </div>`
+          : ""
+      }
+      <div class="worktree-patch-head">
+        <span>${
+          patchError
+            ? escapeHtml(patchError)
+            : patch?.paths?.length
+              ? `Full patch (${patch.paths.length} file${patch.paths.length === 1 ? "" : "s"}): ${escapeHtml(patch.paths.join(", "))}`
+              : "No changes in isolated checkout yet."
+        }</span>
+        <div class="worktree-actions">
+          <button id="code-patch-apply" class="btn btn-primary btn-sm" ${patch?.paths?.length ? "" : "disabled"}>Apply patch to repo</button>
+          ${applied ? '<button id="code-patch-undo" class="btn btn-rust btn-sm">Undo applied patch</button>' : ""}
+        </div>
+      </div>
+      ${patch?.diff ? `<div class="worktree-diff-wrap">${renderDiffHtml(patch.diff)}</div>` : ""}
+    `;
+    card.querySelector("#code-test-run").onclick = async () => {
+      const cmd = card.querySelector("#code-test-cmd").value.trim();
+      if (!cmd) return;
+      card.querySelector("#code-test-run").disabled = true;
+      try {
+        appState.session = await invoke("run_code_test", { sessionId: session.id, command: cmd });
+        await loadViewerContent();
+      } catch (err) {
+        showNotice(String(err));
+        card.querySelector("#code-test-run").disabled = false;
+      }
+    };
+    card.querySelector("#code-patch-apply").onclick = async (event) => {
+      if (!patch) return;
+      event.target.disabled = true;
+      try {
+        appState.session = await invoke("apply_code_worktree", { sessionId: session.id, patch });
+        showToast("Reviewed patch applied to your repo.");
+        await refreshWorkspaceFiles();
+        await loadViewerContent();
+      } catch (err) {
+        showNotice(String(err));
+        event.target.disabled = false;
+      }
+    };
+    card.querySelector("#code-patch-undo")?.addEventListener("click", async (event) => {
+      event.target.disabled = true;
+      try {
+        appState.session = await invoke("undo_code_worktree", { sessionId: session.id });
+        showToast("Reverted Keel's applied patch.");
+        await refreshWorkspaceFiles();
+        await loadViewerContent();
+      } catch (err) {
+        showNotice(String(err));
+        event.target.disabled = false;
+      }
+    });
+    card.querySelector("#code-worktree-remove").onclick = async (event) => {
+      event.target.disabled = true;
+      try {
+        appState.session = await invoke("remove_code_worktree", { sessionId: session.id });
+        showToast("Isolated checkout removed.");
+        await loadViewerContent();
+      } catch (err) {
+        showNotice(String(err));
+        event.target.disabled = false;
+      }
+    };
+  }
+
+  wrap.appendChild(card);
+  if (activeEdit) {
+    const stagedWrap = document.createElement("div");
+    renderDiffView(stagedWrap, activeEdit);
+    wrap.appendChild(stagedWrap);
+  }
+  container.innerHTML = "";
+  container.appendChild(wrap);
 }
 
 function renderModelsWorkspace() {
@@ -1712,7 +1859,11 @@ function wireUi() {
   };
 
   els.sendBtn.onclick = sendCurrentPrompt;
-  els.stopBtn.onclick = () => invoke("stop_generation");
+  els.stopBtn.onclick = async () => {
+    els.telemetryLeft.textContent = "Stopping…";
+    await invoke("stop_generation");
+    els.telemetryLeft.textContent = "Stopped";
+  };
   els.promptInput.addEventListener("input", () => { autoSizePromptInput(); saveDraft(); });
   els.promptInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {

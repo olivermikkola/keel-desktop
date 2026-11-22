@@ -25,3 +25,4 @@ pub mod recording;
 pub mod streaming;
 
 pub mod publish;
+pub mod worktrees;
