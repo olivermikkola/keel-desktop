@@ -329,6 +329,7 @@ mod tests {
         let original = scratch.join("original");
         std::fs::create_dir_all(&original).unwrap();
         run(&original, ["init", "-q"]).unwrap();
+        run(&original, ["config", "core.autocrlf", "false"]).unwrap();
         std::fs::write(original.join("calc.txt"), "subtract\n").unwrap();
         std::fs::write(original.join("notes.txt"), "version one\n").unwrap();
         run(&original, ["add", "--all"]).unwrap();
@@ -400,6 +401,7 @@ mod tests {
         let original = scratch.join("original");
         std::fs::create_dir_all(&original).unwrap();
         run(&original, ["init", "-q"]).unwrap();
+        run(&original, ["config", "core.autocrlf", "false"]).unwrap();
         std::fs::write(original.join("value.txt"), "wrong\n").unwrap();
         run(&original, ["add", "--all"]).unwrap();
         run(
@@ -420,7 +422,7 @@ mod tests {
 
         let checkout = CodeCheckout::create(&original, &scratch.join("isolated")).unwrap();
         let check_cmd = if cfg!(windows) {
-            "findstr /x fixed value.txt"
+            "findstr /C:\"fixed\" value.txt"
         } else {
             "grep -qx fixed value.txt"
         };
