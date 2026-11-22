@@ -228,9 +228,7 @@ pub async fn setup_local_ai(
     let plan = keel_core::setup::plan(&state.data_dir, cfg.llama_server_path.as_deref());
     let model =
         keel_core::setup::resolve_model(&plan, model_id.as_deref()).map_err(|e| e.to_string())?;
-    let runner = if let Some(path) = plan.runtime_path {
-        std::path::PathBuf::from(path)
-    } else {
+    let runner = if plan.runtime_asset.is_some() {
         let _ = app.emit("keel://setup-stage", "runner");
         let _ = app.emit(
             "keel://setup-progress",
@@ -241,8 +239,13 @@ pub async fn setup_local_ai(
         })
         .await
         .map_err(|e| e.to_string())?
+    } else if let Some(path) = plan.runtime_path {
+        let path = std::path::PathBuf::from(path);
+        keel_core::runtime::check_runner_starts(&path).map_err(|e| e.to_string())?;
+        path
+    } else {
+        return Err("Automatic setup is not available for this platform. Connect an existing model server instead.".into());
     };
-    keel_core::runtime::check_runner_starts(&runner).map_err(|e| e.to_string())?;
     {
         let mut cfg = state.config.lock().await;
         cfg.llama_server_path = Some(runner.to_string_lossy().into_owned());
