@@ -133,6 +133,8 @@ fn main() {
             commands::apply_staged_edit_cmd,
             commands::discard_staged_edit_cmd,
             commands::apply_all_staged_edits,
+            commands::inspect_publish_status,
+            commands::publish_code_changes,
             commands::save_customize_settings,
             commands::save_mcp_server,
             commands::remove_mcp_server,

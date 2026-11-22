@@ -69,6 +69,7 @@ const els = {
   harnessPillBtn: document.getElementById("harness-pill-btn"),
   harnessPillLabel: document.getElementById("harness-pill-label"),
   diffsPillBtn: document.getElementById("diffs-pill-btn"),
+  publishPrBtn: document.getElementById("publish-pr-btn"),
   diffsPillLabel: document.getElementById("diffs-pill-label"),
   toggleViewerBtn: document.getElementById("toggle-viewer-btn"),
   viewChatCode: document.getElementById("view-chat-code"),
@@ -708,6 +709,7 @@ function renderHeader() {
   els.harnessPillBtn.classList.toggle("hidden", mode !== "code");
   els.toggleViewerBtn.classList.toggle("hidden", mode === "chat");
   els.diffsPillBtn.classList.toggle("hidden", mode === "chat" || counts.pending + counts.applied === 0);
+  els.publishPrBtn.classList.toggle("hidden", mode !== "code" || !appState.workspacePath);
   els.newChatBtn.disabled = appState.streaming;
   els.newAgentBtn.disabled = appState.streaming;
 }
@@ -1295,6 +1297,74 @@ function closeModal() {
   if (modalReturnFocus?.isConnected) modalReturnFocus.focus();
 }
 
+async function openPublishModal() {
+  if (!appState.session || !appState.workspacePath) return;
+  let status;
+  try {
+    status = await invoke("inspect_publish_status", { sessionId: appState.session.id });
+  } catch (err) {
+    showNotice(String(err));
+    return;
+  }
+  const testRun = appState.session.last_code_test || null;
+  const testPassed = testRun ? Boolean(testRun.passed) : null;
+  const suggestedBranch =
+    status.branch && !["main", "master", "HEAD"].includes(status.branch)
+      ? status.branch
+      : `keel/${(appState.session.title || "changes").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32) || "update"}`;
+  openModal("Publish changes to GitHub", (body) => {
+    body.innerHTML = `
+      <p class="muted">Branch: <span class="mono">${escapeHtml(status.branch)}</span> (${escapeHtml(status.head)})${status.remote_url ? ` · Remote: <span class="mono">${escapeHtml(status.remote_url)}</span>` : " · No remote configured"}</p>
+      <p class="muted">${status.dirty_files.length ? `${status.dirty_files.length} changed file(s): <span class="mono">${escapeHtml(status.dirty_files.join(", "))}</span>` : "Working tree has no uncommitted changes."}</p>
+      ${
+        testRun
+          ? `<p class="${testRun.passed ? "muted" : "welcome-error"}">Latest test check: <strong>${testRun.passed ? "Passed" : "Failed"}</strong> (exit ${testRun.exit_code}) — <span class="mono">${escapeHtml(testRun.command)}</span></p>`
+          : ""
+      }
+      <label for="pub-branch">Feature branch</label>
+      <input id="pub-branch" class="input mono" value="${escapeHtml(suggestedBranch)}" />
+      <label for="pub-commit">Commit message</label>
+      <input id="pub-commit" class="input" value="${escapeHtml(appState.session.title || "")}" placeholder="Describe your changes" />
+      <label for="pub-title">Pull request title</label>
+      <input id="pub-title" class="input" value="${escapeHtml(appState.session.title || "")}" />
+      <label for="pub-body">Pull request description</label>
+      <textarea id="pub-body" class="input" rows="4" placeholder="## Summary&#10;&#10;## Proof"></textarea>
+      <label class="row"><input id="pub-push" type="checkbox" ${status.remote_name ? "checked" : "disabled"} /> Push branch to ${escapeHtml(status.remote_name || "remote")}</label>
+      <label class="row"><input id="pub-open-pr" type="checkbox" ${status.remote_name && status.gh_authenticated ? "checked" : "disabled"} /> Open pull request with GitHub CLI (${status.gh_authenticated ? "signed in" : status.gh_available ? "run gh auth login" : "gh not installed"})</label>
+      <p id="pub-status" class="muted" role="status"></p>
+      <div class="row">
+        <button id="pub-submit" class="btn btn-primary" ${testPassed === false ? "disabled" : ""}>Commit &amp; publish</button>
+      </div>
+    `;
+    body.querySelector("#pub-submit").onclick = async (event) => {
+      const statusEl = body.querySelector("#pub-status");
+      event.target.disabled = true;
+      statusEl.textContent = "Publishing…";
+      try {
+        const res = await invoke("publish_code_changes", {
+          sessionId: appState.session.id,
+          plan: {
+            branch_name: body.querySelector("#pub-branch").value,
+            commit_message: body.querySelector("#pub-commit").value,
+            pr_title: body.querySelector("#pub-title").value,
+            pr_body: body.querySelector("#pub-body").value,
+            push_remote: body.querySelector("#pub-push").checked,
+            open_pr: body.querySelector("#pub-open-pr").checked,
+          },
+          testPassed,
+        });
+        statusEl.innerHTML = res.pr_url
+          ? `Published <span class="mono">${escapeHtml(res.branch)}</span> (${escapeHtml(res.commit_sha)}) · PR: <span class="mono">${escapeHtml(res.pr_url)}</span>`
+          : `Committed <span class="mono">${escapeHtml(res.branch)}</span> (${escapeHtml(res.commit_sha)})${res.pushed ? " and pushed" : ""}.${res.next_command ? ` Next: <span class="mono">${escapeHtml(res.next_command)}</span>` : ""}`;
+        showToast("Changes published.");
+      } catch (err) {
+        statusEl.textContent = String(err);
+        event.target.disabled = false;
+      }
+    };
+  });
+}
+
 function openDiffsModal() {
   const edits = appState.session?.staged_edits ?? [];
   openModal("Workspace File Changes", (body) => {
@@ -1562,6 +1632,7 @@ function wireUi() {
   document.getElementById("open-customize-btn").onclick = openCustomizeModal;
   els.harnessPillBtn.onclick = openCustomizeModal;
   els.diffsPillBtn.onclick = openDiffsModal;
+  els.publishPrBtn.onclick = openPublishModal;
   document.getElementById("modal-close-btn").onclick = closeModal;
 
   document.addEventListener("keydown", (event) => {
