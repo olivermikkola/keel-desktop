@@ -136,15 +136,21 @@ where
     } else {
         mcp_tools_to_openai_schemas(&params.mcp_tools)
     };
+    let allow_shell = crate::harnesses::code_execution_boundary().can_run_commands;
     let tool_schemas = if params.app_preset != AppPreset::Chat
         && (validated_ws.is_some() || !mcp_schemas.is_empty())
     {
-        let allowed = if validated_ws.is_some() {
+        let base_allowed = if validated_ws.is_some() {
             params.app_preset.tools_for_request(&latest_request)
         } else {
             &["run_sql"][..]
         };
-        openai_tool_schemas(allowed, &mcp_schemas)
+        let filtered: Vec<&str> = base_allowed
+            .iter()
+            .copied()
+            .filter(|name| allow_shell || *name != "run_shell")
+            .collect();
+        openai_tool_schemas(&filtered, &mcp_schemas)
     } else {
         Vec::new()
     };

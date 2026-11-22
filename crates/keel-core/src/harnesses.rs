@@ -21,6 +21,56 @@ pub struct HarnessOption {
     pub binary_path: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodeExecutionBoundary {
+    pub can_run_commands: bool,
+    pub sandbox: String,
+    pub notice: Option<String>,
+}
+
+/// Evaluate whether Code mode may run shell commands on this platform.
+/// On macOS, command execution requires both Seatbelt (`/usr/bin/sandbox-exec`)
+/// and an installed Keel CLI; otherwise Code mode stays in inspect-and-propose mode.
+pub fn code_execution_boundary() -> CodeExecutionBoundary {
+    let has_sandbox_exec = Path::new("/usr/bin/sandbox-exec").is_file();
+    let has_keel_cli = find_on_path("keel").is_some();
+    code_execution_boundary_for(std::env::consts::OS, has_sandbox_exec, has_keel_cli)
+}
+
+pub fn code_execution_boundary_for(
+    os: &str,
+    has_sandbox_exec: bool,
+    has_keel_cli: bool,
+) -> CodeExecutionBoundary {
+    match os {
+        "linux" => CodeExecutionBoundary {
+            can_run_commands: true,
+            sandbox: "landlock".into(),
+            notice: None,
+        },
+        "macos" if has_sandbox_exec && has_keel_cli => CodeExecutionBoundary {
+            can_run_commands: true,
+            sandbox: "seatbelt".into(),
+            notice: None,
+        },
+        "macos" => CodeExecutionBoundary {
+            can_run_commands: false,
+            sandbox: "none".into(),
+            notice: Some(
+                "Shell commands are off on this Mac until a confined Keel CLI is installed. You can still inspect files and propose edits."
+                    .into(),
+            ),
+        },
+        _ => CodeExecutionBoundary {
+            can_run_commands: true,
+            sandbox: "approval-only".into(),
+            notice: Some(
+                "Shell commands require explicit per-command approval on this platform.".into(),
+            ),
+        },
+    }
+}
+
 /// Lists built-in Keel Harness plus any installed external CLI coding agents.
 pub fn detect_harnesses() -> Vec<HarnessOption> {
     let mut list = vec![HarnessOption {
@@ -167,6 +217,8 @@ enum KeelEvent {
     Capabilities {
         approval_protocol: String,
         stop_protocol: Option<String>,
+        #[serde(default)]
+        sandbox: Option<String>,
     },
     Text {
         content: String,
@@ -330,7 +382,16 @@ where
             serde_json::from_slice(&line).context("Invalid event from the Keel CLI")?;
         if !ready {
             match event {
-                KeelEvent::Capabilities { approval_protocol, stop_protocol } if approval_protocol == "stdio-line-v1" && stop_protocol.as_deref() == Some("sigint-shell-v1") => {
+                KeelEvent::Capabilities {
+                    approval_protocol,
+                    stop_protocol,
+                    sandbox,
+                } if approval_protocol == "stdio-line-v1"
+                    && stop_protocol.as_deref() == Some("sigint-shell-v1") =>
+                {
+                    if cfg!(target_os = "macos") && sandbox.as_deref() != Some("seatbelt") {
+                        bail!("Update Keel CLI. This Mac build requires Seatbelt command confinement before running Code commands.");
+                    }
                     ready = true;
                     continue;
                 }
@@ -508,5 +569,28 @@ mod tests {
         assert!(!list.is_empty());
         assert_eq!(list[0].id, "keel");
         assert!(list[0].available);
+    }
+
+    #[test]
+    fn macos_without_confined_cli_disables_commands_and_explains_limit() {
+        let mac_unverified = code_execution_boundary_for("macos", true, false);
+        assert!(!mac_unverified.can_run_commands);
+        assert_eq!(mac_unverified.sandbox, "none");
+        assert!(mac_unverified
+            .notice
+            .as_deref()
+            .is_some_and(|n| n.contains("inspect files and propose edits")));
+
+        let mac_no_seatbelt = code_execution_boundary_for("macos", false, true);
+        assert!(!mac_no_seatbelt.can_run_commands);
+
+        let mac_verified = code_execution_boundary_for("macos", true, true);
+        assert!(mac_verified.can_run_commands);
+        assert_eq!(mac_verified.sandbox, "seatbelt");
+        assert!(mac_verified.notice.is_none());
+
+        let linux = code_execution_boundary_for("linux", false, false);
+        assert!(linux.can_run_commands);
+        assert_eq!(linux.sandbox, "landlock");
     }
 }

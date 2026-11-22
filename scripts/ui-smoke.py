@@ -21,7 +21,7 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  window.__test.calls.push({cmd,args});
  let result;
  switch(cmd) {
- case 'get_bootstrap_state': result={version:'0.1.0',config:cfg, runtime,models:[{id:'test',name:'Test local model',installed:true,quantization:'Q4',bytes:1000000000,detail:'Fast local model',tier:'fast'}],sessions:sessions.map(s=>({...s})),projects,presets,harnesses:[{id:'keel',name:'Keel Harness'}],mcp_servers:[]};break;
+ case 'get_bootstrap_state': result={version:'0.1.0',config:cfg, runtime,models:[{id:'test',name:'Test local model',installed:true,quantization:'Q4',bytes:1000000000,detail:'Fast local model',tier:'fast'}],sessions:sessions.map(s=>({...s})),projects,presets,harnesses:[{id:'keel',name:'Keel Harness'}],code_execution:window.__test.codeExecution || {can_run_commands:true,sandbox:'landlock',notice:null},mcp_servers:[]};break;
  case 'create_session': result={id:crypto.randomUUID(),title:'New '+args.preset+' chat',app_preset:args.preset,workspace_path:args.workspacePath,project_id:args.projectId || null,pinned:false,messages:[],staged_edits:[],updated_at:Date.now()/1000};sessions.unshift(result);break;
  case 'load_session_cmd':result=sessions.find(s=>s.id===args.id);break;
  case 'list_workspace_files_cmd':result=files;break;
@@ -315,6 +315,12 @@ async def main(port):
         await sample.locator('#workspace-pill-label').get_by_text('Sample Work').wait_for()
         assert await sample.evaluate("window.__test.calls.some(c=>c.cmd==='set_workspace_folder' && c.args.path==='/test/Sample Work' && c.args.sessionId)")
         await sample.close()
+        limited = await new_page(browser, port)
+        await limited.evaluate("window.__test.codeExecution = {can_run_commands:false,sandbox:'none',notice:'Shell commands are off on this Mac until a confined Keel CLI is installed. You can still inspect files and propose edits.'}")
+        await limited.locator('[data-view=code]').click()
+        await limited.locator('#harness-pill-label').get_by_text('Engine: Inspect & propose', exact=True).wait_for()
+        await limited.locator('#code-boundary-notice').get_by_text('inspect files and propose edits', exact=False).wait_for()
+        await limited.close()
         paused = await new_page(browser, port, first_run=True)
         await paused.locator('#welcome-size').click()
         await paused.locator('#welcome-start').click()
