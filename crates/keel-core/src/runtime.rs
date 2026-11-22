@@ -53,6 +53,10 @@ impl RuntimeManager {
         self.active_model_path = None;
     }
 
+    pub fn is_managed(&self) -> bool {
+        self.child.is_some()
+    }
+
     pub async fn start_model(
         &mut self,
         model_id: &str,
@@ -61,17 +65,17 @@ impl RuntimeManager {
         custom_bin: Option<&str>,
     ) -> Result<RuntimeStatus> {
         if !model_path.is_file() {
-            bail!("Model file not found: {}", model_path.display());
+            bail!("This model isn't downloaded yet. Download it in Models first.");
         }
         let bin = find_llama_server(custom_bin).context(
-            "Could not find `llama-server`. Install llama.cpp or set its path in Models.",
+            "Keel's built-in AI engine isn't installed yet. Open Models and click Set it up for me.",
         )?;
         self.stop().await;
         self.llama_server_bin = Some(bin.to_string_lossy().to_string());
         // A leftover runner (or a second Keel window) can still hold the usual
         // port; take a free one instead of failing with "exit status 1".
         let reserved_port =
-            reserve_port(self.port).context("Could not reserve a local model port")?;
+            reserve_port(self.port).context("Could not prepare a local slot for the AI engine")?;
         self.port = reserved_port.local_addr()?.port();
         self.base_url = format!("http://127.0.0.1:{}/v1", self.port);
 
@@ -103,7 +107,7 @@ impl RuntimeManager {
         drop(reserved_port);
         let child = command
             .spawn()
-            .with_context(|| format!("Failed to start {}", bin.display()))?;
+            .context("Keel's built-in AI engine couldn't start.")?;
 
         self.child = Some(child);
         self.active_model_id = Some(model_id.to_string());
@@ -116,7 +120,7 @@ impl RuntimeManager {
 
         for _ in 0..90 {
             if let Some(ref mut ch) = self.child {
-                if let Ok(Some(exit)) = ch.try_wait() {
+                if let Ok(Some(_exit)) = ch.try_wait() {
                     self.child = None;
                     self.active_model_id = None;
                     self.active_model_path = None;
@@ -124,19 +128,18 @@ impl RuntimeManager {
                         .unwrap_or_default()
                         .lines()
                         .rev()
-                        .take(8)
+                        .take(16)
                         .collect::<Vec<_>>()
                         .into_iter()
                         .rev()
                         .collect::<Vec<_>>()
                         .join("\n");
-                    self.last_error = Some(
-                        missing_library_hint(&details, &os_release())
-                            .unwrap_or_else(|| format!("Model runner exited ({exit}). {details}")),
-                    );
+                    self.last_error = Some(friendly_runner_exit_message(&details, &os_release()));
                     bail!(
                         "{}",
-                        self.last_error.as_deref().unwrap_or("Model runner failed")
+                        self.last_error
+                            .as_deref()
+                            .unwrap_or("This model couldn't start on this computer.")
                     );
                 }
             }
@@ -149,10 +152,7 @@ impl RuntimeManager {
         }
 
         self.stop().await;
-        bail!(
-            "Timed out waiting for llama-server to become healthy on port {}",
-            self.port
-        );
+        bail!("Your AI took too long to wake up. Try a lighter model in Models.");
     }
 
     pub async fn stop(&mut self) {
@@ -176,11 +176,14 @@ impl RuntimeManager {
 
     pub fn status(&mut self) -> RuntimeStatus {
         if let Some(child) = &mut self.child {
-            if let Ok(Some(exit)) = child.try_wait() {
+            if let Ok(Some(_exit)) = child.try_wait() {
                 self.child = None;
                 self.active_model_id = None;
                 self.active_model_path = None;
-                self.last_error = Some(format!("The model runner stopped ({exit}). Reload a smaller model or check its runner log."));
+                self.last_error = Some(
+                    "Your AI stopped unexpectedly. Send a message or click Start to wake it back up, or try a lighter model."
+                        .to_string(),
+                );
             }
         }
         let state = if self.child.is_some() {
@@ -379,6 +382,71 @@ fn os_release() -> String {
     std::fs::read_to_string("/etc/os-release").unwrap_or_default()
 }
 
+/// Returns true if a URL points to the local machine (127.x.x.x, localhost, or ::1).
+pub fn is_loopback_url(raw: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(raw.trim()) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let host = host.trim_matches(['[', ']']).to_ascii_lowercase();
+    host == "localhost"
+        || host == "::1"
+        || host
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Detects Keel's own default internal runner address (`127.0.0.1:18180`).
+/// If saved as an "external" endpoint from an older session or config, it would
+/// trap the app in a broken state because nothing listens there until Keel starts.
+pub fn is_default_managed_loopback(raw: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(raw.trim()) else {
+        return false;
+    };
+    is_loopback_url(raw) && url.port() == Some(18180)
+}
+
+/// Converts raw runner stderr into a plain-language explanation without dumping
+/// exit codes, ports, or internal tool names to the user.
+pub fn friendly_runner_exit_message(details: &str, os_release: &str) -> String {
+    if let Some(hint) = missing_library_hint(details, os_release) {
+        return hint;
+    }
+    let lower = details.to_ascii_lowercase();
+    if [
+        "out of memory",
+        "failed to allocate",
+        "bad_alloc",
+        "cannot allocate memory",
+        "mmap failed",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        return "This computer doesn't have enough free memory to load this model. Try a lighter model in Models."
+            .to_string();
+    }
+    if [
+        "failed to load model",
+        "invalid gguf",
+        "gguf_init_from_file",
+        "not a gguf",
+        "corrupt",
+        "truncated",
+        "unknown model architecture",
+        "unexpected eof",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        return "This model file looks damaged and couldn't load. Repair it in Models, or pick a different model."
+            .to_string();
+    }
+    "This model couldn't start on this computer. Try a lighter model in Models.".to_string()
+}
+
 #[cfg(test)]
 mod runner_check_tests {
     use super::*;
@@ -414,6 +482,45 @@ mod runner_check_tests {
     #[test]
     fn other_failures_are_not_called_missing_libraries() {
         assert!(missing_library_hint("Segmentation fault", FEDORA).is_none());
+    }
+
+    #[test]
+    fn runner_exit_messages_stay_plain_language() {
+        let oom =
+            friendly_runner_exit_message("ggml_backend_alloc: failed to allocate buffer", FEDORA);
+        assert!(
+            oom.contains("enough free memory") && !oom.contains("ggml"),
+            "{oom}"
+        );
+
+        let bad_file = friendly_runner_exit_message(
+            "llama_model_load: failed to load model from x.gguf",
+            FEDORA,
+        );
+        assert!(
+            bad_file.contains("damaged") && !bad_file.contains("gguf"),
+            "{bad_file}"
+        );
+
+        let generic = friendly_runner_exit_message("exit status 1", FEDORA);
+        assert!(
+            !generic.contains("exit status") && !generic.contains("llama-server"),
+            "{generic}"
+        );
+    }
+
+    #[test]
+    fn detects_loopback_and_default_managed_port() {
+        assert!(is_default_managed_loopback("http://127.0.0.1:18180/v1"));
+        assert!(is_default_managed_loopback("http://localhost:18180/v1"));
+        assert!(is_default_managed_loopback("http://[::1]:18180/v1"));
+        assert!(!is_default_managed_loopback("http://127.0.0.1:11434/v1"));
+        assert!(!is_default_managed_loopback("http://127.0.0.1:1234/v1"));
+        assert!(!is_default_managed_loopback(
+            "https://models.example.com:18180/v1"
+        ));
+        assert!(is_loopback_url("http://127.0.0.1:11434/v1"));
+        assert!(!is_loopback_url("https://models.example.com/v1"));
     }
 
     #[test]

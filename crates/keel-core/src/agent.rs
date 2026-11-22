@@ -16,6 +16,23 @@ use crate::tools::{
     validate_workspace_root, StagedEdit, StagedEditKind,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EndpointUnreachable {
+    pub is_loopback: bool,
+}
+
+impl std::fmt::Display for EndpointUnreachable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.is_loopback {
+            f.write_str("Your local AI engine stopped responding. Try sending your message again, or pick another model.")
+        } else {
+            f.write_str("Couldn't reach your connected AI server. Check that it is running, or switch back to Keel's built-in AI in Models.")
+        }
+    }
+}
+
+impl std::error::Error for EndpointUnreachable {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalDecision {
@@ -646,9 +663,17 @@ where
         .json(&body)
         .send()
         .await
-        .with_context(|| format!("Could not reach model endpoint {endpoint}"))?
+        .map_err(|_| {
+            anyhow::Error::new(EndpointUnreachable {
+                is_loopback: crate::runtime::is_loopback_url(endpoint),
+            })
+        })?
         .error_for_status()
-        .with_context(|| format!("Model server returned an error at {endpoint}"))?;
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Your AI ran into an error while replying. Try again, or switch to a different model."
+            )
+        })?;
 
     let mut content = String::new();
     let mut reasoning_content = String::new();
@@ -676,9 +701,13 @@ where
                 continue;
             }
             let val: Value = serde_json::from_str(&data)
-                .context("Model server sent an invalid streaming event")?;
+                .context("Received an unexpected reply from your AI. Try again.")?;
             if let Some(error) = val.get("error") {
-                bail!("Model server: {}", error.get("message").unwrap_or(error));
+                let message = error
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("Something went wrong while replying.");
+                bail!("Your AI reported an error: {message}");
             }
             received = true;
 
@@ -750,9 +779,7 @@ where
         }
     }
     if !received {
-        bail!(
-            "The model server returned no response. Check that a model is loaded, then try again."
-        );
+        bail!("Your AI didn't return a reply. Try sending your message again.");
     }
 
     let mut ordered_indices: Vec<usize> = partial_calls.keys().copied().collect();
@@ -839,4 +866,61 @@ fn build_system_prompt(
     }
 
     parts.join("\n\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn unreachable_loopback_error_never_leaks_http_endpoint_details() {
+        // Bind and immediately drop a loopback port so nothing is listening there.
+        let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let params = TurnParams {
+            base_url: format!("http://127.0.0.1:{port}/v1"),
+            model_name: "bonsai-4b".into(),
+            context_size: 4096,
+            app_preset: AppPreset::Chat,
+            custom_instructions: String::new(),
+            workspace_root: None,
+            auto_apply_edits: false,
+            enable_thinking: false,
+            history: vec![ChatTurnMessage {
+                role: "user".into(),
+                content: "Hello".into(),
+                tool_call_id: None,
+                tool_calls: None,
+            }],
+            mcp_config: McpConfigFile::default(),
+            mcp_tools: vec![],
+            max_steps: 1,
+        };
+        let mut allowed = HashSet::new();
+        let err = run_agent_turn(
+            params,
+            &mut allowed,
+            |_| {},
+            |_, _, _, _| async { ApprovalDecision::Deny },
+        )
+        .await
+        .err()
+        .expect("unreachable port should fail");
+
+        let typed = err
+            .downcast_ref::<EndpointUnreachable>()
+            .expect("error should be typed as EndpointUnreachable");
+        assert!(typed.is_loopback);
+
+        let message = err.to_string();
+        for forbidden in ["http://", "127.0.0.1", "/v1/chat/completions", "endpoint"] {
+            assert!(
+                !message.to_lowercase().contains(forbidden),
+                "unexpected technical detail `{forbidden}` in: {message}"
+            );
+        }
+    }
 }

@@ -24,6 +24,10 @@ pub struct CatalogModel {
     pub detail: String,
     pub local_path: Option<String>,
     pub installed: bool,
+    #[serde(default)]
+    pub damaged: bool,
+    #[serde(default)]
+    pub damage_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +58,8 @@ pub fn default_catalog() -> Vec<CatalogModel> {
             detail: "Small and quick. A good start for most laptops.".to_string(),
             local_path: None,
             installed: false,
+            damaged: false,
+            damage_reason: None,
         },
         CatalogModel {
             id: "bonsai-9b".to_string(),
@@ -72,6 +78,8 @@ pub fn default_catalog() -> Vec<CatalogModel> {
                 .to_string(),
             local_path: None,
             installed: false,
+            damaged: false,
+            damage_reason: None,
         },
         CatalogModel {
             id: "lfm3-1.7b".to_string(),
@@ -89,6 +97,8 @@ pub fn default_catalog() -> Vec<CatalogModel> {
             detail: "Very small. For older computers with little memory.".to_string(),
             local_path: None,
             installed: false,
+            damaged: false,
+            damage_reason: None,
         },
         CatalogModel {
             id: "minicpm5-2b".to_string(),
@@ -106,6 +116,8 @@ pub fn default_catalog() -> Vec<CatalogModel> {
             detail: "Small and light. Good for thin laptops.".to_string(),
             local_path: None,
             installed: false,
+            damaged: false,
+            damage_reason: None,
         },
         CatalogModel {
             id: "bonsai-27b".to_string(),
@@ -122,6 +134,8 @@ pub fn default_catalog() -> Vec<CatalogModel> {
                 .to_string(),
             local_path: None,
             installed: false,
+            damaged: false,
+            damage_reason: None,
         },
     ]
 }
@@ -160,26 +174,132 @@ pub fn parse_huggingface_gguf_url(raw: &str) -> Result<(String, String, String, 
     Ok((repo, revision, file_name, resolve_url))
 }
 
+/// Fast integrity check for a local model file: verifies the GGUF header and,
+/// for checksum-pinned catalog models, confirms the file wasn't truncated.
+pub fn validate_gguf_file(
+    path: &Path,
+    expected_bytes: Option<u64>,
+) -> std::result::Result<(), String> {
+    use std::io::Read;
+    let meta =
+        std::fs::metadata(path).map_err(|_| "This model file could not be read.".to_string())?;
+    if !meta.is_file() {
+        return Err("This model file is missing.".to_string());
+    }
+    let len = meta.len();
+    if len < 64 {
+        return Err("This model file is incomplete or empty.".to_string());
+    }
+    if let Some(expected) = expected_bytes {
+        if len != expected {
+            return Err("This model file is incomplete or damaged.".to_string());
+        }
+    }
+    let mut file = std::fs::File::open(path)
+        .map_err(|_| "This model file could not be opened.".to_string())?;
+    let mut magic = [0u8; 4];
+    file.read_exact(&mut magic)
+        .map_err(|_| "This model file is incomplete or unreadable.".to_string())?;
+    if &magic != b"GGUF" {
+        return Err("This file is damaged or not a valid local model.".to_string());
+    }
+    Ok(())
+}
+
+/// Removes a downloaded model file (and any partial download) or unlinks an imported path.
+pub fn delete_model_file(
+    data_dir: &Path,
+    model_id: &str,
+    custom_paths: &mut HashMap<String, String>,
+) -> Result<()> {
+    let dir = models_dir(data_dir);
+    let mut removed_any = custom_paths.remove(model_id).is_some();
+
+    let managed_name = default_catalog()
+        .into_iter()
+        .find(|m| m.id == model_id)
+        .map(|m| m.file_name)
+        .or_else(|| model_id.strip_prefix("local:").map(String::from));
+
+    if let Some(file_name) = managed_name {
+        if file_name.contains('/') || file_name.contains('\\') || file_name.contains("..") {
+            bail!("Invalid model file name");
+        }
+        let target = dir.join(&file_name);
+        let part = partial_download_path(&target);
+        if target.is_file() {
+            std::fs::remove_file(&target)?;
+            removed_any = true;
+        }
+        if part.is_file() {
+            let _ = std::fs::remove_file(&part);
+            removed_any = true;
+        }
+    }
+
+    if !removed_any {
+        bail!("No downloaded file found for `{model_id}`");
+    }
+    Ok(())
+}
+
+/// Orders healthy installed models for automatic startup: preferred model first,
+/// then safer/lighter models before large desktop models so a broken or heavy
+/// model never leaves the user stuck.
+pub fn candidate_models_for_auto_start(
+    models: &[CatalogModel],
+    preferred_id: &str,
+) -> Vec<CatalogModel> {
+    let mut healthy: Vec<CatalogModel> = models
+        .iter()
+        .filter(|m| m.installed && !m.damaged && m.local_path.is_some())
+        .cloned()
+        .collect();
+    let tier_rank = |tier: &str| match tier {
+        "fast" => 0u8,
+        "balanced" => 1,
+        "custom" => 2,
+        "desktop" => 3,
+        _ => 4,
+    };
+    healthy.sort_by_key(|m| {
+        let is_preferred = u8::from(m.id != preferred_id);
+        (is_preferred, tier_rank(&m.tier), m.bytes)
+    });
+    healthy
+}
+
 /// Scans `models_dir` plus any custom imported file paths and returns the merged list.
 pub fn list_models(data_dir: &Path, custom_paths: &HashMap<String, String>) -> Vec<CatalogModel> {
     let dir = models_dir(data_dir);
     let mut models = default_catalog();
 
     for m in &mut models {
+        let expected_bytes = m.sha256.is_some().then_some(m.bytes);
         let managed = dir.join(&m.file_name);
-        if managed.is_file() {
-            m.local_path = Some(managed.to_string_lossy().to_string());
-            m.installed = true;
-            if let Ok(meta) = std::fs::metadata(&managed) {
-                m.bytes = meta.len();
-            }
-        } else if let Some(custom) = custom_paths.get(&m.id) {
-            let p = Path::new(custom);
-            if p.is_file() {
-                m.local_path = Some(custom.clone());
-                m.installed = true;
-                if let Ok(meta) = std::fs::metadata(p) {
-                    m.bytes = meta.len();
+        let candidate = if managed.is_file() {
+            Some(managed)
+        } else {
+            custom_paths
+                .get(&m.id)
+                .map(PathBuf::from)
+                .filter(|p| p.is_file())
+        };
+        if let Some(path) = candidate {
+            m.local_path = Some(path.to_string_lossy().to_string());
+            match validate_gguf_file(&path, expected_bytes) {
+                Ok(()) => {
+                    m.installed = true;
+                    m.damaged = false;
+                    m.damage_reason = None;
+                    if let Ok(meta) = std::fs::metadata(&path) {
+                        m.bytes = meta.len();
+                    }
+                }
+                Err(reason) => {
+                    m.installed = false;
+                    m.damaged = true;
+                    m.damage_reason = Some(reason);
                 }
             }
         }
@@ -204,6 +324,7 @@ pub fn list_models(data_dir: &Path, custom_paths: &HashMap<String, String>) -> V
                 if !known_files.contains(&file_name) {
                     let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
                     let id = format!("local:{}", file_name);
+                    let health = validate_gguf_file(&path, None);
                     models.push(CatalogModel {
                         id,
                         name: file_name.trim_end_matches(".gguf").to_string(),
@@ -217,7 +338,9 @@ pub fn list_models(data_dir: &Path, custom_paths: &HashMap<String, String>) -> V
                         tier: "custom".to_string(),
                         detail: "Your own model file.".to_string(),
                         local_path: Some(path.to_string_lossy().to_string()),
-                        installed: true,
+                        installed: health.is_ok(),
+                        damaged: health.is_err(),
+                        damage_reason: health.err(),
                     });
                 }
             }
@@ -236,6 +359,7 @@ pub fn list_models(data_dir: &Path, custom_paths: &HashMap<String, String>) -> V
                 .unwrap_or("custom.gguf")
                 .to_string();
             let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            let health = validate_gguf_file(path, None);
             models.push(CatalogModel {
                 id: id.clone(),
                 name: file_name.trim_end_matches(".gguf").to_string(),
@@ -249,7 +373,9 @@ pub fn list_models(data_dir: &Path, custom_paths: &HashMap<String, String>) -> V
                 tier: "custom".to_string(),
                 detail: format!("Linked local file: {}", path.display()),
                 local_path: Some(path_str.clone()),
-                installed: true,
+                installed: health.is_ok(),
+                damaged: health.is_err(),
+                damage_reason: health.err(),
             });
         }
     }
@@ -467,18 +593,94 @@ mod tests {
     }
 
     #[test]
-    fn list_models_detects_local_gguf_files() {
+    fn list_models_detects_healthy_and_damaged_local_files() {
         let dir = std::env::temp_dir().join(format!("keel_models_test_{}", uuid::Uuid::new_v4()));
         let mdir = models_dir(&dir);
         std::fs::create_dir_all(&mdir).unwrap();
-        std::fs::write(mdir.join("MiniCPM5-2B-Q4_K_M.gguf"), b"gguf").unwrap();
-        std::fs::write(mdir.join("custom-test.gguf"), b"gguf2").unwrap();
+
+        // A valid custom GGUF starts with "GGUF" and is at least 64 bytes.
+        let mut valid_gguf = b"GGUF".to_vec();
+        valid_gguf.resize(128, 0);
+        std::fs::write(mdir.join("custom-test.gguf"), &valid_gguf).unwrap();
+
+        // A truncated/corrupt catalog file is flagged as damaged, not installed.
+        std::fs::write(mdir.join("Ternary-Bonsai-2-9B-Q2_0.gguf"), &valid_gguf).unwrap();
+        // A non-GGUF file is also flagged as damaged.
+        std::fs::write(mdir.join("broken.gguf"), vec![b'X'; 128]).unwrap();
 
         let models = list_models(&dir, &HashMap::new());
-        let minicpm = models.iter().find(|m| m.id == "minicpm5-2b").unwrap();
-        assert!(minicpm.installed);
-        assert!(models.iter().any(|m| m.file_name == "custom-test.gguf"));
+        let custom = models
+            .iter()
+            .find(|m| m.file_name == "custom-test.gguf")
+            .unwrap();
+        assert!(custom.installed && !custom.damaged);
+
+        let bonsai9 = models.iter().find(|m| m.id == "bonsai-9b").unwrap();
+        assert!(!bonsai9.installed && bonsai9.damaged);
+        assert!(bonsai9.damage_reason.is_some());
+        assert_eq!(bonsai9.bytes, 2_556_640_128);
+
+        let broken = models
+            .iter()
+            .find(|m| m.file_name == "broken.gguf")
+            .unwrap();
+        assert!(!broken.installed && broken.damaged);
+
+        let candidates = candidate_models_for_auto_start(&models, "bonsai-9b");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].file_name, "custom-test.gguf");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_model_removes_managed_file_and_partial_without_deleting_imported_external() {
+        let dir = std::env::temp_dir().join(format!("keel_del_test_{}", uuid::Uuid::new_v4()));
+        let mdir = models_dir(&dir);
+        std::fs::create_dir_all(&mdir).unwrap();
+
+        let managed = mdir.join("Ternary-Bonsai-2-9B-Q2_0.gguf");
+        let part = partial_download_path(&managed);
+        std::fs::write(&managed, b"bad").unwrap();
+        std::fs::write(&part, b"partial").unwrap();
+
+        let external = dir.join("outside.gguf");
+        std::fs::write(&external, b"keep-me").unwrap();
+        let mut custom = HashMap::new();
+        custom.insert(
+            "imported:outside.gguf".to_string(),
+            external.to_string_lossy().to_string(),
+        );
+
+        delete_model_file(&dir, "bonsai-9b", &mut custom).unwrap();
+        assert!(!managed.exists());
+        assert!(!part.exists());
+
+        delete_model_file(&dir, "imported:outside.gguf", &mut custom).unwrap();
+        assert!(!custom.contains_key("imported:outside.gguf"));
+        assert!(external.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn candidate_models_order_preferred_then_fast_before_desktop() {
+        let mut models = default_catalog();
+        for m in &mut models {
+            m.installed = true;
+            m.local_path = Some(format!("/fake/{}", m.file_name));
+        }
+        // Mark preferred bonsai-9b as damaged; bonsai-4b/fast should come before bonsai-27b.
+        let b9 = models.iter_mut().find(|m| m.id == "bonsai-9b").unwrap();
+        b9.installed = false;
+        b9.damaged = true;
+
+        let order: Vec<String> = candidate_models_for_auto_start(&models, "bonsai-9b")
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert!(!order.contains(&"bonsai-9b".to_string()));
+        assert_eq!(order.last().map(String::as_str), Some("bonsai-27b"));
+        assert_eq!(order.first().map(String::as_str), Some("lfm3-1.7b"));
     }
 }
