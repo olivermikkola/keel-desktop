@@ -36,7 +36,7 @@ pub fn compact_messages(
         return (messages, false);
     }
 
-    let mut split_idx = messages.len().saturating_sub(keep_tail).max(1);
+    let mut split_idx = messages.len().saturating_sub(keep_tail.max(1)).max(1);
     while split_idx > 1 && messages[split_idx].role != "user" {
         split_idx -= 1;
     }
@@ -58,19 +58,8 @@ pub fn compact_messages(
         summary_lines.push(format!("- ... ({omitted} earlier steps compacted)"));
     }
 
-    let summary_msg = ChatTurnMessage {
-        role: "system".to_string(),
-        content: format!(
-            "Earlier conversation summary (compacted to fit context):\n{}",
-            summary_lines.join("\n")
-        ),
-        tool_call_id: None,
-        tool_calls: None,
-    };
-
-    let mut out = Vec::with_capacity(2 + tail.len());
+    let mut out = Vec::with_capacity(1 + tail.len());
     out.extend_from_slice(head);
-    out.push(summary_msg);
     out.extend_from_slice(tail);
     // Drop complete older turns when snippets plus the tail still exceed the budget.
     while estimate_tokens(&out) > budget_tokens {
@@ -78,16 +67,13 @@ pub fn compact_messages(
         if latest_user <= 1 {
             break;
         }
-        let end = if out[1].role == "system" {
-            2
-        } else {
-            out.iter()
-                .enumerate()
-                .skip(2)
-                .find(|(_, m)| m.role == "user")
-                .map(|(i, _)| i)
-                .unwrap_or(latest_user)
-        };
+        let end = out
+            .iter()
+            .enumerate()
+            .skip(2)
+            .find(|(_, m)| m.role == "user")
+            .map(|(i, _)| i)
+            .unwrap_or(latest_user);
         out.drain(1..end);
     }
     if estimate_tokens(&out) > budget_tokens {
@@ -103,6 +89,37 @@ pub fn compact_messages(
         for message in out.iter_mut().filter(|m| m.role == "tool") {
             if message.content.chars().count() > each {
                 message.content = format!("{}\n[Tool output shortened to fit context. Read a smaller line range or query fewer rows for details.]",message.content.chars().take(each).collect::<String>());
+            }
+        }
+    }
+    // Keep history excerpts at user authority. Several local templates accept
+    // a single system message and reject one anywhere else in the transcript.
+    if !summary_lines.is_empty() {
+        let intro = "Quoted excerpts from earlier conversation:\n";
+        let separator = "\n\nMessage at this point in the conversation:\n";
+        let mut room = budget_tokens
+            .saturating_sub(estimate_tokens(&out))
+            .saturating_mul(4)
+            .saturating_sub(intro.len() + separator.len() + 4);
+        let excerpts: Vec<_> = summary_lines
+            .iter()
+            .take_while(|line| {
+                let needed = line.len() + 1;
+                if needed > room {
+                    return false;
+                }
+                room -= needed;
+                true
+            })
+            .collect();
+        if !excerpts.is_empty() {
+            if let Some(user) = out.iter_mut().find(|message| message.role == "user") {
+                let excerpts = excerpts
+                    .into_iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                user.content = format!("{intro}{excerpts}{separator}{}", user.content);
             }
         }
     }
@@ -134,6 +151,9 @@ mod tests {
         assert!(estimate_tokens(&compacted) <= 500);
         assert!(compacted.len() >= 5);
         assert_eq!(compacted[0].content, "You are Keel.");
+        assert!(compacted[1..]
+            .iter()
+            .all(|message| message.role != "system"));
         assert_eq!(compacted.last().unwrap().content, "x".repeat(400));
     }
 }

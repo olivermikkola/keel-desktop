@@ -115,6 +115,64 @@ async fn work_stages_real_edits_without_writing_and_has_no_shell() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+#[tokio::test]
+async fn repeated_sql_reminder_keeps_the_tool_result_and_a_single_initial_system_message() {
+    let root = std::env::temp_dir().join(format!("keel_repeat_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("orders.csv"),
+        "quantity,price\n3,12\n8,2.50\n2,15\n",
+    )
+    .unwrap();
+    let mut replies: Vec<_> = (0..3).map(|i| {
+        completion(json!({"tool_calls":[{"index":0,"id":format!("call_{i}"),"type":"function","function":{"name":"run_sql","arguments":json!({"query":"SELECT SUM(quantity * price) FROM \"orders.csv\""}).to_string()}}]}))
+    }).collect();
+    replies.push(completion(json!({"content":"€86"})));
+    let (endpoint, server) = support::server(replies).await;
+    let outcome = run_agent_turn(
+        TurnParams {
+            base_url: endpoint,
+            model_name: "test".into(),
+            context_size: 8192,
+            app_preset: AppPreset::General,
+            custom_instructions: String::new(),
+            workspace_root: Some(root.clone()),
+            auto_apply_edits: false,
+            enable_thinking: false,
+            history: vec![ChatTurnMessage {
+                role: "user".into(),
+                content: "What is the total of orders.csv?".into(),
+                tool_call_id: None,
+                tool_calls: None,
+            }],
+            mcp_config: McpConfigFile::default(),
+            mcp_tools: vec![],
+            max_steps: 4,
+        },
+        &mut HashSet::new(),
+        |_| {},
+        |_, _, _, _| async { ApprovalDecision::Deny },
+    )
+    .await
+    .unwrap();
+    let requests = server.await.unwrap();
+    assert_eq!(outcome.content, "€86");
+    let messages = requests[3]["messages"].as_array().unwrap();
+    assert_eq!(messages[0]["role"], "system");
+    assert!(messages
+        .iter()
+        .skip(1)
+        .all(|message| message["role"] != "system"));
+    let last = messages.last().unwrap();
+    assert_eq!(last["role"], "tool");
+    assert_eq!(last["tool_call_id"], "call_2");
+    assert!(last["content"]
+        .as_str()
+        .unwrap()
+        .contains("86\n\n\nKeel tool-loop note:"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn legacy_general_sessions_still_map_to_work_and_code_has_shell() {
     let preset: AppPreset = serde_json::from_str("\"general\"").unwrap();
