@@ -246,17 +246,13 @@ where
             tool_calls: Some(Value::Array(openai_tool_calls)),
         });
 
-        let mut repeated_nudge: Option<String> = None;
-
         for tc in tool_calls {
             emit(AgentEvent::ToolCallStart {
                 name: tc.name.clone(),
                 arguments: tc.arguments.clone(),
             });
 
-            if let Some(nudge) = repeat_guard.record(&tc.name, &tc.arguments) {
-                repeated_nudge = Some(nudge);
-            }
+            let repeated_nudge = repeat_guard.record(&tc.name, &tc.arguments);
 
             let exec = if !exposed_tools.contains(&tc.name) {
                 Err(anyhow::anyhow!(
@@ -315,9 +311,13 @@ where
                 edit_id: staged_id,
             });
 
+            let content = match repeated_nudge {
+                Some(nudge) => format!("{result_text}\n\nKeel tool-loop note: {nudge}"),
+                None => result_text,
+            };
             messages.push(ChatTurnMessage {
                 role: "tool".to_string(),
-                content: result_text,
+                content,
                 tool_call_id: Some(tc.id),
                 tool_calls: None,
             });
@@ -346,15 +346,6 @@ where
                     tokens_per_sec: tps,
                 });
             }
-        }
-
-        if let Some(nudge) = repeated_nudge {
-            messages.push(ChatTurnMessage {
-                role: "system".to_string(),
-                content: nudge,
-                tool_call_id: None,
-                tool_calls: None,
-            });
         }
     }
 
