@@ -2,7 +2,7 @@
 // progress view while the assistant downloads, and never blocks the rest of the app.
 import { escapeHtml } from "./markdown.js";
 import { formatBytes } from "./state.js";
-import { createProgressTracker, formatEta, formatSpeed, friendlySetupError, stepStates } from "./onboarding.js";
+import { createProgressTracker, formatEta, formatSpeed, friendlySetupError, serverDataNotice, stepStates } from "./onboarding.js";
 
 export function createWelcome(api) {
   const { invoke, root, toast } = api;
@@ -152,12 +152,16 @@ export function createWelcome(api) {
       <input id="setup-url" class="input mono" value="http://127.0.0.1:11434/v1" />
       <label class="welcome-label" for="setup-model">Model name (optional)</label>
       <input id="setup-model" class="input" placeholder="Use the server's first model" />
+      <p class="welcome-sub" id="welcome-server-notice">${serverDataNotice("http://127.0.0.1:11434/v1")}</p>
       <p id="welcome-existing-error" class="welcome-error" role="alert"></p>
       <div class="welcome-desktop-actions">
         <button id="setup-connect" data-primary class="welcome-btn-white" type="button">Connect</button>
         <button id="welcome-back" class="btn btn-ghost btn-sm" type="button">Back</button>
       </div>`;
     body.querySelector("#welcome-back").onclick = () => { view = "intro"; render(); };
+    body.querySelector("#setup-url").oninput = (event) => {
+      body.querySelector("#welcome-server-notice").textContent = serverDataNotice(event.target.value);
+    };
     body.querySelector("#setup-connect").onclick = async (event) => {
       event.target.disabled = true;
       try {

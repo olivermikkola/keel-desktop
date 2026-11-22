@@ -113,6 +113,21 @@ export function isFirstRun(storageValue, bootstrap) {
   return !(bootstrap.models || []).some((m) => m.installed);
 }
 
+export function modelLocation(runtime) {
+  if (runtime?.state === "running") return "On this computer";
+  try {
+    const host = new URL(runtime?.base_url).hostname.toLowerCase();
+    if (host === "localhost" || host === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(host)) return "Local model server";
+  } catch { /* An invalid address cannot be confirmed as local. */ }
+  return "External model server";
+}
+
+export function serverDataNotice(address) {
+  return modelLocation({ state: "external", base_url: address }) === "Local model server"
+    ? "Keel sends prompts and relevant files to the model server on this computer."
+    : "Keel sends prompts and relevant files to the server you connect here.";
+}
+
 export function assistantStatus({ runtime, waking, setup }) {
   if (setup?.busy) return { key: "setup", label: `Setting up… ${Math.round((setup.fraction || 0) * 100)}%` };
   if (setup?.paused) return { key: "paused", label: "Download paused" };
