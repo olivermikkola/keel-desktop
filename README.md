@@ -23,6 +23,10 @@ Built with **Tauri 2**, **Rust**, and **llama.cpp** (`llama-server`), carrying t
 
 The feature notes below describe current `main`. See the release tag for the exact source used to build each public installer.
 
+![Keel Desktop Work mode showing sample prompts and a budget document preview](https://moesystems.com/assets/keel-desktop-work.webp)
+
+*Work mode with sample documents in current source.*
+
 ## What you can do
 
 ### Everyday assistant — Chat & Work
@@ -140,7 +144,8 @@ One engine, focused surfaces — the canonical positioning is the
 | --- | --- |
 | [Keel](https://github.com/olivermikkola/keel) | CLI + TUI coding agent for small local models — Code mode's canonical engine |
 | **Keel Desktop** (this repo) | Everyday local-AI app: Chat, Work, Images, Code |
-| [Keel Mobile](https://github.com/olivermikkola/keel-mobile) | Standalone on-device iPhone agent — the model runs on the phone |
+| [Keel Mobile](https://moesystems.com/keel-mobile/) | Standalone on-device iPhone agent — the model runs on the phone |
+| [Keel Mobile for Android](https://github.com/olivermikkola/keel-mobile-android) | On-device Android agent, source-build pre-alpha |
 | [Keel Console](https://github.com/olivermikkola/keel-xbox) | Living-room app for Xbox / TV |
 | [Keel Arena](https://github.com/olivermikkola/keel-arena) | Public benchmarks and scorecards — the proof layer |
 
