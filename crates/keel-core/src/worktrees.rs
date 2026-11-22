@@ -421,11 +421,7 @@ mod tests {
         .unwrap();
 
         let checkout = CodeCheckout::create(&original, &scratch.join("isolated")).unwrap();
-        let check_cmd = if cfg!(windows) {
-            "findstr /C:\"fixed\" value.txt"
-        } else {
-            "grep -qx fixed value.txt"
-        };
+        let check_cmd = "git grep --no-index -q fixed value.txt";
         let fail = checkout.run_test(check_cmd).unwrap();
         assert!(!fail.passed);
         assert_ne!(fail.exit_code, 0);
