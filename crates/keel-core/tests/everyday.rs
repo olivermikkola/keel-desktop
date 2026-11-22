@@ -46,6 +46,7 @@ fn document(text: &str) -> Document {
         kind: "txt".into(),
         text: text.into(),
         truncated: false,
+        image_data_url: None,
     }
 }
 
@@ -103,6 +104,90 @@ fn documents_extract_text_docx_and_pdf_without_external_programs() {
     );
     std::fs::write(root.join("binary.txt"), [0xff, 0xfe, 0x00]).unwrap();
     assert!(documents::import_document(&root.join("binary.txt")).is_err());
+    std::fs::write(root.join("blob.bin"), [0x01, 0x02, 0x03]).unwrap();
+    assert!(documents::import_document(&root.join("blob.bin")).is_err());
+    assert!(documents::is_image_extension("PNG"));
+    assert!(documents::is_image_extension("jpeg"));
+    assert!(!documents::is_image_extension("pdf"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn image_ocr_imports_and_reads_from_workspace() {
+    let root = temp();
+    // Render crisp 24-bit BMP containing bold letters "OK" so OCR works offline without external generators.
+    let glyphs: [&[&str]; 2] = [
+        &[
+            " #### ", "#    #", "#    #", "#    #", "#    #", "#    #", " #### ",
+        ],
+        &[
+            "#    #", "#   # ", "#  #  ", "###   ", "#  #  ", "#   # ", "#    #",
+        ],
+    ];
+    let scale = 6usize;
+    let pad = 28usize;
+    let width = pad * 2 + (2 * 6 + 3) * scale;
+    let height = pad * 2 + 7 * scale;
+    let row_stride = (width * 3).div_ceil(4) * 4;
+    let img_size = row_stride * height;
+    let file_size = 54 + img_size;
+    let mut bmp = Vec::with_capacity(file_size);
+    bmp.extend_from_slice(b"BM");
+    bmp.extend_from_slice(&(file_size as u32).to_le_bytes());
+    bmp.extend_from_slice(&0u32.to_le_bytes());
+    bmp.extend_from_slice(&54u32.to_le_bytes());
+    bmp.extend_from_slice(&40u32.to_le_bytes());
+    bmp.extend_from_slice(&(width as i32).to_le_bytes());
+    bmp.extend_from_slice(&(height as i32).to_le_bytes());
+    bmp.extend_from_slice(&1u16.to_le_bytes());
+    bmp.extend_from_slice(&24u16.to_le_bytes());
+    bmp.extend_from_slice(&0u32.to_le_bytes());
+    bmp.extend_from_slice(&(img_size as u32).to_le_bytes());
+    bmp.extend_from_slice(&2835i32.to_le_bytes());
+    bmp.extend_from_slice(&2835i32.to_le_bytes());
+    bmp.extend_from_slice(&0u32.to_le_bytes());
+    bmp.extend_from_slice(&0u32.to_le_bytes());
+    let mut pixels = vec![255u8; img_size];
+    for (gi, glyph) in glyphs.iter().enumerate() {
+        for (ry, row) in glyph.iter().enumerate() {
+            for (rx, ch) in row.chars().enumerate() {
+                if ch == '#' {
+                    for dy in 0..scale {
+                        for dx in 0..scale {
+                            let x = pad + (gi * 9 + rx) * scale + dx;
+                            let y = pad + ry * scale + dy;
+                            let bmp_y = height - 1 - y;
+                            let idx = bmp_y * row_stride + x * 3;
+                            pixels[idx] = 0;
+                            pixels[idx + 1] = 0;
+                            pixels[idx + 2] = 0;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    bmp.extend_from_slice(&pixels);
+    let img_path = root.join("receipt.bmp");
+    std::fs::write(&img_path, bmp).unwrap();
+
+    if documents::ocr_available() {
+        let doc = documents::import_document(&img_path).unwrap();
+        assert_eq!(doc.kind, "bmp");
+        assert!(doc.text.contains("OK"), "OCR text was: {:?}", doc.text);
+        assert!(doc
+            .image_data_url
+            .as_deref()
+            .is_some_and(|u| u.starts_with("data:image/bmp;base64,")));
+        let ws_text =
+            keel_core::tools::read_workspace_file(&root, "receipt.bmp", None, None).unwrap();
+        assert!(ws_text.contains("OK"), "workspace OCR was: {ws_text:?}");
+    } else {
+        let err = documents::import_document(&img_path)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Tesseract OCR"), "unexpected error: {err}");
+    }
     std::fs::remove_dir_all(root).unwrap();
 }
 

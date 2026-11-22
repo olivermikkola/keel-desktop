@@ -27,7 +27,7 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  case 'list_workspace_files_cmd':result=files;break;
  case 'list_image_jobs':result=jobs;break;
  case 'get_runtime_status':result=runtime;break;
- case 'pick_documents':result=[{id:crypto.randomUUID(),name:'brief.txt',kind:'txt',text:'Project Harbor budget is 4800 euros.',truncated:false}];break;
+ case 'pick_documents':result=[{id:crypto.randomUUID(),name:'brief.txt',kind:'txt',text:'Project Harbor budget is 4800 euros.',truncated:false},{id:crypto.randomUUID(),name:'receipt.png',kind:'png',text:'Total due: 480 EUR',truncated:false,image_data_url:''' + json.dumps(PNG) + r'''}];break;
  case 'save_personal_context':cfg.personal_context=args.text;result=null;break;
  case 'save_project':{const old=projects.findIndex(p=>p.id===args.project.id);if(old>=0)projects[old]=args.project;else projects.push(args.project);result=projects;break;}
  case 'get_project':result=projects.find(p=>p.id===args.id);break;
@@ -212,12 +212,16 @@ async def main(port):
         await page.screenshot(path=str(OUTPUT / 'chat.png'))
         # Attach a source, inspect it, then save explicit cross-conversation preferences.
         await page.locator('#attach-docs-btn').click()
-        await page.locator('[data-pending-source]').wait_for()
+        await page.locator('[data-pending-source]').first.wait_for()
         await page.locator('#prompt-input').fill('Summarize the attached brief')
         await page.locator('#send-btn').click()
-        await page.locator('[data-message-source]').wait_for()
-        await page.locator('[data-message-source]').click()
+        await page.locator('[data-message-source]').first.wait_for()
+        await page.locator('[data-message-source]').first.click()
         await page.locator('.document-text').get_by_text('Project Harbor budget is 4800 euros.',exact=True).wait_for()
+        await page.locator('#modal-close-btn').click()
+        await page.locator('[data-message-source]').nth(1).click()
+        await page.locator('.modal img.generated-image').wait_for()
+        await page.locator('.document-text').get_by_text('Total due: 480 EUR',exact=True).wait_for()
         await page.locator('#modal-close-btn').click()
         await page.locator('#memory-btn').click()
         await page.locator('#personal-context').fill('I am vegetarian and prefer concise answers.')
