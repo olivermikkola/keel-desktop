@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -191,13 +192,27 @@ pub fn read_workspace_file(
     end_line: Option<usize>,
 ) -> Result<String> {
     let path = confine_path(root, rel)?;
-    let bytes = std::fs::read(&path).with_context(|| format!("Failed to read {rel}"))?;
-    let truncated_bytes = bytes.len() > MAX_READ_BYTES;
-    let slice = if truncated_bytes {
-        &bytes[..MAX_READ_BYTES]
-    } else {
-        &bytes[..]
-    };
+    let extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default();
+    let (bytes, extracted_truncated) =
+        if extension.eq_ignore_ascii_case("pdf") || extension.eq_ignore_ascii_case("docx") {
+            let document = crate::documents::import_document(&path)
+                .with_context(|| format!("Failed to extract text from {rel}"))?;
+            (document.text.into_bytes(), document.truncated)
+        } else {
+            let mut bytes = Vec::new();
+            std::fs::File::open(&path)
+                .and_then(|file| {
+                    file.take((MAX_READ_BYTES + 1) as u64)
+                        .read_to_end(&mut bytes)
+                })
+                .with_context(|| format!("Failed to read {rel}"))?;
+            (bytes, false)
+        };
+    let truncated_bytes = extracted_truncated || bytes.len() > MAX_READ_BYTES;
+    let slice = &bytes[..bytes.len().min(MAX_READ_BYTES)];
     let text = String::from_utf8_lossy(slice);
     let lines: Vec<&str> = text.lines().collect();
     let total = lines.len();

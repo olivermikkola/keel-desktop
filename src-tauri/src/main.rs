@@ -108,6 +108,7 @@ fn main() {
             commands::cancel_image_job,
             commands::read_workspace_png,
             commands::pick_workspace_folder,
+            commands::prepare_sample_workspace,
             commands::set_workspace_folder,
             commands::list_workspace_files_cmd,
             commands::read_workspace_file_raw,

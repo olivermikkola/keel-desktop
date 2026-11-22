@@ -33,6 +33,7 @@ const appState = {
   pendingDocuments: [],
   searchResults: null,
   workspacePath: null,
+  choosingWorkspace: false,
   workspaceFiles: [],
   activeView: "chat", // "chat" | "code" | "models" | "connectors"
   viewerOpen: false,
@@ -351,7 +352,7 @@ function renderToolOrEditHtml(tool) {
 }
 
 async function setActiveView(view) {
-  if (appState.streaming) return;
+  if (appState.streaming || appState.choosingWorkspace) return;
   if (MODES[view] && modeForPreset(appState.session?.app_preset) !== view) {
     const recent = appState.bootstrap.sessions.find((s) => modeForPreset(s.app_preset) === view && (s.project_id || null) === appState.activeProjectId);
     if (recent) await loadSession(recent.id);
@@ -438,14 +439,15 @@ function hasViewerContent() {
   return Boolean(detectViewerForPreset(appState.session?.app_preset, appState.workspaceFiles));
 }
 
-async function createNewSession(preset = "chat") {
+async function createNewSession(preset = "chat", workspacePath = appState.workspacePath) {
   if (appState.streaming) return;
   saveDraft();
   appState.session = await invoke("create_session", {
     preset,
-    workspacePath: appState.workspacePath,
+    workspacePath,
     projectId: appState.activeProjectId,
   });
+  appState.workspacePath = appState.session.workspace_path || null;
   appState.selectedEditId = null;
   appState.activeView = modeForPreset(preset);
   appState.viewerOpen = hasViewerContent();
@@ -483,6 +485,46 @@ async function refreshWorkspaceFiles() {
     renderViewerOptions();
   } catch {
     appState.workspaceFiles = [];
+  }
+}
+
+async function openWorkspace({ sample = false, carryDraft = false } = {}) {
+  if (appState.choosingWorkspace || appState.streaming) return false;
+  appState.choosingWorkspace = true;
+  try {
+    const path = await invoke(sample ? "prepare_sample_workspace" : "pick_workspace_folder");
+    if (!path) return false;
+    const session = appState.session;
+    const mode = modeForPreset(session?.app_preset);
+    const editingThread = mode !== "chat" && appState.activeView === mode;
+    const hasHistory = Boolean(session?.messages.length || session?.staged_edits.length);
+    const next = await invoke("set_workspace_folder", { path, sessionId: editingThread && !hasHistory ? session.id : null });
+    if (editingThread && hasHistory && session.workspace_path !== next) {
+      const text = els.promptInput.value;
+      const documents = appState.pendingDocuments;
+      await createNewSession(session.app_preset, next);
+      if (carryDraft) {
+        els.promptInput.value = text;
+        appState.pendingDocuments = documents;
+        saveDraft();
+        autoSizePromptInput();
+        renderAttachmentChips();
+      }
+    } else {
+      appState.workspacePath = next;
+      if (editingThread) appState.session.workspace_path = next;
+      await refreshBootstrap();
+      appState.viewerFile = detectViewerForPreset(appState.session?.app_preset, appState.workspaceFiles);
+      appState.viewerOpen = hasViewerContent();
+      renderAll();
+    }
+    return true;
+  } catch (error) {
+    showNotice(`Couldn’t open the folder. ${String(error)}`);
+    return false;
+  } finally {
+    appState.choosingWorkspace = false;
+    if (MODES[appState.activeView]) els.promptInput.focus();
   }
 }
 
@@ -627,8 +669,7 @@ function renderHeader() {
         : b.config.selected_model_id || "Select model";
 
   const shortWs = shortPath(appState.workspacePath);
-  els.workspacePillLabel.textContent = shortWs;
-  els.composerWsChip.textContent = appState.workspacePath ? shortWs : "No folder";
+  els.workspacePillLabel.textContent = appState.workspacePath ? shortWs : "Open folder";
 
   const harness = b.harnesses.find((h) => h.id === b.config.harness_mode);
   els.harnessPillLabel.textContent = `Engine: ${harness ? harness.name.replace(" Harness", "") : "Keel"}`;
@@ -647,7 +688,7 @@ function renderHeader() {
   }
   const mode = modeForPreset(appState.session?.app_preset);
   els.promptInput.placeholder = MODES[mode].placeholder;
-  els.composerWsChip.textContent = shortWs;
+  els.composerWsChip.textContent = appState.workspacePath ? shortWs : "Open folder";
   els.composerWsChip.classList.toggle("hidden", mode === "chat");
   els.workspacePillBtn.classList.toggle("hidden", mode === "chat" && appState.activeView !== "tools");
   els.harnessPillBtn.classList.toggle("hidden", mode !== "code");
@@ -674,7 +715,10 @@ function renderChat() {
     const live = isRuntimeLive(b.runtime);
     const setupBusy = welcome.status().busy;
     const canWake = Boolean(modelToWake(b));
-    const action = live || appState.waking ? "" : setupBusy ? '<button class="btn btn-primary" id="chat-setup-btn">See setup progress</button>' : canWake ? '<button class="btn btn-primary" id="chat-setup-btn">Start your AI</button>' : '<button class="btn btn-primary" id="chat-setup-btn">Set up my AI</button>';
+    const needsFolder = modeForPreset(preset.id) !== "chat" && !appState.workspacePath;
+    const action = needsFolder
+      ? `<button class="btn btn-primary" id="empty-open-folder">Open folder</button>${preset.id === "general" ? ' <button class="btn btn-ghost" id="empty-sample-folder">Try with sample files</button>' : ""}`
+      : live || appState.waking ? "" : setupBusy ? '<button class="btn btn-primary" id="chat-setup-btn">See setup progress</button>' : canWake ? '<button class="btn btn-primary" id="chat-setup-btn">Start your AI</button>' : '<button class="btn btn-primary" id="chat-setup-btn">Set up my AI</button>';
     const status = appState.waking ? '<p class="empty-status" role="status">Waking up your AI. You can type your question now.</p>' : "";
     const heading = preset.id === "chat" && !project ? "What can I help with?" : preset.title;
     els.chatScroll.innerHTML = `
@@ -687,9 +731,12 @@ function renderChat() {
       </div>
     `;
     els.chatScroll.querySelector("#chat-setup-btn")?.addEventListener("click", () => (canWake && !setupBusy ? wakeAssistant() : welcome.show()));
+    els.chatScroll.querySelector("#empty-open-folder")?.addEventListener("click", () => openWorkspace());
+    els.chatScroll.querySelector("#empty-sample-folder")?.addEventListener("click", () => openWorkspace({ sample: true }));
     els.chatScroll.querySelectorAll("[data-starter]").forEach((btn) => {
       btn.onclick = () => {
         els.promptInput.value = btn.getAttribute("data-starter");
+        saveDraft();
         sendCurrentPrompt();
       };
     });
@@ -805,9 +852,13 @@ function renderApprovalCard(req) {
 }
 
 async function sendCurrentPrompt() {
-  if (appState.streaming || !appState.session) return;
+  if (appState.streaming || appState.choosingWorkspace || !appState.session) return;
   const prompt = els.promptInput.value.trim() || (appState.pendingDocuments.length ? "Summarize the attached documents and highlight the key points." : "");
   if (!prompt) return;
+  if (!appState.workspacePath && modeForPreset(appState.session.app_preset) !== "chat") {
+    if (await openWorkspace({ carryDraft: true })) await sendCurrentPrompt();
+    return;
+  }
   const harnessMode = appState.bootstrap.config.harness_mode;
   const blocked = promptBlockReason(appState.session, appState.bootstrap.runtime,
     appState.workspacePath, harnessMode);
@@ -1536,36 +1587,8 @@ function wireUi() {
     }
   });
 
-  els.workspacePillBtn.onclick = async () => {
-    if (appState.streaming) return;
-    const picked = await invoke("pick_workspace_folder");
-    if (picked) {
-      appState.workspacePath = await invoke("set_workspace_folder", { path: picked });
-      await refreshBootstrap();
-      renderAll();
-    } else {
-      openModal("Select Workspace Folder", (body) => {
-        const div = document.createElement("div");
-        div.className = "card";
-        div.innerHTML = `
-          <label>Workspace Folder Path</label>
-          <div class="row">
-            <input id="ws-path-in" class="input grow mono" value="${escapeHtml(appState.workspacePath || "")}" placeholder="/path/to/project" />
-            <button id="ws-set-btn" class="btn btn-primary btn-sm">Open folder</button>
-          </div>
-        `;
-        div.querySelector("#ws-set-btn").onclick = async () => {
-          const path = div.querySelector("#ws-path-in").value.trim();
-          if (!path) return;
-          appState.workspacePath = await invoke("set_workspace_folder", { path });
-          await refreshBootstrap();
-          renderAll();
-          closeModal();
-        };
-        body.appendChild(div);
-      });
-    }
-  };
+  els.workspacePillBtn.onclick = () => openWorkspace();
+  els.composerWsChip.onclick = () => openWorkspace();
 
   els.toggleViewerBtn.onclick = () => {
     appState.viewerOpen = !appState.viewerOpen;

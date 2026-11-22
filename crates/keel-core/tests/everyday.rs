@@ -69,6 +69,10 @@ fn documents_extract_text_docx_and_pdf_without_external_programs() {
     zip.finish().unwrap();
     let doc = documents::import_document(&root.join("brief.docx")).unwrap();
     assert!(doc.text.contains("Harbor & Co\nBudget 4800"));
+    assert_eq!(
+        keel_core::tools::read_workspace_file(&root, "brief.docx", Some(2), Some(2)).unwrap(),
+        "   2: Budget 4800\n"
+    );
     // Small, valid text PDF with a built-in Helvetica font.
     let stream = "BT /F1 12 Tf 50 700 Td (Project Harbor budget 4800) Tj ET";
     let objects = ["<< /Type /Catalog /Pages 2 0 R >>".to_string(), "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into(), "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>".into(), "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into(), format!("<< /Length {} >>\nstream\n{stream}\nendstream", stream.len())];
@@ -91,6 +95,11 @@ fn documents_extract_text_docx_and_pdf_without_external_programs() {
         .unwrap()
         .text
         .contains("Harbor budget 4800"));
+    assert!(
+        keel_core::tools::read_workspace_file(&root, "brief.pdf", None, None)
+            .unwrap()
+            .contains("Harbor budget 4800")
+    );
     std::fs::write(root.join("binary.txt"), [0xff, 0xfe, 0x00]).unwrap();
     assert!(documents::import_document(&root.join("binary.txt")).is_err());
     std::fs::remove_dir_all(root).unwrap();

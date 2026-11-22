@@ -87,87 +87,73 @@ pub async fn get_bootstrap_state(
 }
 
 #[tauri::command]
-pub async fn pick_workspace_folder() -> Result<Option<String>, String> {
-    let output = tokio::task::spawn_blocking(pick_folder_native)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(output)
+pub async fn pick_workspace_folder(app: AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    tokio::task::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_title("Open a folder")
+            .blocking_pick_folder()
+            .map(|selection| {
+                selection
+                    .into_path()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .map_err(|error| error.to_string())
+            })
+            .transpose()
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
-fn pick_folder_native() -> Option<String> {
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(out) = std::process::Command::new("zenity")
-            .args([
-                "--file-selection",
-                "--directory",
-                "--title=Select Workspace Folder",
-            ])
-            .output()
+#[tauri::command]
+pub async fn prepare_sample_workspace(state: State<'_, AppState>) -> Result<String, String> {
+    use std::io::Write;
+    let folder = state.data_dir.join("Sample Work");
+    std::fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
+    for (name, content) in [
+        ("handoff.md", include_str!("../samples/handoff.md")),
+        ("budget.md", include_str!("../samples/budget.md")),
+        ("orders.csv", include_str!("../samples/orders.csv")),
+    ] {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(folder.join(name))
         {
-            if out.status.success() {
-                let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if !p.is_empty() {
-                    return Some(p);
-                }
-            }
+            Ok(mut file) => file
+                .write_all(content.as_bytes())
+                .map_err(|error| error.to_string())?,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.to_string()),
         }
-        if let Ok(out) = std::process::Command::new("kdialog")
-            .args(["--getexistingdirectory", "."])
-            .output()
-        {
-            if out.status.success() {
-                let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if !p.is_empty() {
-                    return Some(p);
-                }
-            }
-        }
-        None
     }
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(out) = std::process::Command::new("osascript")
-            .args([
-                "-e",
-                "POSIX path of (choose folder with prompt \"Select Workspace Folder\")",
-            ])
-            .output()
-        {
-            if out.status.success() {
-                let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if !p.is_empty() {
-                    return Some(p.trim_end_matches('/').to_string());
-                }
-            }
-        }
-        None
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let script = "Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.FolderBrowserDialog; if ($f.ShowDialog() -eq 'OK') { Write-Output $f.SelectedPath }";
-        if let Ok(out) = std::process::Command::new("powershell")
-            .args(["-NoProfile", "-Command", script])
-            .output()
-        {
-            if out.status.success() {
-                let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if !p.is_empty() {
-                    return Some(p);
-                }
-            }
-        }
-        None
-    }
+    Ok(folder.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
 pub async fn set_workspace_folder(
     state: State<'_, AppState>,
     path: String,
+    session_id: Option<String>,
 ) -> Result<String, String> {
+    let _guard = state
+        .turn_lock
+        .try_lock()
+        .map_err(|_| "Wait for the current reply to finish before opening a folder")?;
     let canon = validate_workspace_root(Path::new(&path)).map_err(|e| e.to_string())?;
     let canon_str = canon.to_string_lossy().to_string();
+    if let Some(id) = session_id {
+        let mut session = load_session(&state.data_dir, &id).map_err(|error| error.to_string())?;
+        if session.workspace_path.as_deref() != Some(&canon_str) {
+            if !session.messages.is_empty() || !session.staged_edits.is_empty() {
+                return Err("Open a new thread to work in a different folder".to_string());
+            }
+            session.workspace_path = Some(canon_str.clone());
+            session.updated_at = now_epoch();
+            save_session(&state.data_dir, &session).map_err(|error| error.to_string())?;
+        }
+    }
     let mut cfg = state.config.lock().await;
     cfg.recent_workspaces.retain(|w| w != &canon_str);
     cfg.recent_workspaces.insert(0, canon_str.clone());
@@ -415,8 +401,22 @@ pub async fn send_message(
         .map_err(|_| "A reply is already running. Stop it or wait for it to finish.")?;
     let mut session =
         load_session(&state.data_dir, &input.session_id).map_err(|e| e.to_string())?;
-    if input.workspace_path.is_some() {
-        session.workspace_path = input.workspace_path.clone();
+    if let Some(path) = input
+        .workspace_path
+        .as_deref()
+        .filter(|_| session.app_preset != AppPreset::Chat)
+    {
+        let root = validate_workspace_root(Path::new(path)).map_err(|error| error.to_string())?;
+        let root = root.to_string_lossy();
+        if session
+            .workspace_path
+            .as_deref()
+            .is_some_and(|old| old != root)
+            && (!session.messages.is_empty() || !session.staged_edits.is_empty())
+        {
+            return Err("Open a new thread to work in a different folder".into());
+        }
+        session.workspace_path = Some(root.into_owned());
     }
 
     if input.attachments.len() > 8
