@@ -224,17 +224,55 @@ pub async fn setup_local_ai(
     state: State<'_, AppState>,
     model_id: Option<String>,
 ) -> Result<keel_core::runtime::RuntimeStatus, String> {
+    let _download = state
+        .download_lock
+        .try_lock()
+        .map_err(|_| "Another download is running")?;
     let cfg = state.config.lock().await.clone();
     let plan = keel_core::setup::plan(&state.data_dir, cfg.llama_server_path.as_deref());
     let model =
         keel_core::setup::resolve_model(&plan, model_id.as_deref()).map_err(|e| e.to_string())?;
+    let (sender, mut pause) = tokio::sync::watch::channel(false);
+    *state.setup_pause.lock().await = Some(sender);
+    let runner = prepare_guided_downloads(&app, &state, &cfg, plan, &model, &mut pause).await;
+    *state.setup_pause.lock().await = None;
+    let runner = runner?;
+    {
+        let mut cfg = state.config.lock().await;
+        cfg.llama_server_path = Some(runner.to_string_lossy().into_owned());
+        sessions::save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
+    }
+    let _ = app.emit("keel://setup-stage", "start");
+    crate::commands::start_model(state.clone(), model.id).await
+}
+
+#[tauri::command]
+pub async fn pause_local_setup(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state
+        .setup_pause
+        .lock()
+        .await
+        .as_ref()
+        .is_some_and(|pause| pause.send(true).is_ok()))
+}
+
+async fn prepare_guided_downloads(
+    app: &AppHandle,
+    state: &AppState,
+    cfg: &sessions::DesktopConfig,
+    plan: keel_core::setup::SetupPlan,
+    model: &keel_core::models::CatalogModel,
+    pause: &mut tokio::sync::watch::Receiver<bool>,
+) -> Result<std::path::PathBuf, String> {
+    use keel_core::models::{catalog_download_url, download_with_pause, list_models, models_dir};
+
     let runner = if plan.runtime_asset.is_some() {
         let _ = app.emit("keel://setup-stage", "runner");
         let _ = app.emit(
             "keel://setup-progress",
             "Downloading and verifying the model runner…",
         );
-        keel_core::setup::install_runtime(&state.data_dir, |progress| {
+        keel_core::setup::install_runtime_with_pause(&state.data_dir, Some(pause), |progress| {
             let _ = app.emit("keel://download-progress", progress);
         })
         .await
@@ -246,27 +284,30 @@ pub async fn setup_local_ai(
     } else {
         return Err("Automatic setup is not available for this platform. Connect an existing model server instead.".into());
     };
-    {
-        let mut cfg = state.config.lock().await;
-        cfg.llama_server_path = Some(runner.to_string_lossy().into_owned());
-        sessions::save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
-    }
-    let models = keel_core::models::list_models(&state.data_dir, &cfg.custom_model_paths);
+    let models = list_models(&state.data_dir, &cfg.custom_model_paths);
     if !models.iter().any(|m| m.id == model.id && m.installed) {
         let _ = app.emit("keel://setup-stage", "model");
         let _ = app.emit(
             "keel://setup-progress",
             "Downloading and verifying your recommended model…",
         );
-        crate::commands::download_catalog_model(app.clone(), state.clone(), model.id.clone())
-            .await?;
+        let destination = models_dir(&state.data_dir).join(&model.file_name);
+        keel_core::setup::require_download_space(&destination, model.bytes, 0)
+            .map_err(|e| e.to_string())?;
+        download_with_pause(
+            &catalog_download_url(model),
+            &destination,
+            model.sha256.as_deref(),
+            &model.id,
+            Some(pause),
+            |progress| {
+                let _ = app.emit("keel://download-progress", progress);
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())?;
     }
-    let _ = app.emit("keel://setup-stage", "start");
-    let _ = app.emit(
-        "keel://setup-progress",
-        "Loading your model. The first start can take a moment…",
-    );
-    crate::commands::start_model(state, model.id).await
+    Ok(runner)
 }
 
 #[tauri::command]

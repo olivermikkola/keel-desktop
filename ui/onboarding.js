@@ -115,6 +115,7 @@ export function isFirstRun(storageValue, bootstrap) {
 
 export function assistantStatus({ runtime, waking, setup }) {
   if (setup?.busy) return { key: "setup", label: `Setting up… ${Math.round((setup.fraction || 0) * 100)}%` };
+  if (setup?.paused) return { key: "paused", label: "Download paused" };
   if (waking) return { key: "waking", label: "Waking up your AI…" };
   switch (runtime?.state) {
     case "running": return { key: "ready", label: "Ready" };

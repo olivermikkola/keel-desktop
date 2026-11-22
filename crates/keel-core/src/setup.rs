@@ -1,10 +1,13 @@
 //! Curated, checksum-verified runtime installation. No shell installer is executed.
-use crate::models::{CatalogModel, DownloadProgress};
+use crate::models::{partial_download_path, CatalogModel, DownloadProgress};
 use crate::runtime::check_runner_starts;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use tokio::sync::watch;
+
+const MAX_RUNTIME_UNPACK_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeAsset {
@@ -27,6 +30,8 @@ pub struct SetupPlan {
     pub recommended_model: CatalogModel,
     /// A smaller, quicker download offered when the recommendation is the larger model.
     pub fast_model: Option<CatalogModel>,
+    pub partial_runner: bool,
+    pub partial_model_ids: Vec<String>,
     pub context_size: u32,
 }
 
@@ -60,6 +65,17 @@ pub fn plan(data: &Path, explicit: Option<&str>) -> SetupPlan {
             .into_iter()
             .find(|m| m.id == id)
     };
+    let partial_runner = runtime_asset.as_ref().is_some_and(|asset| {
+        partial_download_path(&data.join("runtime").join(&asset.name)).is_file()
+    });
+    let partial_model_ids = crate::models::default_catalog()
+        .into_iter()
+        .filter(|model| {
+            model.sha256.is_some()
+                && partial_download_path(&data.join("models").join(&model.file_name)).is_file()
+        })
+        .map(|model| model.id)
+        .collect();
     SetupPlan {
         memory_bytes: memory,
         platform: platform.clone(),
@@ -71,6 +87,8 @@ pub fn plan(data: &Path, explicit: Option<&str>) -> SetupPlan {
         } else {
             find("bonsai-4b")
         },
+        partial_runner,
+        partial_model_ids,
         context_size: 8192,
     }
 }
@@ -115,7 +133,18 @@ fn locate_server(root: &Path, depth: usize) -> Option<PathBuf> {
     None
 }
 
-pub async fn install_runtime<F>(data: &Path, mut progress: F) -> Result<PathBuf>
+pub async fn install_runtime<F>(data: &Path, progress: F) -> Result<PathBuf>
+where
+    F: FnMut(DownloadProgress),
+{
+    install_runtime_with_pause(data, None, progress).await
+}
+
+pub async fn install_runtime_with_pause<F>(
+    data: &Path,
+    pause: Option<&mut watch::Receiver<bool>>,
+    mut progress: F,
+) -> Result<PathBuf>
 where
     F: FnMut(DownloadProgress),
 {
@@ -128,11 +157,13 @@ where
     let runtime_root = data.join("runtime");
     std::fs::create_dir_all(&runtime_root)?;
     let archive = runtime_root.join(&asset.name);
-    crate::models::download_gguf(
+    require_download_space(&archive, asset.bytes, MAX_RUNTIME_UNPACK_BYTES)?;
+    crate::models::download_with_pause(
         &asset.url,
         &archive,
         Some(&asset.sha256),
         "runtime",
+        pause,
         &mut progress,
     )
     .await?;
@@ -156,6 +187,36 @@ where
     installed_runtime(data).context("Could not locate the installed model runner")
 }
 
+/// Check the destination volume, accounting for bytes retained by a pause.
+pub fn require_download_space(destination: &Path, bytes: u64, reserve: u64) -> Result<()> {
+    let parent = destination
+        .parent()
+        .context("Download needs a destination folder")?;
+    std::fs::create_dir_all(parent)?;
+    let parent = parent.canonicalize()?;
+    let partial = std::fs::metadata(partial_download_path(destination))
+        .map(|file| file.len())
+        .unwrap_or(0);
+    let required = bytes.saturating_sub(partial).saturating_add(reserve);
+    let available = sysinfo::Disks::new_with_refreshed_list()
+        .iter()
+        .filter_map(|disk| {
+            let mount = disk.mount_point().canonicalize().ok()?;
+            parent
+                .starts_with(&mount)
+                .then(|| (mount.components().count(), disk.available_space()))
+        })
+        .max_by_key(|&(depth, _)| depth)
+        .map(|(_, bytes)| bytes);
+    if let Some(available) = available.filter(|available| *available < required) {
+        bail!(
+            "Not enough disk space to finish this download (needs {} more MB)",
+            (required - available).div_ceil(1024 * 1024)
+        );
+    }
+    Ok(())
+}
+
 pub fn unpack_runtime(archive: &Path, destination: &Path) -> Result<()> {
     if archive.extension().and_then(|e| e.to_str()) == Some("zip") {
         let mut zip = zip::ZipArchive::new(std::fs::File::open(archive)?)?;
@@ -169,7 +230,7 @@ pub fn unpack_runtime(archive: &Path, destination: &Path) -> Result<()> {
                 bail!("Unexpected symbolic link in ZIP runtime");
             }
             total += file.size();
-            if total > 512 * 1024 * 1024 {
+            if total > MAX_RUNTIME_UNPACK_BYTES {
                 bail!("Runtime package is too large");
             }
             let path = destination.join(name);
@@ -189,7 +250,7 @@ pub fn unpack_runtime(archive: &Path, destination: &Path) -> Result<()> {
         for entry in tar.entries()? {
             let mut entry = entry?;
             total += entry.size();
-            if total > 512 * 1024 * 1024 {
+            if total > MAX_RUNTIME_UNPACK_BYTES {
                 bail!("Runtime package is too large");
             }
             if !entry.unpack_in(destination)? {
@@ -218,6 +279,8 @@ mod tests {
             runtime_path: None,
             recommended_model: find(recommended),
             fast_model: (recommended != "bonsai-4b").then(|| find("bonsai-4b")),
+            partial_runner: false,
+            partial_model_ids: Vec::new(),
             context_size: 8192,
         }
     }

@@ -641,8 +641,9 @@ function renderSidebar() {
       : rt.state === "running" ? activeModel?.name || "Local model" : status.key === "setup" ? "Setting up your AI" : "No model loaded";
   const isLive = isRuntimeLive(rt);
   const fill = status.key === "setup" ? ` style="width:${Math.round(setup.fraction * 100)}%"` : "";
-  els.sidebarRuntimeBox.classList.toggle("clickable", status.key === "setup");
-  els.sidebarRuntimeBox.onclick = status.key === "setup" ? () => welcome.show() : null;
+  const canOpenSetup = status.key === "setup" || status.key === "paused";
+  els.sidebarRuntimeBox.classList.toggle("clickable", canOpenSetup);
+  els.sidebarRuntimeBox.onclick = canOpenSetup ? () => welcome.show() : null;
   els.sidebarRuntimeBox.innerHTML = `
     <span class="status-dot ${status.key === "setup" || status.key === "waking" ? "starting" : rt.state}"></span>
     <div class="sidebar-runtime-meta">
@@ -661,7 +662,8 @@ function renderHeader() {
   const selected = b.models.find(
     (m) => m.id === (rt.active_model_id || b.config.selected_model_id),
   );
-  els.modelPillLabel.textContent = welcome.status().busy ? assistantStatus({ runtime: rt, setup: welcome.status() }).label : appState.waking ? "Waking up your AI…" : rt.state === "stopped" ? (b.models.some((m) => m.installed) ? "Start your AI" : "Set up your AI") : rt.state === "error" ? "Model needs attention" :
+  const setup = welcome.status();
+  els.modelPillLabel.textContent = setup.busy || setup.paused ? assistantStatus({ runtime: rt, setup }).label : appState.waking ? "Waking up your AI…" : rt.state === "stopped" ? (b.models.some((m) => m.installed) ? "Start your AI" : "Set up your AI") : rt.state === "error" ? "Model needs attention" :
     rt.state === "external"
       ? b.config.external_model_name || "External endpoint"
       : selected
@@ -713,12 +715,13 @@ function renderChat() {
       )
       .join("");
     const live = isRuntimeLive(b.runtime);
-    const setupBusy = welcome.status().busy;
+    const setup = welcome.status();
+    const setupBusy = setup.busy;
     const canWake = Boolean(modelToWake(b));
     const needsFolder = modeForPreset(preset.id) !== "chat" && !appState.workspacePath;
     const action = needsFolder
       ? `<button class="btn btn-primary" id="empty-open-folder">Open folder</button>${preset.id === "general" ? ' <button class="btn btn-ghost" id="empty-sample-folder">Try with sample files</button>' : ""}`
-      : live || appState.waking ? "" : setupBusy ? '<button class="btn btn-primary" id="chat-setup-btn">See setup progress</button>' : canWake ? '<button class="btn btn-primary" id="chat-setup-btn">Start your AI</button>' : '<button class="btn btn-primary" id="chat-setup-btn">Set up my AI</button>';
+      : live || appState.waking ? "" : setup.paused ? '<button class="btn btn-primary" id="chat-setup-btn">Resume setup</button>' : setupBusy ? '<button class="btn btn-primary" id="chat-setup-btn">See setup progress</button>' : canWake ? '<button class="btn btn-primary" id="chat-setup-btn">Start your AI</button>' : '<button class="btn btn-primary" id="chat-setup-btn">Set up my AI</button>';
     const status = appState.waking ? '<p class="empty-status" role="status">Waking up your AI. You can type your question now.</p>' : "";
     const heading = preset.id === "chat" && !project ? "What can I help with?" : preset.title;
     els.chatScroll.innerHTML = `
@@ -730,7 +733,7 @@ function renderChat() {
         <div class="starters-grid">${starters}</div>
       </div>
     `;
-    els.chatScroll.querySelector("#chat-setup-btn")?.addEventListener("click", () => (canWake && !setupBusy ? wakeAssistant() : welcome.show()));
+    els.chatScroll.querySelector("#chat-setup-btn")?.addEventListener("click", () => (canWake && !setupBusy && !setup.paused ? wakeAssistant() : welcome.show()));
     els.chatScroll.querySelector("#empty-open-folder")?.addEventListener("click", () => openWorkspace());
     els.chatScroll.querySelector("#empty-sample-folder")?.addEventListener("click", () => openWorkspace({ sample: true }));
     els.chatScroll.querySelectorAll("[data-starter]").forEach((btn) => {
@@ -1530,7 +1533,8 @@ function wireUi() {
 
   els.modelPillBtn.onclick = () => {
     const rt = appState.bootstrap.runtime;
-    if (isRuntimeLive(rt) || appState.waking) setActiveView("models");
+    if (welcome.status().paused) welcome.show();
+    else if (isRuntimeLive(rt) || appState.waking) setActiveView("models");
     else if (modelToWake(appState.bootstrap)) wakeAssistant();
     else if (!appState.bootstrap.models.some((m) => m.installed)) welcome.show();
     else setActiveView("models");

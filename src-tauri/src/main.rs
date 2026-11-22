@@ -56,6 +56,8 @@ fn main() {
         approvals: Arc::new(Mutex::new(HashMap::new())),
         always_allowed: Arc::new(Mutex::new(HashMap::new())),
         active_abort: Arc::new(Mutex::new(None)),
+        download_lock: Mutex::new(()),
+        setup_pause: Mutex::new(None),
     };
 
     let app = tauri::Builder::default()
@@ -102,6 +104,7 @@ fn main() {
             productivity::open_external_link,
             productivity::get_setup_plan,
             productivity::setup_local_ai,
+            productivity::pause_local_setup,
             commands::connect_image_server,
             commands::list_image_jobs,
             commands::start_image_job,

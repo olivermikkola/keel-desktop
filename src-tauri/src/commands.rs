@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, State};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{oneshot, watch, Mutex};
 use tokio::task::AbortHandle;
 
 pub struct AppState {
@@ -36,6 +36,8 @@ pub struct AppState {
     pub approvals: Arc<Mutex<HashMap<String, oneshot::Sender<ApprovalDecision>>>>,
     pub always_allowed: Arc<Mutex<HashMap<String, HashSet<String>>>>,
     pub active_abort: Arc<Mutex<Option<AbortHandle>>>,
+    pub download_lock: Mutex<()>,
+    pub setup_pause: Mutex<Option<watch::Sender<bool>>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -315,6 +317,10 @@ pub async fn download_catalog_model(
     state: State<'_, AppState>,
     model_id: String,
 ) -> Result<Vec<CatalogModel>, String> {
+    let _download = state
+        .download_lock
+        .try_lock()
+        .map_err(|_| "Another download is running")?;
     let cfg = state.config.lock().await.clone();
     let models = list_models(&state.data_dir, &cfg.custom_model_paths);
     let model = models
@@ -339,6 +345,10 @@ pub async fn download_huggingface_gguf(
     state: State<'_, AppState>,
     url: String,
 ) -> Result<Vec<CatalogModel>, String> {
+    let _download = state
+        .download_lock
+        .try_lock()
+        .map_err(|_| "Another download is running")?;
     let (_repo, _rev, file_name, resolve_url) =
         parse_huggingface_gguf_url(&url).map_err(|e| e.to_string())?;
     let dest = models_dir(&state.data_dir).join(&file_name);
