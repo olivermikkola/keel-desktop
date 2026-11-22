@@ -72,7 +72,13 @@ export function createEveryday(api) {
   }
 
   function previewSource(doc) {
-    modal(doc.name, (body) => { body.innerHTML = `<p class="muted">${doc.text.length.toLocaleString()} characters extracted${doc.truncated ? " · Import limit reached; this is a partial document" : ""}. The assistant selects excerpts when the document is larger than its context window.</p><pre class="document-text">${safe(doc.text)}</pre>`; });
+    modal(doc.name, (body) => {
+      const preview =
+        typeof doc.image_data_url === "string" && doc.image_data_url.startsWith("data:image/")
+          ? `<img class="generated-image" alt="${safe(doc.name)}" src="${safe(doc.image_data_url)}" style="margin-bottom:10px" />`
+          : "";
+      body.innerHTML = `${preview}<p class="muted">${doc.text.length.toLocaleString()} characters extracted${doc.truncated ? " · Import limit reached; this is a partial document" : ""}. The assistant selects excerpts when the document is larger than its context window.</p><pre class="document-text">${safe(doc.text)}</pre>`;
+    });
   }
 
   async function renderLibrary(container) {
