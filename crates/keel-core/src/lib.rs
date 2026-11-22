@@ -23,3 +23,5 @@ pub mod setup;
 
 pub mod recording;
 pub mod streaming;
+
+pub mod worktrees;

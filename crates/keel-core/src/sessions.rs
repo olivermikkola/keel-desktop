@@ -80,9 +80,27 @@ pub struct ChatSession {
     pub workspace_path: Option<String>,
     #[serde(default)]
     pub keel_session_log: Option<PathBuf>,
+    #[serde(default)]
+    pub code_checkout: Option<crate::worktrees::CodeCheckout>,
+    #[serde(default)]
+    pub applied_code_patch: Option<crate::worktrees::CodePatch>,
+    #[serde(default)]
+    pub last_code_test: Option<crate::worktrees::CodeTestResult>,
     pub messages: Vec<UiMessage>,
     pub staged_edits: Vec<StagedEdit>,
     pub updated_at: u64,
+}
+
+impl ChatSession {
+    /// Active working directory for tools: the detached Code worktree when present.
+    pub fn active_workspace(&self) -> Option<PathBuf> {
+        if self.app_preset == AppPreset::Code {
+            if let Some(ref checkout) = self.code_checkout {
+                return Some(checkout.isolated.clone());
+            }
+        }
+        self.workspace_path.as_deref().map(PathBuf::from)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -228,6 +246,9 @@ mod tests {
             app_preset: AppPreset::Docs,
             workspace_path: None,
             keel_session_log: None,
+            code_checkout: None,
+            applied_code_patch: None,
+            last_code_test: None,
             messages: vec![],
             staged_edits: vec![],
             updated_at: 42,

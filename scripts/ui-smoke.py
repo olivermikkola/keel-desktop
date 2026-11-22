@@ -61,6 +61,12 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  s.messages.push({id:'a'+Date.now(),role:'assistant',content:'Ready to help.',tool_calls});s.title=args.input.prompt;
  result=s;break;}
  case 'apply_staged_edit_cmd': {const s=sessions.find(s=>s.id===args.sessionId);s.staged_edits.find(e=>e.id===args.editId).status='applied'; files.push('brief.md');fileContent['brief.md']='# Brief';result=s;break;}
+ case 'create_code_worktree': {const s=sessions.find(s=>s.id===args.sessionId);s.code_checkout={original:s.workspace_path,isolated:'/test/worktrees/'+s.id,base:'deadbeef12345678'};s.applied_code_patch=null;s.last_code_test=null;result=s;break;}
+ case 'review_code_worktree': {result={paths:['calc.py','test_calc.py'],diff:'--- a/calc.py\n+++ b/calc.py\n@@ -1 +1 @@\n-return a - b\n+return a + b\n'};break;}
+ case 'run_code_test': {const s=sessions.find(s=>s.id===args.sessionId);const pass=!args.command.includes('fail');s.last_code_test={command:args.command,exit_code:pass?0:1,output:pass?'2 passed':'1 failed',passed:pass};result=s;break;}
+ case 'apply_code_worktree': {const s=sessions.find(s=>s.id===args.sessionId);s.applied_code_patch=args.patch;result=s;break;}
+ case 'undo_code_worktree': {const s=sessions.find(s=>s.id===args.sessionId);s.applied_code_patch=null;result=s;break;}
+ case 'remove_code_worktree': {const s=sessions.find(s=>s.id===args.sessionId);s.code_checkout=null;s.applied_code_patch=null;s.last_code_test=null;result=s;break;}
  case 'start_image_job': {
  const job={id:crypto.randomUUID(),request:args.request,workspace_path:args.workspacePath,status:'running',artifact_path:null,created_at:Date.now()/1000};jobs.unshift(job);result=job;
  setTimeout(()=>{job.status='succeeded';job.artifact_path='assets/keel-test.png';files.push(job.artifact_path);emit('keel://image-job',job);},250);break;}
@@ -265,7 +271,19 @@ async def main(port):
         await page.locator('#prompt-input').fill('Inspect this repository')
         await page.locator('#send-btn').click()
         await page.get_by_text('Ready to help.',exact=True).wait_for()
+        await page.locator('[data-viewer-tab=diff]').click()
+        await page.locator('#code-worktree-create').click()
+        await page.locator('#code-test-cmd').fill('pytest -q --fail')
+        await page.locator('#code-test-run').click()
+        await page.locator('.worktree-test-result.failed').get_by_text('exit 1', exact=False).wait_for()
+        await page.locator('#code-test-cmd').fill('pytest -q')
+        await page.locator('#code-test-run').click()
+        await page.locator('.worktree-test-result.passed').get_by_text('exit 0', exact=False).wait_for()
+        await page.locator('#code-patch-apply').click()
+        await page.locator('#code-patch-undo').wait_for()
         await page.screenshot(path=str(OUTPUT / 'code.png'))
+        await page.locator('#code-patch-undo').click()
+        await page.locator('#code-patch-undo').wait_for(state='hidden')
         await page.locator('[data-view=tools]').click()
         await page.locator('#image-connect').click()
         await page.get_by_text('Image server connected. Choose a checkpoint and output folder.',exact=True).wait_for()

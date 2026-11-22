@@ -43,7 +43,7 @@ async fn main() -> Result<()> {
             tool_calls: None,
         }];
         if name == "document_facts" {
-            let session = keel_core::sessions::ChatSession { id: "fixture".into(), title: "Brief".into(), app_preset: preset, workspace_path: None, keel_session_log: None, project_id: None, pinned: false, staged_edits: vec![], updated_at: 0, messages: vec![keel_core::sessions::UiMessage { id: "user".into(), role: "user".into(), content: prompt.into(), thinking: None, tool_calls: vec![], status: "complete".into(), attachments: vec![Document { id: "brief".into(), name: "harbor-brief.txt".into(), kind: "txt".into(), text: "Project Harbor. Approved budget: 4,800 euros. Launch date: 14 May 2027. The audience is local cafes.".into(), truncated: false }] }] };
+            let session = keel_core::sessions::ChatSession { id: "fixture".into(), title: "Brief".into(), app_preset: preset, workspace_path: None, keel_session_log: None, code_checkout: None, applied_code_patch: None, last_code_test: None, project_id: None, pinned: false, staged_edits: vec![], updated_at: 0, messages: vec![keel_core::sessions::UiMessage { id: "user".into(), role: "user".into(), content: prompt.into(), thinking: None, tool_calls: vec![], status: "complete".into(), attachments: vec![Document { id: "brief".into(), name: "harbor-brief.txt".into(), kind: "txt".into(), text: "Project Harbor. Approved budget: 4,800 euros. Launch date: 14 May 2027. The audience is local cafes.".into(), truncated: false }] }] };
             history = keel_core::context::history(&session, None, 8192);
         }
         let mut config = keel_core::sessions::DesktopConfig::default();
@@ -55,6 +55,9 @@ async fn main() -> Result<()> {
                 app_preset: preset,
                 workspace_path: None,
                 keel_session_log: None,
+                code_checkout: None,
+                applied_code_patch: None,
+                last_code_test: None,
                 project_id: None,
                 pinned: false,
                 staged_edits: vec![],
