@@ -9,23 +9,26 @@ Chat, work through documents and data, build websites and slides, generate
 images, and write code. The model runs locally on your machine; nothing has
 to leave it. No account, no subscription, no cloud fallback.
 
-Keel Desktop is the everyday app of the [Keel family](https://github.com/olivermikkola/keel/blob/main/docs/VISION.md) —
-the Claude Desktop role to the [Keel CLI](https://github.com/olivermikkola/keel)'s Claude Code.
-Chat, Work, and Images are its own surface; **Code mode's canonical engine is the Keel CLI**.
+Keel Desktop is the everyday app of the Keel family. Chat and Work use Desktop's
+local model runtime. Code can use that runtime or the separate
+Keel CLI on supported setups. [Keel product vision](https://github.com/olivermikkola/keel/blob/main/docs/VISION.md)
 
 Built with **Tauri 2**, **Rust**, and **llama.cpp** (`llama-server`), carrying the **Keel** small-model harness and dark-mode workspace from Keel Mobile onto the desktop without iOS memory or sandbox restrictions.
 
-## First 60 seconds
+## Get started
 
-1. **Install:** Download a prebuilt installer from [**GitHub Releases**](https://github.com/olivermikkola/keel-desktop/releases) (`.dmg` for macOS, `.deb`/`.AppImage`/`.rpm` for Linux, `.exe`/`.msi` for Windows), or run `./scripts/install-linux.sh` from source on Linux.
-2. **Guided setup:** Open Keel and choose **Get started** or **Models → Guided setup**. Keel recommends a text model for your RAM, downloads the checksum-verified model runner and weights, and starts the assistant with no terminal setup needed. Already using Ollama, LM Studio, or `llama-server`? Choose **Connect existing server** instead, or import a `.gguf` in **Models**.
-3. **Pick a mode:** Start in **Chat**, attach PDFs/DOCX/CSV/code or open a folder in **Work** (Websites, Sheets, Docs, Study, Slides), or switch to **Code** for repo edits, approved shell commands, and inline diff review.
+1. Download the installer for your platform. For changes after the latest release, build from `main` using the instructions below. [MoE Systems downloads](https://moesystems.com/keel-desktop/) · [GitHub releases](https://github.com/olivermikkola/keel-desktop/releases)
+2. Open Keel and choose **Set up my AI**. Guided setup recommends a model for your RAM and installs the runner and model. You can pause setup and resume it later on current `main`. You can also connect Ollama, LM Studio, or another OpenAI-compatible server, or import your own `.gguf` in **Models**.
+3. Ask a question in **Chat**, open a folder in **Work**, or choose a Git repository in **Code**. On current `main`, **Try with sample files** opens a ready-to-use Work folder.
+
+The feature notes below describe current `main`. See the release tag for the exact source used to build each public installer.
 
 ## What you can do
 
 ### Everyday assistant — Chat & Work
 
-- **Document chat:** Attach PDFs, DOCX, text, Markdown, CSV, or code files. Inspect the extracted source and ask follow-up questions. Large documents use labeled excerpts; scanned PDFs need OCR before import.
+- **Document chat** supports text-based PDFs, DOCX, text, Markdown, CSV, and code. Inspect the extracted source and ask follow-up questions. Large documents use labeled excerpts. Run OCR on scanned PDFs before importing them.
+- **Offline image text** uses a local Tesseract installation to read supported image attachments and workspace files. Keel reads text from these images through OCR. You can install Tesseract with `sudo apt install tesseract-ocr`, `sudo dnf install tesseract`, or `brew install tesseract`.
 - **Projects:** Reusable instructions, reference documents, an optional working folder, and conversations grouped around the same work.
 - **Saved preferences:** Editable local context for future conversations. Add it in the sidebar or explicitly ask “Remember that …”; ordinary conversation is not automatically mined for memories.
 - **Conversation tools:** Search message text and titles, rename, pin, export to Markdown, edit a prompt in a copy, retry a text answer, keep drafts, and undo a deletion. Interrupted replies keep partial answers and proposed edits.
@@ -46,7 +49,9 @@ Built with **Tauri 2**, **Rust**, and **llama.cpp** (`llama-server`), carrying t
 - **Small-model tuned Rust harness (`keel-core`):** streaming SSE responses with reasoning separation and text-format tool-call fallback parsing; repeat-tool guard, failure circuit breaker, and context-window compaction; workspace tools confined safely to the selected folder (`list_files`, `read_file`, `search_files`, `propose_edit`, `create_file`, `delete_file`, `rename_file`, `run_sql`, `run_shell`).
 - **Staged diff review & approvals:** Review proposed edits file-by-file before applying them (or toggle auto-apply for workspace edits), while shell commands and mutating MCP calls prompt for `Allow once`, `Always allow`, or `Deny`.
 - **Local `stdio` MCP servers:** Configure standard MCP servers in `.keel/mcp.json` or `~/.config/keel-desktop/mcp.json`.
-- **Keel CLI in Code:** Install a current `keel` CLI on Linux and select **Keel CLI** in Settings. Code streams tool results, asks before commands and changes to the selected folder, and keeps resumable CLI journals. Open a journal from a new Code thread or copy a terminal continuation command from the Conversation menu. Finish the current turn before continuing in the other app. The built-in engine remains the default during the CLI rollout.
+- **Isolated checkout** runs edits and tests in a separate Git worktree based on the selected repository's HEAD. In Code, choose **Start isolated checkout**, run a test, review the patch, and choose **Apply patch to repo** when it is ready. You can undo the applied patch from the same panel.
+- **Guided GitHub publishing** can commit reviewed changes on a feature branch, push the branch, and open a pull request. A failing recorded test blocks publishing. Opening a PR requires a GitHub remote and an authenticated GitHub CLI (`gh`).
+- **Keel CLI in Code** streams tool results, requests approvals, and keeps resumable CLI journals. Install a current `keel` and select **Keel CLI** in Settings. Finish the current turn before resuming a journal in the terminal. On macOS, Code shows the available command boundary and disables agent commands when it cannot confine them. The built-in engine remains the default.
 
 ### Models & images
 
@@ -113,9 +118,9 @@ cargo run -p keel-desktop
 cargo run -p keel-core --bin keel-desktop-cli -- --help
 ```
 
-`keel-desktop-cli` is a headless utility over the same engine (info, one-shot
-prompts, LAN host) — not a second coding CLI. The coding agent of the family
-is [Keel](https://github.com/olivermikkola/keel).
+`keel-desktop-cli` exposes model information and one-shot prompts through
+Desktop's local engine. For a terminal coding session, use the Keel CLI.
+[Keel CLI](https://github.com/olivermikkola/keel)
 
 ## Repository layout
 
