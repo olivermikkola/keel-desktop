@@ -61,6 +61,8 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  s.messages.push({id:'a'+Date.now(),role:'assistant',content:'Ready to help.',tool_calls});s.title=args.input.prompt;
  result=s;break;}
  case 'apply_staged_edit_cmd': {const s=sessions.find(s=>s.id===args.sessionId);s.staged_edits.find(e=>e.id===args.editId).status='applied'; files.push('brief.md');fileContent['brief.md']='# Brief';result=s;break;}
+ case 'inspect_publish_status': {result={repo_root:'/test/project',branch:'main',head:'abc1234',dirty_files:['brief.md'],remote_name:'origin',remote_url:'https://github.com/example/repo.git',gh_available:true,gh_authenticated:true};break;}
+ case 'publish_code_changes': {result={branch:args.plan.branch_name,commit_sha:'def5678',pushed:args.plan.push_remote,pr_url:args.plan.open_pr?'https://github.com/example/repo/pull/99':null,next_command:null};break;}
  case 'start_image_job': {
  const job={id:crypto.randomUUID(),request:args.request,workspace_path:args.workspacePath,status:'running',artifact_path:null,created_at:Date.now()/1000};jobs.unshift(job);result=job;
  setTimeout(()=>{job.status='succeeded';job.artifact_path='assets/keel-test.png';files.push(job.artifact_path);emit('keel://image-job',job);},250);break;}
@@ -269,6 +271,11 @@ async def main(port):
         await page.locator('#prompt-input').fill('Inspect this repository')
         await page.locator('#send-btn').click()
         await page.get_by_text('Ready to help.',exact=True).wait_for()
+        await page.locator('#publish-pr-btn').click()
+        await page.locator('#pub-commit').fill('Update brief')
+        await page.locator('#pub-submit').click()
+        await page.locator('#pub-status').get_by_text('https://github.com/example/repo/pull/99', exact=False).wait_for()
+        await page.locator('#modal-close-btn').click()
         await page.screenshot(path=str(OUTPUT / 'code.png'))
         await page.locator('[data-view=tools]').click()
         await page.locator('#image-connect').click()
