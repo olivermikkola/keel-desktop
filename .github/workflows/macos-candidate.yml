@@ -1,0 +1,91 @@
+name: Signed macOS candidate
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/macos-candidate.yml'
+      - 'scripts/verify-macos-dmg.sh'
+
+permissions:
+  contents: read
+
+jobs:
+  reject-unsigned:
+    if: github.event_name == 'pull_request'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject the ad-hoc-signed v0.2.0 disk image
+        shell: bash
+        run: |
+          image="$RUNNER_TEMP/Keel.Desktop_0.2.0_aarch64.dmg"
+          curl --fail --location --silent --show-error \
+            'https://github.com/olivermikkola/keel-desktop/releases/download/v0.2.0/Keel.Desktop_0.2.0_aarch64.dmg' \
+            --output "$image"
+          if output=$(bash scripts/verify-macos-dmg.sh "$image" 2>&1); then
+            echo '::error::The unsigned release passed the macOS release gate.'
+            exit 1
+          fi
+          printf '%s\n' "$output"
+          grep -Fxq 'Disk image has no valid notarization ticket.' <<< "$output"
+          echo 'PASS: ad-hoc-signed release rejected by the macOS gate.'
+  build:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: signed-macos-candidate
+      - name: Install Tauri CLI
+        run: npm install --global @tauri-apps/cli@2.12.6
+      - name: Sign and notarize the Apple Silicon disk image
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_API_ISSUER APPLE_API_KEY APPLE_API_KEY_P8; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing the $name repository secret. See docs/macos-release.md."
+              exit 1
+            fi
+          done
+          if [[ "$APPLE_SIGNING_IDENTITY" != 'Developer ID Application:'* ]]; then
+            echo '::error::The macOS candidate needs a Developer ID Application signing identity.'
+            exit 1
+          fi
+          umask 077
+          export APPLE_API_KEY_PATH="$RUNNER_TEMP/keel-notary-key.p8"
+          printf '%s\n' "$APPLE_API_KEY_P8" > "$APPLE_API_KEY_PATH"
+          trap 'unlink "$APPLE_API_KEY_PATH"' EXIT
+          unset APPLE_API_KEY_P8
+
+          tauri build --target aarch64-apple-darwin --bundles dmg -- --locked
+          shopt -s nullglob
+          images=(target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)
+          if [[ ${#images[@]} != 1 ]]; then
+            echo '::error::Expected exactly one Apple Silicon disk image.'
+            exit 1
+          fi
+          image="${images[0]}"
+          xcrun notarytool submit "$image" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait
+          xcrun stapler staple "$image"
+          bash scripts/verify-macos-dmg.sh "$image"
+      - name: Upload verified candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-keel-desktop-apple-silicon
+          path: target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
