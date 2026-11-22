@@ -70,7 +70,9 @@ impl RuntimeManager {
         self.llama_server_bin = Some(bin.to_string_lossy().to_string());
         // A leftover runner (or a second Keel window) can still hold the usual
         // port; take a free one instead of failing with "exit status 1".
-        self.port = free_port(self.port);
+        let reserved_port =
+            reserve_port(self.port).context("Could not reserve a local model port")?;
+        self.port = reserved_port.local_addr()?.port();
         self.base_url = format!("http://127.0.0.1:{}/v1", self.port);
 
         let log_dir = dirs::cache_dir()
@@ -79,7 +81,8 @@ impl RuntimeManager {
         std::fs::create_dir_all(&log_dir)?;
         let log_path = log_dir.join("model-runner.log");
         let log = std::fs::File::create(&log_path)?;
-        let child = Command::new(&bin)
+        let mut command = Command::new(&bin);
+        command
             .arg("-m")
             .arg(model_path)
             .arg("--host")
@@ -94,7 +97,11 @@ impl RuntimeManager {
             .arg(model_id)
             .arg("--jinja")
             .stdout(Stdio::null())
-            .stderr(Stdio::from(log))
+            .stderr(Stdio::from(log));
+        // llama-server binds its own socket. Keep the reservation until the
+        // command and its log are ready, then release it immediately before spawn.
+        drop(reserved_port);
+        let child = command
             .spawn()
             .with_context(|| format!("Failed to start {}", bin.display()))?;
 
@@ -285,15 +292,14 @@ mod tests {
     }
 }
 
-/// Returns `preferred` if nothing is listening there, otherwise any free loopback port.
-pub fn free_port(preferred: u16) -> u16 {
-    if std::net::TcpListener::bind(("127.0.0.1", preferred)).is_ok() {
-        return preferred;
+/// Hold the preferred loopback port or an OS-assigned fallback until launch.
+fn reserve_port(preferred: u16) -> std::io::Result<std::net::TcpListener> {
+    match std::net::TcpListener::bind(("127.0.0.1", preferred)) {
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+            std::net::TcpListener::bind(("127.0.0.1", 0))
+        }
+        result => result,
     }
-    std::net::TcpListener::bind(("127.0.0.1", 0))
-        .and_then(|l| l.local_addr())
-        .map(|a| a.port())
-        .unwrap_or(preferred)
 }
 
 /// Starts the model runner once with `--version` to prove it can load on this
@@ -411,12 +417,15 @@ mod runner_check_tests {
     }
 
     #[test]
-    fn a_busy_port_is_swapped_for_a_free_one() {
+    fn a_busy_port_is_swapped_for_a_reserved_one() {
         let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let busy = held.local_addr().unwrap().port();
-        let chosen = free_port(busy);
-        assert_ne!(chosen, busy);
-        assert!(std::net::TcpListener::bind(("127.0.0.1", chosen)).is_ok());
+        let reserved = reserve_port(busy).unwrap();
+        let address = reserved.local_addr().unwrap();
+        assert_ne!(address.port(), busy);
+        assert!(address.ip().is_loopback());
+        let client = std::net::TcpStream::connect(address).unwrap();
+        assert_eq!(reserved.accept().unwrap().1, client.local_addr().unwrap());
     }
 
     #[cfg(unix)]
