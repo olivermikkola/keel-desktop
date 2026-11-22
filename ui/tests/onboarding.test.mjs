@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assistantStatus, createProgressTracker, formatEta, formatSpeed, friendlySetupError, isFirstRun, modelToWake, stepStates } from "../onboarding.js";
+import { assistantStatus, createProgressTracker, formatEta, formatSpeed, friendlySetupError, isFirstRun, modelLocation, modelToWake, serverDataNotice, stepStates } from "../onboarding.js";
 
 const MB = 1024 * 1024;
 
@@ -97,4 +97,15 @@ test("a missing system library shows the exact fix command, not generic advice",
   const e = friendlySetupError(raw);
   assert.match(e.message, /sudo dnf install openssl3-libs/);
   assert.equal(e.retry, true);
+});
+
+test("modelLocation and serverDataNotice distinguish on-device, local server, and remote endpoints", () => {
+  assert.equal(modelLocation({ state: "running", base_url: "http://127.0.0.1:18180/v1" }), "On this computer");
+  assert.equal(modelLocation({ state: "external", base_url: "http://127.0.0.1:11434/v1" }), "Local model server");
+  assert.equal(modelLocation({ state: "external", base_url: "http://localhost:8080/v1" }), "Local model server");
+  assert.equal(modelLocation({ state: "external", base_url: "http://[::1]:8080/v1" }), "Local model server");
+  assert.equal(modelLocation({ state: "external", base_url: "https://models.example.com/v1" }), "External model server");
+  assert.equal(modelLocation({ state: "external", base_url: "not-a-url" }), "External model server");
+  assert.match(serverDataNotice("http://127.0.0.1:11434/v1"), /on this computer/);
+  assert.match(serverDataNotice("https://models.example.com/v1"), /server you connect here/);
 });

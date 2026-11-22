@@ -1,6 +1,6 @@
 import { createEveryday } from "./everyday.js";
 import { createImageWorkspace } from "./images.js";
-import { assistantStatus, friendlySetupError, isFirstRun, modelToWake } from "./onboarding.js";
+import { assistantStatus, friendlySetupError, isFirstRun, modelLocation, modelToWake, serverDataNotice } from "./onboarding.js";
 import { MODES, modeForPreset, isRuntimeLive, promptBlockReason } from "./modes.js";
 import { escapeHtml, renderMarkdown } from "./markdown.js";
 import {
@@ -635,9 +635,10 @@ function renderSidebar() {
   const activeModel = b.models.find((m) => m.id === (rt.active_model_id || b.config.selected_model_id));
   const setup = welcome.status();
   const status = assistantStatus({ runtime: rt, waking: appState.waking, setup });
+  const sidebarLocation = modelLocation(rt);
   const runningLabel =
     rt.state === "external"
-      ? b.config.external_model_name || "External API"
+      ? `${b.config.external_model_name || sidebarLocation}${sidebarLocation === "External model server" ? " · Remote" : ""}`
       : rt.state === "running" ? activeModel?.name || "Local model" : status.key === "setup" ? "Setting up your AI" : "No model loaded";
   const isLive = isRuntimeLive(rt);
   const fill = status.key === "setup" ? ` style="width:${Math.round(setup.fraction * 100)}%"` : "";
@@ -663,9 +664,11 @@ function renderHeader() {
     (m) => m.id === (rt.active_model_id || b.config.selected_model_id),
   );
   const setup = welcome.status();
+  const location = modelLocation(rt);
+  els.modelPillBtn.title = isRuntimeLive(rt) ? location : "";
   els.modelPillLabel.textContent = setup.busy || setup.paused ? assistantStatus({ runtime: rt, setup }).label : appState.waking ? "Waking up your AI…" : rt.state === "stopped" ? (b.models.some((m) => m.installed) ? "Start your AI" : "Set up your AI") : rt.state === "error" ? "Model needs attention" :
     rt.state === "external"
-      ? b.config.external_model_name || "External endpoint"
+      ? `${b.config.external_model_name || location}${location === "External model server" ? " · Remote" : ""}`
       : selected
         ? selected.name
         : b.config.selected_model_id || "Select model";
@@ -684,8 +687,6 @@ function renderHeader() {
   els.diffsPillBtn.classList.toggle("has-pending", counts.pending > 0);
   els.telemetryRight.textContent = `Keel v${b.version}`;
   if (!appState.streaming) {
-    let location = "On this computer";
-    try { if (!["localhost", "127.0.0.1", "[::1]"].includes(new URL(rt.base_url).hostname)) location = "Your external model server"; } catch { /* Setup can correct an invalid endpoint. */ }
     els.telemetryLeft.textContent = appState.sendWhenReady ? "Your message sends as soon as your AI is ready" : appState.waking ? "Waking up your AI. This takes a few seconds." : isRuntimeLive(rt) ? `${location} · ${appState.session?.messages.length || 0} messages` : "Your AI is off. Send a message to start it.";
   }
   const mode = modeForPreset(appState.session?.app_preset);
@@ -822,7 +823,7 @@ function handleAgentEvent(ev) {
   } else if (ev.type === "approval_required") {
     renderApprovalCard(ev);
   } else if (ev.type === "turn_finished") {
-    els.telemetryLeft.textContent = "On this computer";
+    els.telemetryLeft.textContent = modelLocation(appState.bootstrap.runtime);
   }
   renderChat();
   if (["staged_edit_added", "turn_finished"].includes(ev.type)) {
@@ -1075,6 +1076,7 @@ function renderModelsWorkspace() {
           <input id="ws-ext-name" class="input" style="max-width:160px" value="${escapeHtml(b.config.external_model_name || "")}" placeholder="Model name" />
           <button id="ws-ext-use" class="btn btn-primary btn-sm">Connect</button>
         </div>
+        <p class="muted" id="ws-ext-notice">${serverDataNotice(b.config.external_base_url || "")}</p>
       </details>
     </div>
 
@@ -1091,7 +1093,7 @@ function renderModelsWorkspace() {
         
         <div class="row" style="font-size:12px;color:var(--accent)">
           <span class="status-dot ${rt.state}"></span>
-          <span>${isRunningLocal ? "Running on this computer" : isRunningExternal ? "Using your own model server" : "Off"}</span>
+          <span>${isRunningLocal || isRunningExternal ? modelLocation(rt) : "Off"}</span>
         </div>
         <div class="row" style="margin-top:4px">
           ${
@@ -1173,6 +1175,9 @@ function renderModelsWorkspace() {
     });
     await refreshBootstrap();
     renderAll();
+  };
+  document.getElementById("ws-ext-url").oninput = (event) => {
+    document.getElementById("ws-ext-notice").textContent = serverDataNotice(event.target.value);
   };
 }
 

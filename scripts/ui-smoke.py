@@ -44,6 +44,7 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  cfg.recent_workspaces=[args.path];result=args.path;break;}
  case 'start_model':runtime={...runtime,state:'running',active_model_id:'test'};result=runtime;break;
  case 'stop_runtime':runtime={...runtime,state:'stopped',active_model_id:null};result=runtime;break;
+ case 'set_external_endpoint':cfg.external_base_url=args.baseUrl;cfg.external_model_name=args.modelName || null;runtime={state:'external',active_model_id:null,base_url:args.baseUrl};result=runtime;break;
  case 'connect_image_server':cfg.image_endpoint=args.endpoint;result=['Local checkpoint'];break;
  case 'read_workspace_png':result=''' + json.dumps(PNG) + r''';break;
  case 'read_workspace_file_raw':result=fileContent[args.relPath] || '# Local document';break;
@@ -288,6 +289,15 @@ async def main(port):
         await page.locator('[data-view=library]').click()
         await page.locator('.library-card').first.wait_for()
         await page.screenshot(path=str(OUTPUT / 'library.png'))
+        await page.locator('[data-view=models]').click()
+        await page.locator('#ws-ext-url').evaluate('(el) => { el.closest("details").open = true; }')
+        await page.locator('#ws-ext-url').fill('https://models.example.com/v1')
+        await page.locator('#ws-ext-name').fill('shared-qwen')
+        await page.locator('#ws-ext-notice').get_by_text('server you connect here', exact=False).wait_for()
+        await page.locator('#ws-ext-use').click()
+        await page.locator('#model-pill-label').get_by_text('shared-qwen · Remote', exact=True).wait_for()
+        await page.locator('[data-view=chat]').click()
+        await page.locator('#telemetry-left').get_by_text('External model server', exact=False).wait_for()
         await page.locator('[data-view=models]').click()
         await page.locator('#models-setup-btn').click()
         await page.locator('#welcome-start').wait_for()
