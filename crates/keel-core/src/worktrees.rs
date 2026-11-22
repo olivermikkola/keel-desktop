@@ -34,14 +34,16 @@ impl CodeCheckout {
     /// Copies the selected repository's committed revision into a separate worktree.
     pub fn create(folder: &Path, destination: &Path) -> Result<Self> {
         let folder = crate::tools::validate_workspace_root(folder)?;
-        let original = PathBuf::from(text(&folder, ["rev-parse", "--show-toplevel"])?.trim_end())
-            .canonicalize()?;
+        let original = normalize_git_path(
+            PathBuf::from(text(&folder, ["rev-parse", "--show-toplevel"])?.trim_end())
+                .canonicalize()?,
+        );
         let base = revision(&original)?;
         let parent = destination
             .parent()
             .context("Code worktree needs a parent folder")?;
         std::fs::create_dir_all(parent)?;
-        let isolated = parent.canonicalize()?.join(
+        let isolated = normalize_git_path(parent.canonicalize()?).join(
             destination
                 .file_name()
                 .context("Code worktree needs a directory name")?,
@@ -208,6 +210,21 @@ impl CodeCheckout {
         }
         Ok(())
     }
+}
+
+fn normalize_git_path(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(s) = path.to_str() {
+            if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+                return PathBuf::from(format!(r"\\{rest}"));
+            }
+            if let Some(rest) = s.strip_prefix(r"\\?\") {
+                return PathBuf::from(rest);
+            }
+        }
+    }
+    path
 }
 
 fn revision(folder: &Path) -> Result<String> {
