@@ -1,6 +1,8 @@
 use keel_core::agent::{run_agent_turn, AgentEvent, ApprovalDecision, TurnParams};
 use keel_core::apps::{AppPreset, AppPresetInfo};
-use keel_core::harnesses::{detect_harnesses, run_external_harness, HarnessOption};
+use keel_core::harnesses::{
+    detect_harnesses, run_external_harness, run_keel_cli_turn, HarnessOption, KeelCliTurn,
+};
 use keel_core::mcp::{
     inspect_mcp_servers, load_mcp_configs, save_global_mcp_config, McpConfigFile, McpServerConfig,
     McpServerStatus, McpToolInfo,
@@ -38,6 +40,7 @@ pub struct AppState {
     pub active_abort: Arc<Mutex<Option<AbortHandle>>>,
     pub download_lock: Mutex<()>,
     pub setup_pause: Mutex<Option<watch::Sender<bool>>>,
+    pub active_cli_stop: Mutex<Option<watch::Sender<bool>>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -208,12 +211,66 @@ pub async fn create_session(
         pinned: false,
         app_preset: preset,
         workspace_path,
+        keel_session_log: None,
         messages: Vec::new(),
         staged_edits: Vec::new(),
         updated_at: now_epoch(),
     };
     save_session(&state.data_dir, &session).map_err(|e| e.to_string())?;
     Ok(session)
+}
+
+#[tauri::command]
+pub async fn import_keel_session(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace_path: String,
+) -> Result<Option<ChatSession>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let _guard = state
+        .turn_lock
+        .try_lock()
+        .map_err(|_| "Wait for the current reply to finish")?;
+    let root =
+        validate_workspace_root(Path::new(&workspace_path)).map_err(|error| error.to_string())?;
+    let selected = tokio::task::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_title("Open a Keel CLI session")
+            .add_filter("Keel session logs", &["jsonl"])
+            .blocking_pick_file()
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    let Some(file) = selected else {
+        return Ok(None);
+    };
+    let path = file
+        .into_path()
+        .map_err(|error| error.to_string())?
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let messages =
+        keel_core::harnesses::read_keel_session(&path).map_err(|error| error.to_string())?;
+    let title = messages
+        .iter()
+        .find(|message| message.role == "user")
+        .map(|message| message.content.chars().take(48).collect())
+        .unwrap_or_else(|| "Keel CLI session".to_string());
+    let session = ChatSession {
+        id: uuid::Uuid::new_v4().to_string(),
+        title,
+        project_id: None,
+        pinned: false,
+        app_preset: AppPreset::Code,
+        workspace_path: Some(root.to_string_lossy().into_owned()),
+        keel_session_log: Some(path),
+        messages,
+        staged_edits: Vec::new(),
+        updated_at: now_epoch(),
+    };
+    save_session(&state.data_dir, &session).map_err(|error| error.to_string())?;
+    Ok(Some(session))
 }
 
 #[tauri::command]
@@ -455,14 +512,34 @@ pub async fn send_message(
     };
     let rt_status = state.runtime.lock().await.status();
     let use_external_harness = cfg.harness_mode != "keel" && session.app_preset == AppPreset::Code;
+    let use_keel_cli = use_external_harness && cfg.harness_mode == "keel-cli";
     if session.app_preset != AppPreset::Chat && session.workspace_path.is_none() {
         return Err("Choose a workspace folder for Work or Code first".to_string());
     }
-    if !use_external_harness && !matches!(rt_status.state.as_str(), "running" | "external") {
+    if (!use_external_harness || use_keel_cli)
+        && !matches!(rt_status.state.as_str(), "running" | "external")
+    {
         return Err(
             "Load a model in Models, or connect an existing model server first".to_string(),
         );
     }
+    let cli_log = if use_keel_cli {
+        if !input.attachments.is_empty() {
+            return Err("Open the attachment's folder and refer to its filename, or use Work for attachments.".into());
+        }
+        if !session.messages.is_empty() && session.keel_session_log.is_none() {
+            return Err("Start a new Code thread to use the Keel CLI. This thread belongs to the previous engine.".into());
+        }
+        let log = session.keel_session_log.get_or_insert_with(|| {
+            state
+                .data_dir
+                .join("cli-sessions")
+                .join(format!("{}.jsonl", session.id))
+        });
+        Some(log.clone())
+    } else {
+        None
+    };
 
     if session.messages.is_empty() && !input.prompt.trim().is_empty() {
         let snippet: String = input.prompt.trim().chars().take(48).collect();
@@ -480,6 +557,10 @@ pub async fn send_message(
     });
     session.updated_at = now_epoch();
     save_session(&state.data_dir, &session).map_err(|e| e.to_string())?;
+
+    if let Some(log) = cli_log {
+        return stream_keel_cli(&app, &state, session, &input.prompt, &log, &rt_status).await;
+    }
 
     // External harnesses are explicitly a Code capability; Chat never runs them.
     if use_external_harness {
@@ -682,8 +763,95 @@ pub async fn send_message(
     Ok(session)
 }
 
+async fn stream_keel_cli(
+    app: &AppHandle,
+    state: &AppState,
+    session: ChatSession,
+    prompt: &str,
+    log: &Path,
+    runtime: &RuntimeStatus,
+) -> Result<ChatSession, String> {
+    let root = session
+        .workspace_path
+        .as_deref()
+        .ok_or("Choose a Code folder first")?
+        .to_owned();
+    let model = runtime
+        .active_model_id
+        .as_deref()
+        .ok_or("Load a model for Code first")?;
+    let mut recorder = keel_core::recording::TurnRecorder::new(&state.data_dir, session)
+        .map_err(|error| error.to_string())?;
+    let (stop, receiver) = watch::channel(false);
+    *state.active_cli_stop.lock().await = Some(stop);
+    let mut recording_error = None;
+    let result = run_keel_cli_turn(
+        KeelCliTurn {
+            root: Path::new(&root),
+            log,
+            prompt,
+            base_url: &runtime.base_url,
+            model,
+        },
+        receiver,
+        |event| {
+            if let Err(error) = recorder.record(&event) {
+                recording_error = Some(error);
+            }
+            let _ = app.emit("keel://agent-event", event);
+        },
+        |id, tool, summary, arguments| async move {
+            let (sender, receiver) = oneshot::channel();
+            state.approvals.lock().await.insert(id.clone(), sender);
+            let _ = app.emit(
+                "keel://agent-event",
+                AgentEvent::ApprovalRequired {
+                    id,
+                    tool,
+                    summary,
+                    arguments,
+                },
+            );
+            receiver.await.unwrap_or(ApprovalDecision::Deny)
+        },
+    )
+    .await;
+    *state.active_cli_stop.lock().await = None;
+    state.approvals.lock().await.clear();
+    if let Some(error) = recording_error {
+        recorder.fail(&format!("Could not save part of this reply: {error}"))
+    } else {
+        match result {
+            Ok(Some(content)) => {
+                let event = AgentEvent::TurnFinished {
+                    content,
+                    thinking: recorder
+                        .session
+                        .messages
+                        .last()
+                        .and_then(|message| message.thinking.clone()),
+                    prompt_tokens: 0,
+                    completion_tokens: 0,
+                    tokens_per_sec: 0.0,
+                };
+                let _ = app.emit("keel://agent-event", &event);
+                recorder.record(&event)
+            }
+            Ok(None) => recorder.fail(
+                "Code run stopped. Your partial answer and any approved changes have been kept.",
+            ),
+            Err(error) => recorder.fail(&format!("Could not finish this Code run: {error}")),
+        }
+    }
+    .map_err(|error| error.to_string())?;
+    Ok(recorder.session)
+}
+
 #[tauri::command]
 pub async fn stop_generation(state: State<'_, AppState>) -> Result<(), String> {
+    if let Some(stop) = state.active_cli_stop.lock().await.as_ref() {
+        let _ = stop.send(true);
+    }
     if let Some(handle) = state.active_abort.lock().await.take() {
         handle.abort();
     }

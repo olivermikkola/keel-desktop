@@ -78,6 +78,8 @@ pub struct ChatSession {
     pub pinned: bool,
     pub app_preset: AppPreset,
     pub workspace_path: Option<String>,
+    #[serde(default)]
+    pub keel_session_log: Option<PathBuf>,
     pub messages: Vec<UiMessage>,
     pub staged_edits: Vec<StagedEdit>,
     pub updated_at: u64,
@@ -225,6 +227,7 @@ mod tests {
             pinned: false,
             app_preset: AppPreset::Docs,
             workspace_path: None,
+            keel_session_log: None,
             messages: vec![],
             staged_edits: vec![],
             updated_at: 42,

@@ -528,6 +528,17 @@ async function openWorkspace({ sample = false, carryDraft = false } = {}) {
   }
 }
 
+async function importKeelSession() {
+  if (appState.streaming || appState.choosingWorkspace) return;
+  if (!appState.workspacePath && !await openWorkspace()) return;
+  try {
+    const imported = await invoke("import_keel_session", { workspacePath: appState.workspacePath });
+    if (imported) { await refreshBootstrap(); await loadSession(imported.id); }
+  } catch (error) {
+    showNotice(`Couldn’t open the CLI session. ${String(error)}`);
+  }
+}
+
 function renderAll() {
   renderSidebar();
   renderHeader();
@@ -724,19 +735,22 @@ function renderChat() {
       ? `<button class="btn btn-primary" id="empty-open-folder">Open folder</button>${preset.id === "general" ? ' <button class="btn btn-ghost" id="empty-sample-folder">Try with sample files</button>' : ""}`
       : live || appState.waking ? "" : setup.paused ? '<button class="btn btn-primary" id="chat-setup-btn">Resume setup</button>' : setupBusy ? '<button class="btn btn-primary" id="chat-setup-btn">See setup progress</button>' : canWake ? '<button class="btn btn-primary" id="chat-setup-btn">Start your AI</button>' : '<button class="btn btn-primary" id="chat-setup-btn">Set up my AI</button>';
     const status = appState.waking ? '<p class="empty-status" role="status">Waking up your AI. You can type your question now.</p>' : "";
+    const openCli = preset.id === "code" && b.config.harness_mode === "keel-cli"
+      ? '<button class="btn btn-ghost" id="empty-open-cli-session">Open CLI session</button>' : "";
     const heading = preset.id === "chat" && !project ? "What can I help with?" : preset.title;
     els.chatScroll.innerHTML = `
       <div class="empty-state">
         ${project ? `<span class="eyebrow">${escapeHtml(project.name)}</span>` : ""}
         <h1>${escapeHtml(heading)}</h1>
         <p>${escapeHtml(preset.summary)}</p>
-        ${action}${status}
+        ${action}${openCli}${status}
         <div class="starters-grid">${starters}</div>
       </div>
     `;
     els.chatScroll.querySelector("#chat-setup-btn")?.addEventListener("click", () => (canWake && !setupBusy && !setup.paused ? wakeAssistant() : welcome.show()));
     els.chatScroll.querySelector("#empty-open-folder")?.addEventListener("click", () => openWorkspace());
     els.chatScroll.querySelector("#empty-sample-folder")?.addEventListener("click", () => openWorkspace({ sample: true }));
+    els.chatScroll.querySelector("#empty-open-cli-session")?.addEventListener("click", importKeelSession);
     els.chatScroll.querySelectorAll("[data-starter]").forEach((btn) => {
       btn.onclick = () => {
         els.promptInput.value = btn.getAttribute("data-starter");
@@ -836,12 +850,13 @@ function handleAgentEvent(ev) {
 }
 
 function renderApprovalCard(req) {
+  const cliApproval = appState.session?.app_preset === "code" && appState.bootstrap.config.harness_mode === "keel-cli";
   els.approvalSlot.innerHTML = `
     <div class="approval-card">
       <div><strong>Approval required:</strong> ${escapeHtml(req.summary)}</div>
       <div class="approval-actions">
         <button id="appr-once" class="btn btn-primary btn-sm">Allow once</button>
-        <button id="appr-always" class="btn btn-sm">Allow for this chat</button>
+        ${cliApproval ? "" : '<button id="appr-always" class="btn btn-sm">Allow for this chat</button>'}
         <button id="appr-deny" class="btn btn-rust btn-sm">Deny</button>
       </div>
     </div>
@@ -851,7 +866,7 @@ function renderApprovalCard(req) {
     await invoke("respond_approval", { id: req.id, decision });
   };
   document.getElementById("appr-once").onclick = () => decide("allow_once");
-  document.getElementById("appr-always").onclick = () => decide("allow_always");
+  document.getElementById("appr-always")?.addEventListener("click", () => decide("allow_always"));
   document.getElementById("appr-deny").onclick = () => decide("deny");
 }
 

@@ -46,7 +46,7 @@ Built with **Tauri 2**, **Rust**, and **llama.cpp** (`llama-server`), carrying t
 - **Small-model tuned Rust harness (`keel-core`):** streaming SSE responses with reasoning separation and text-format tool-call fallback parsing; repeat-tool guard, failure circuit breaker, and context-window compaction; workspace tools confined safely to the selected folder (`list_files`, `read_file`, `search_files`, `propose_edit`, `create_file`, `delete_file`, `rename_file`, `run_sql`, `run_shell`).
 - **Staged diff review & approvals:** Review proposed edits file-by-file before applying them (or toggle auto-apply for workspace edits), while shell commands and mutating MCP calls prompt for `Allow once`, `Always allow`, or `Deny`.
 - **Local `stdio` MCP servers:** Configure standard MCP servers in `.keel/mcp.json` or `~/.config/keel-desktop/mcp.json`.
-- **Code mode engine:** Today the built-in Keel Harness (`keel-core`) is the default, with one-shot pass-through to an installed external CLI harness (`keel`, `opencode`, `claude`). The canonical direction is Code mode driving the [Keel CLI](https://github.com/olivermikkola/keel) end-to-end — streaming, approvals in the GUI, and shared resumable sessions ([vision](https://github.com/olivermikkola/keel/blob/main/docs/VISION.md)).
+- **Keel CLI in Code:** Install a current `keel` CLI on Linux and select **Keel CLI** in Settings. Code streams tool results, asks before commands and changes to the selected folder, and keeps resumable CLI journals. Open a journal from a new Code thread or copy a terminal continuation command from the Conversation menu. Finish the current turn before continuing in the other app. The built-in engine remains the default during the CLI rollout.
 
 ### Models & images
 

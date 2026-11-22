@@ -22,6 +22,7 @@ fn empty_session() -> ChatSession {
         pinned: false,
         app_preset: AppPreset::Chat,
         workspace_path: None,
+        keel_session_log: None,
         messages: vec![],
         staged_edits: vec![],
         updated_at: 0,

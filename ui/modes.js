@@ -19,7 +19,7 @@ export function promptBlockReason(session, runtime, workspace, harnessMode = "ke
   if (!session) return "Start a conversation first.";
   const mode = modeForPreset(session.app_preset);
   if (mode !== "chat" && !workspace) return "Choose a folder to use Work or Code.";
-  if (mode === "code" && harnessMode !== "keel") return null;
+  if (mode === "code" && !["keel", "keel-cli"].includes(harnessMode)) return null;
   if (!isRuntimeLive(runtime)) return "Load a model or connect an existing server in Models.";
   return null;
 }

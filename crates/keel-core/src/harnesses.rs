@@ -1,10 +1,16 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
-use tokio::io::AsyncReadExt;
-use tokio::process::Command;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{ChildStdin, ChildStdout, Command};
+use tokio::sync::watch;
+
+use crate::agent::{AgentEvent, ApprovalDecision};
+use crate::sessions::UiMessage;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HarnessOption {
@@ -85,6 +91,332 @@ fn find_on_path(bin: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+pub struct KeelCliTurn<'a> {
+    pub root: &'a Path,
+    pub log: &'a Path,
+    pub prompt: &'a str,
+    pub base_url: &'a str,
+    pub model: &'a str,
+}
+
+const MAX_EVENT_BYTES: u64 = 1024 * 1024;
+const TURN_TIMEOUT: Duration = Duration::from_secs(300);
+const EXIT_GRACE: Duration = Duration::from_secs(5);
+
+/// Project completed text messages from a user-selected Keel journal for display.
+/// The CLI continues the original journal, including tool observations.
+pub fn read_keel_session(path: &Path) -> Result<Vec<UiMessage>> {
+    use std::io::{BufRead, Read};
+
+    const MAX_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
+    let file = std::fs::File::open(path).context("Cannot open Keel session log")?;
+    if !file.metadata()?.is_file() || file.metadata()?.len() > MAX_JOURNAL_BYTES {
+        bail!("Select a regular Keel JSONL file smaller than 64 MB");
+    }
+    let mut reader = std::io::BufReader::new(file.take(MAX_JOURNAL_BYTES + 1));
+    let mut messages = Vec::new();
+    let mut line = Vec::new();
+    let mut read = 0u64;
+    loop {
+        line.clear();
+        let n = (&mut reader)
+            .take(MAX_EVENT_BYTES + 1)
+            .read_until(b'\n', &mut line)?;
+        if n == 0 {
+            break;
+        }
+        read += n as u64;
+        if n as u64 > MAX_EVENT_BYTES || read > MAX_JOURNAL_BYTES {
+            bail!("Keel session log exceeded the read limit");
+        }
+        let entry: Value =
+            serde_json::from_slice(&line).context("Invalid entry in Keel session log")?;
+        let kind = entry["kind"]
+            .as_str()
+            .context("File is not a Keel session log")?;
+        if !matches!(kind, "user" | "assistant") {
+            continue;
+        }
+        let text = entry["data"]["text"]
+            .as_str()
+            .context("Invalid conversation message in Keel session log")?;
+        if text.trim().is_empty() {
+            continue;
+        }
+        messages.push(UiMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            role: kind.into(),
+            content: text.into(),
+            thinking: None,
+            tool_calls: vec![],
+            attachments: vec![],
+            status: "complete".into(),
+        });
+    }
+    if !messages.iter().any(|message| message.role == "user") {
+        bail!("Keel session log has no conversation to open");
+    }
+    Ok(messages)
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum KeelEvent {
+    Capabilities {
+        approval_protocol: String,
+        stop_protocol: Option<String>,
+    },
+    Text {
+        content: String,
+    },
+    Reasoning {
+        content: String,
+    },
+    ToolCall {
+        id: String,
+        name: String,
+        arguments: Value,
+    },
+    ToolResult {
+        id: String,
+        output: String,
+    },
+    ApprovalRequest {
+        protocol: String,
+        id: String,
+        tool_call_id: String,
+        tool: String,
+        arguments: Value,
+    },
+    Done {
+        status: String,
+        answer: Option<String>,
+        error: Option<String>,
+    },
+    #[serde(other)]
+    Other,
+}
+
+/// Run the canonical CLI once against its original session log. Closing stdin
+/// denies an outstanding approval, and SIGINT lets Keel reap an active shell job.
+pub async fn run_keel_cli_turn<E, A, F>(
+    turn: KeelCliTurn<'_>,
+    mut stop: watch::Receiver<bool>,
+    emit: E,
+    approve: A,
+) -> Result<Option<String>>
+where
+    E: FnMut(AgentEvent),
+    A: FnMut(String, String, String, Value) -> F,
+    F: std::future::Future<Output = ApprovalDecision>,
+{
+    if !cfg!(unix) {
+        bail!("Keel CLI integration is unavailable on this platform");
+    }
+    let binary = find_on_path("keel")
+        .context("Install the current Keel CLI and put it on PATH to use Code")?;
+    let root = crate::tools::validate_workspace_root(turn.root)?;
+    let mut command = Command::new(binary);
+    command
+        .current_dir(&root)
+        .args(["run", "--json", "--safety-mode", "safe", "--root"])
+        .arg(&root)
+        .arg("--log")
+        .arg(turn.log)
+        .args(["--base-url", turn.base_url, "--model", turn.model])
+        .env_remove("KEEL_API_KEY")
+        .env_remove("DEEPSEEK_API_KEY")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    match std::fs::metadata(turn.log) {
+        Ok(meta) if !meta.is_file() || meta.len() == 0 => {
+            bail!("Keel's session log is empty or invalid")
+        }
+        Ok(_) => {
+            command.arg("--resume").arg(turn.log);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).context("Reading Keel's session log"),
+    }
+    command.arg("--").arg(turn.prompt);
+    let mut child = command.spawn().context("Starting the Keel CLI")?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .context("Keel CLI stdin is unavailable")?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("Keel CLI stdout is unavailable")?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .context("Keel CLI stderr is unavailable")?;
+    let drain =
+        tokio::spawn(async move { tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await });
+    let result = tokio::select! {
+        biased;
+        _ = stop.wait_for(|stopped| *stopped) => Ok(None),
+        response = tokio::time::timeout(TURN_TIMEOUT, read_keel_turn(stdout, &mut stdin, emit, approve)) => {
+            match response {
+                Ok(result) => result.map(Some),
+                Err(_) => Err(anyhow::anyhow!("The Keel CLI turn timed out")),
+            }
+        }
+    };
+
+    #[cfg(unix)]
+    if !matches!(result, Ok(Some(_))) {
+        if let Some(pid) = child.id() {
+            // The Child still owns this PID until wait or kill completes.
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGINT) };
+        }
+    }
+    drop(stdin);
+    let status = match tokio::time::timeout(EXIT_GRACE, child.wait()).await {
+        Ok(status) => status?,
+        Err(_) => {
+            child.kill().await.context("Stopping the Keel CLI")?;
+            drain.abort();
+            return result.and_then(|answer| {
+                if answer.is_some() {
+                    bail!("Keel CLI did not exit after reporting a result");
+                }
+                Ok(None)
+            });
+        }
+    };
+    let _ = tokio::time::timeout(EXIT_GRACE, drain).await;
+    if matches!(result, Ok(Some(_))) && !status.success() {
+        bail!("Keel CLI exited unsuccessfully ({status})");
+    }
+    result
+}
+
+async fn read_keel_turn<E, A, F>(
+    stdout: ChildStdout,
+    stdin: &mut ChildStdin,
+    mut emit: E,
+    mut approve: A,
+) -> Result<String>
+where
+    E: FnMut(AgentEvent),
+    A: FnMut(String, String, String, Value) -> F,
+    F: std::future::Future<Output = ApprovalDecision>,
+{
+    use std::collections::HashSet;
+    let mut reader = BufReader::new(stdout);
+    let mut line = Vec::new();
+    let mut ready = false;
+    let mut tools = HashMap::<String, String>::new();
+    let mut approved_requests = HashSet::new();
+    loop {
+        line.clear();
+        let size = (&mut reader)
+            .take(MAX_EVENT_BYTES + 1)
+            .read_until(b'\n', &mut line)
+            .await?;
+        if size == 0 {
+            bail!("Keel CLI closed its event stream without finishing the turn");
+        }
+        if size as u64 > MAX_EVENT_BYTES {
+            bail!("Keel CLI event exceeded the size limit");
+        }
+        let event: KeelEvent =
+            serde_json::from_slice(&line).context("Invalid event from the Keel CLI")?;
+        if !ready {
+            match event {
+                KeelEvent::Capabilities { approval_protocol, stop_protocol } if approval_protocol == "stdio-line-v1" && stop_protocol.as_deref() == Some("sigint-shell-v1") => {
+                    ready = true;
+                    continue;
+                }
+                KeelEvent::Done { error: Some(error), .. } => bail!("{error}"),
+                _ => bail!("Update Keel CLI. This version does not advertise interactive approvals and command cancellation"),
+            }
+        }
+        match event {
+            KeelEvent::Text { content } => emit(AgentEvent::ContentDelta { text: content }),
+            KeelEvent::Reasoning { content } => emit(AgentEvent::ThinkingDelta { text: content }),
+            KeelEvent::ToolCall {
+                id,
+                name,
+                arguments,
+            } => {
+                tools.insert(id, name.clone());
+                emit(AgentEvent::ToolCallStart { name, arguments });
+            }
+            KeelEvent::ToolResult { id, output } => {
+                if let Some(name) = tools.remove(&id) {
+                    let failed = output.starts_with("error:") || output.starts_with("[Denied");
+                    emit(AgentEvent::ToolCallResult {
+                        name,
+                        result: output,
+                        is_error: failed,
+                        edit_id: None,
+                    });
+                }
+            }
+            KeelEvent::ApprovalRequest {
+                protocol,
+                id,
+                tool_call_id,
+                tool,
+                arguments,
+            } => {
+                if protocol != "stdio-line-v1"
+                    || tools.get(&tool_call_id) != Some(&tool)
+                    || !approved_requests.insert(id.clone())
+                {
+                    bail!("Unexpected approval request from the Keel CLI");
+                }
+                let detail = arguments
+                    .get("command")
+                    .or_else(|| arguments.get("path"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let summary = format!("{tool} {detail}");
+                let decision = approve(id, tool, summary, arguments).await;
+                // Keep CLI approvals per call. Desktop never grants an entire tool class.
+                let line = if decision == ApprovalDecision::Deny {
+                    b"deny\n".as_slice()
+                } else {
+                    b"allow\n".as_slice()
+                };
+                stdin.write_all(line).await?;
+                stdin.flush().await?;
+                if decision == ApprovalDecision::Deny {
+                    if let Some(name) = tools.remove(&tool_call_id) {
+                        emit(AgentEvent::ToolCallResult {
+                            name,
+                            result: "Denied by you. The tool did not run.".into(),
+                            is_error: true,
+                            edit_id: None,
+                        });
+                    }
+                }
+            }
+            KeelEvent::Done {
+                status,
+                answer,
+                error,
+            } => {
+                if status == "ok" {
+                    return answer.context("Keel CLI finished without a result");
+                }
+                bail!(
+                    "{}",
+                    error
+                        .as_deref()
+                        .unwrap_or("Keel CLI reported a failed turn")
+                );
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Runs a single prompt through a supported external CLI harness in `workspace`.
