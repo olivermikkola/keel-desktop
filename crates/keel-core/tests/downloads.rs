@@ -1,4 +1,6 @@
-use keel_core::models::download_gguf;
+use keel_core::models::{
+    download_gguf, download_with_pause, partial_download_path, DownloadPaused,
+};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -37,6 +39,77 @@ async fn checksummed_download_resumes_and_verifies_all_bytes() {
     assert_eq!(std::fs::read(destination).unwrap(), all);
     assert_eq!(progress[0].downloaded_bytes, 3);
     assert!(progress.last().unwrap().done);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn pause_preserves_the_written_prefix_and_resume_finishes_the_checksum() {
+    let root = std::env::temp_dir().join(format!("keel_pause_{}", uuid::Uuid::new_v4()));
+    let destination = root.join("model.gguf");
+    let prefix = vec![b'x'; 512 * 1024];
+    let suffix = b"model-end";
+    let mut full = prefix.clone();
+    full.extend(suffix);
+    let digest = hex::encode(Sha256::digest(&full));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/model", listener.local_addr().unwrap());
+    let (paused, wait_for_pause) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut first, _) = listener.accept().await.unwrap();
+        let mut request = [0; 8192];
+        assert_ne!(first.read(&mut request).await.unwrap(), 0);
+        let size = prefix.len() + suffix.len();
+        first
+            .write_all(
+                format!("HTTP/1.1 200 OK\r\nContent-Length: {size}\r\nConnection: close\r\n\r\n")
+                    .as_bytes(),
+            )
+            .await
+            .unwrap();
+        first.write_all(&prefix).await.unwrap();
+        wait_for_pause.await.unwrap();
+        drop(first);
+
+        let (mut resumed, _) = listener.accept().await.unwrap();
+        let n = resumed.read(&mut request).await.unwrap();
+        let start = prefix.len();
+        assert!(String::from_utf8_lossy(&request[..n])
+            .to_lowercase()
+            .contains(&format!("range: bytes={start}-")));
+        resumed.write_all(format!("HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{}/{size}\r\nConnection: close\r\n\r\n", suffix.len(), size - 1).as_bytes()).await.unwrap();
+        resumed.write_all(suffix).await.unwrap();
+    });
+    let (pause, mut receiver) = tokio::sync::watch::channel(false);
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        download_with_pause(
+            &url,
+            &destination,
+            Some(&digest),
+            "test",
+            Some(&mut receiver),
+            |progress| {
+                if progress.downloaded_bytes >= 512 * 1024 {
+                    pause.send(true).unwrap();
+                }
+            },
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap_err();
+    assert!(result.is::<DownloadPaused>());
+    assert!(!destination.exists());
+    assert_eq!(
+        std::fs::read(partial_download_path(&destination)).unwrap(),
+        full[..512 * 1024]
+    );
+    paused.send(()).unwrap();
+    download_gguf(&url, &destination, Some(&digest), "test", |_| {})
+        .await
+        .unwrap();
+    server.await.unwrap();
+    assert_eq!(std::fs::read(destination).unwrap(), full);
     std::fs::remove_dir_all(root).unwrap();
 }
 

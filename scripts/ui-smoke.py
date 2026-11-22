@@ -77,6 +77,7 @@ const fast = {id:'bonsai-4b',name:'Bonsai 2 · 4B',detail:'Fast local starter mo
 core.invoke = async (cmd,args={}) => {
  if (cmd==='get_bootstrap_state') { const r=await base(cmd,args); if(t.firstRun && !t.setupDone) r.models.forEach(m=>m.installed=false); return r; }
  if (cmd==='get_setup_plan') { t.calls.push({cmd,args}); return {memory_bytes:17179869184,platform:'test',runtime_path:null,runtime_asset:{bytes:20000000},recommended_model:big,fast_model:fast,context_size:8192}; }
+ if (cmd==='pause_local_setup') { t.calls.push({cmd,args}); t.failSetup('Setup download paused'); return true; }
  if (cmd==='setup_local_ai') {
   t.calls.push({cmd,args}); t.emit('keel://setup-stage','runner');
   return new Promise((resolve,reject) => { t.finishSetup=async()=>{ t.setupDone=true; resolve(await base('setup_local_ai',args)); }; t.failSetup=(message)=>reject(message); });
@@ -304,6 +305,18 @@ async def main(port):
         await sample.locator('#workspace-pill-label').get_by_text('Sample Work').wait_for()
         assert await sample.evaluate("window.__test.calls.some(c=>c.cmd==='set_workspace_folder' && c.args.path==='/test/Sample Work' && c.args.sessionId)")
         await sample.close()
+        paused = await new_page(browser, port, first_run=True)
+        await paused.locator('#welcome-size').click()
+        await paused.locator('#welcome-start').click()
+        await paused.get_by_role('button', name='Pause download').click()
+        await paused.get_by_role('heading', name='Continue when you’re ready.').wait_for()
+        await paused.screenshot(path=str(OUTPUT / 'first-run-paused.png'))
+        await paused.get_by_role('button', name='Resume download').click()
+        await paused.wait_for_function("window.__test.calls.filter(c=>c.cmd==='setup_local_ai' && c.args.modelId==='bonsai-4b').length === 2")
+        await paused.evaluate('window.__test.finishSetup()')
+        await paused.locator('#welcome-overlay').wait_for(state='hidden')
+        assert not paused.errors, paused.errors
+        await paused.close()
         print('PASS: first-run welcome and setup (progress, queued first question, error and skip), launch wake-up, attachments, source preview, saved preferences, projects, thread rename/pin/search, Chat/Work/Code, file approval, Library, Images, safe HTML previews; no browser errors.')
         await browser.close()
 

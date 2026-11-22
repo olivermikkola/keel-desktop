@@ -3,9 +3,11 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::future::{pending, Future};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::watch;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CatalogModel {
@@ -261,6 +263,52 @@ pub async fn download_gguf<F>(
     dest_path: &Path,
     expected_sha256: Option<&str>,
     model_id: &str,
+    on_progress: F,
+) -> Result<u64>
+where
+    F: FnMut(DownloadProgress),
+{
+    download_with_pause(url, dest_path, expected_sha256, model_id, None, on_progress).await
+}
+
+#[derive(Debug)]
+pub struct DownloadPaused;
+
+impl std::fmt::Display for DownloadPaused {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Setup download paused")
+    }
+}
+
+impl std::error::Error for DownloadPaused {}
+
+async fn wait_for_pause(pause: &mut Option<&mut watch::Receiver<bool>>) {
+    if let Some(receiver) = pause {
+        if receiver.wait_for(|paused| *paused).await.is_ok() {
+            return;
+        }
+    }
+    pending::<()>().await;
+}
+
+async fn until_paused<T>(
+    pause: &mut Option<&mut watch::Receiver<bool>>,
+    step: impl Future<Output = T>,
+) -> Result<T> {
+    tokio::select! {
+        biased;
+        _ = wait_for_pause(pause) => Err(DownloadPaused.into()),
+        result = step => Ok(result),
+    }
+}
+
+/// Pause network waits while finishing any in-flight disk write before returning.
+pub async fn download_with_pause<F>(
+    url: &str,
+    dest_path: &Path,
+    expected_sha256: Option<&str>,
+    model_id: &str,
+    mut pause: Option<&mut watch::Receiver<bool>>,
     mut on_progress: F,
 ) -> Result<u64>
 where
@@ -270,7 +318,7 @@ where
         fs::create_dir_all(parent).await?;
     }
 
-    let part_path = dest_path.with_extension("gguf.part");
+    let part_path = partial_download_path(dest_path);
     let client = reqwest::Client::builder()
         .user_agent(format!("keel-desktop/{}", env!("CARGO_PKG_VERSION")))
         .connect_timeout(std::time::Duration::from_secs(15))
@@ -287,9 +335,9 @@ where
     if partial > 0 {
         request = request.header(reqwest::header::RANGE, format!("bytes={partial}-"));
     }
-    let mut resp = request.send().await?;
+    let mut resp = until_paused(&mut pause, request.send()).await??;
     if resp.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
-        resp = client.get(url).send().await?;
+        resp = until_paused(&mut pause, client.get(url).send()).await??;
     }
     let resp = resp.error_for_status()?;
     let resume = partial > 0 && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT;
@@ -310,7 +358,7 @@ where
         let mut previous = fs::File::open(&part_path).await?;
         let mut buffer = vec![0u8; 1024 * 1024];
         loop {
-            let n = previous.read(&mut buffer).await?;
+            let n = until_paused(&mut pause, previous.read(&mut buffer)).await??;
             if n == 0 {
                 break;
             }
@@ -334,7 +382,15 @@ where
         error: None,
     });
 
-    while let Some(chunk) = stream.next().await {
+    loop {
+        let chunk = match until_paused(&mut pause, stream.next()).await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break,
+            Err(paused) => {
+                file.flush().await?;
+                return Err(paused);
+            }
+        };
         let bytes = chunk?;
         file.write_all(&bytes).await?;
         hasher.update(&bytes);
@@ -376,6 +432,10 @@ where
         error: None,
     });
     Ok(downloaded)
+}
+
+pub fn partial_download_path(destination: &Path) -> PathBuf {
+    destination.with_extension("gguf.part")
 }
 
 #[cfg(test)]

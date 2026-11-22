@@ -10,6 +10,7 @@ export function createWelcome(api) {
   let view = "intro";
   let plan = null;
   let choice = "recommended";
+  try { if (localStorage.getItem("keel_setup_choice") === "fast") choice = "fast"; } catch { /* Storage is optional. */ }
   let stage = "runner";
   let busy = false;
   let error = null;
@@ -21,6 +22,7 @@ export function createWelcome(api) {
   const modelInstalled = () => (api.bootstrap()?.models || []).some((m) => m.id === chosenModel()?.id && m.installed);
   const totalBytes = () => runnerBytes() + (modelInstalled() ? 0 : chosenModel()?.bytes || 0);
   const canAutoSetup = () => Boolean(plan && (plan.runtime_path || plan.runtime_asset));
+  const hasPartial = () => plan?.partial_runner || plan?.partial_model_ids?.includes(chosenModel()?.id);
   const snapshot = () => tracker.snapshot();
 
   function meterText() {
@@ -50,6 +52,7 @@ export function createWelcome(api) {
   function render() {
     if (view === "working") renderWorking();
     else if (view === "error") renderError();
+    else if (view === "paused") renderPaused();
     else if (view === "existing") renderExisting();
     else renderIntro();
     const primary = body.querySelector("[data-primary]");
@@ -69,7 +72,7 @@ export function createWelcome(api) {
       <h1 class="welcome-headline">Your own private AI.</h1>
       <p class="welcome-sub">Ask it anything, write with it, build things. It runs on this computer, so there is no account, no subscription, and nothing you type leaves your machine.</p>
       <div class="welcome-desktop-actions">
-        <button id="welcome-start" data-primary class="welcome-btn-white" ${canAutoSetup() ? "" : "disabled"}>Set up my AI</button>
+        <button id="welcome-start" data-primary class="welcome-btn-white" ${canAutoSetup() ? "" : "disabled"}>${hasPartial() ? "Resume setup" : "Set up my AI"}</button>
         <button id="welcome-skip" class="btn btn-ghost btn-sm" type="button">Not now</button>
       </div>
       <div class="welcome-desktop-foot">${canAutoSetup() ? escapeHtml(sizeLine) : "Automatic setup isn't available on this computer yet. You can still connect an AI you already run."}</div>
@@ -91,11 +94,34 @@ export function createWelcome(api) {
       <div id="welcome-meter" class="welcome-meter" role="status"></div>
       <ol class="welcome-steps">${steps}</ol>
       ${chips ? `<div class="welcome-wait"><p>Too slow? Pick a question now. Keel answers the second it is ready.</p><div class="welcome-chips">${chips}</div></div>` : ""}
-      <div class="welcome-desktop-actions"><button id="welcome-background" data-primary class="btn" type="button">Keep exploring while it downloads</button></div>`;
+      <div class="welcome-desktop-actions"><button id="welcome-background" data-primary class="btn" type="button">Keep exploring while it downloads</button>${stage === "start" ? "" : ' <button id="welcome-pause" class="btn btn-ghost" type="button">Pause download</button>'}</div>`;
     body.querySelector("#welcome-background").onclick = hide;
+    const pause = body.querySelector("#welcome-pause");
+    if (pause) pause.onclick = async () => {
+      pause.disabled = true;
+      try {
+        if (!await invoke("pause_local_setup")) pause.disabled = false;
+      } catch {
+        pause.disabled = false;
+        toast("Couldn’t pause the download. Try again.");
+      }
+    };
     const starters = api.starters() || [];
     body.querySelectorAll("[data-chip]").forEach((button) => { button.onclick = () => { hide(); api.queuePrompt(starters[Number(button.dataset.chip)]); }; });
     paint();
+  }
+
+  function renderPaused() {
+    body.innerHTML = `
+      <div class="welcome-eyebrow">SETUP PAUSED</div>
+      <h1 class="welcome-headline">Continue when you’re ready.</h1>
+      <p class="welcome-sub">Keel keeps the downloaded files on this computer.</p>
+      <div class="welcome-desktop-actions">
+        <button id="welcome-resume" data-primary class="welcome-btn-white" type="button">Resume download</button>
+        <button id="welcome-skip" class="btn btn-ghost btn-sm" type="button">Keep exploring</button>
+      </div>`;
+    body.querySelector("#welcome-resume").onclick = start;
+    body.querySelector("#welcome-skip").onclick = hide;
   }
 
   function renderError() {
@@ -152,6 +178,7 @@ export function createWelcome(api) {
     if (busy || !canAutoSetup()) return;
     const model = chosenModel();
     busy = true;
+    try { localStorage.setItem("keel_setup_choice", choice); } catch { /* Storage is optional. */ }
     error = null;
     stage = plan.runtime_path ? (modelInstalled() ? "start" : "model") : "runner";
     tracker = createProgressTracker({ runtime: runnerBytes(), [model.id]: modelInstalled() ? 0 : model.bytes });
@@ -168,8 +195,13 @@ export function createWelcome(api) {
       api.ready();
     } catch (failure) {
       busy = false;
-      error = friendlySetupError(failure);
-      view = "error";
+      if (String(failure).replace(/^Error:\s*/i, "") === "Setup download paused") {
+        view = "paused";
+        try { plan = await invoke("get_setup_plan"); } catch { /* The last plan still allows retrying. */ }
+      } else {
+        error = friendlySetupError(failure);
+        view = "error";
+      }
       api.changed();
       open();
     }
@@ -184,7 +216,7 @@ export function createWelcome(api) {
   }
 
   async function show() {
-    if (!busy) {
+    if (!busy && view !== "paused") {
       view = "intro";
       try { plan = await invoke("get_setup_plan"); } catch { plan = null; }
     }
@@ -195,7 +227,7 @@ export function createWelcome(api) {
     show,
     hide,
     isOpen: () => !root.classList.contains("hidden"),
-    status: () => ({ busy, fraction: stage === "start" ? 1 : snapshot().fraction, stage, expectedBytes: totalBytes() }),
+    status: () => ({ busy, paused: view === "paused", fraction: stage === "start" ? 1 : snapshot().fraction, stage, expectedBytes: totalBytes() }),
     stage(next) { if (!busy) return; stage = next; if (view === "working") render(); api.changed(); },
     download(progress) {
       if (!busy) return;
