@@ -1,6 +1,6 @@
 import { createEveryday } from "./everyday.js";
 import { createImageWorkspace } from "./images.js";
-import { assistantStatus, friendlySetupError, isFirstRun, modelLocation, modelToWake, serverDataNotice } from "./onboarding.js";
+import { assistantStatus, friendlyRuntimeError, friendlySetupError, isFirstRun, modelLocation, modelTierLabel, modelToWake, serverDataNotice } from "./onboarding.js";
 import { MODES, modeForPreset, isRuntimeLive, promptBlockReason } from "./modes.js";
 import { escapeHtml, renderMarkdown } from "./markdown.js";
 import {
@@ -48,6 +48,9 @@ const appState = {
   streamingThinking: "",
   streamingTools: [],
   downloadProgress: {},
+  busyModelId: null,
+  busyModelAction: null,
+  modelSwitcherOpen: false,
   waking: false,
   sendWhenReady: false,
   appearance: loadAppearance(),
@@ -62,6 +65,7 @@ const els = {
   newAgentBtn: document.getElementById("new-agent-btn"),
   toggleSidebarBtn: document.getElementById("toggle-sidebar-btn"),
   modelPillBtn: document.getElementById("model-pill-btn"),
+  modelSwitcherMenu: document.getElementById("model-switcher-menu"),
   runtimeDot: document.getElementById("runtime-dot"),
   modelPillLabel: document.getElementById("model-pill-label"),
   workspacePillBtn: document.getElementById("workspace-pill-btn"),
@@ -211,7 +215,7 @@ async function wakeAssistant() {
   appState.waking = true;
   renderAll();
   try {
-    await invoke("start_model", { modelId: id });
+    await invoke("auto_start_model");
     appState.waking = false;
     await refreshBootstrap();
     renderAll();
@@ -221,7 +225,7 @@ async function wakeAssistant() {
     appState.waking = false;
     appState.sendWhenReady = false;
     renderAll();
-    showNotice(`Your AI didn't start: ${friendlySetupError(err).detail || "unknown problem"}. Tap the model name at the top to try again or pick another.`);
+    showNotice(`Your AI didn't start: ${friendlyRuntimeError(err)}`);
     return false;
   }
 }
@@ -360,6 +364,9 @@ async function setActiveView(view) {
     else await createNewSession(MODES[view].preset);
   }
   appState.activeView = view;
+  if (view === "models") {
+    await refreshBootstrap();
+  }
   if (view === "code") {
     appState.viewerOpen = hasViewerContent();
     appState.viewerTab = (appState.session?.staged_edits?.length || 0) > 0 || appState.session?.code_checkout ? "diff" : "code";
@@ -373,19 +380,29 @@ async function init() {
   if (events) {
     await events.listen("keel://preference-saved", () => showToast("Saved to preferences. You can edit or remove it in the sidebar."));
     await events.listen("keel://setup-stage", (event) => welcome.stage(event.payload));
+    await events.listen("keel://model-fallback", (event) => {
+      const p = event.payload;
+      if (p?.from_name && p?.to_name) {
+        showToast(`${p.from_name} couldn't start on this computer, so Keel switched to ${p.to_name} automatically.`);
+      }
+    });
     await events.listen("keel://image-job", () => images.onJob());
     await events.listen("keel://agent-event", (ev) => handleAgentEvent(ev.payload));
     await events.listen("keel://download-progress", (ev) => {
       const p = ev.payload;
       appState.downloadProgress[p.model_id] = p;
       welcome.download(p);
+      const pct = p.total_bytes ? Math.round((p.downloaded_bytes / p.total_bytes) * 100) : 0;
       const bar = document.getElementById(`dl-prog-${p.model_id}`);
       if (bar) {
-        const pct = p.total_bytes ? Math.round((p.downloaded_bytes / p.total_bytes) * 100) : 0;
         bar.textContent =
           p.done
-            ? "Installed"
+            ? "Downloaded"
             : `${formatBytes(p.downloaded_bytes)}${pct ? ` (${pct}%)` : ""}`;
+      }
+      const fill = document.getElementById(`dl-bar-${p.model_id}`);
+      if (fill) {
+        fill.style.width = `${p.done ? 100 : pct}%`;
       }
     });
   }
@@ -671,19 +688,22 @@ function renderHeader() {
   const b = appState.bootstrap;
   if (!b) return;
   const rt = b.runtime;
-  els.runtimeDot.className = `status-dot ${rt.state}`;
+  const isBusy = appState.waking || appState.busyModelAction === "starting";
+  els.runtimeDot.className = `status-dot ${isBusy ? "starting" : rt.state}`;
   const selected = b.models.find(
     (m) => m.id === (rt.active_model_id || b.config.selected_model_id),
   );
   const setup = welcome.status();
   const location = modelLocation(rt);
-  els.modelPillBtn.title = isRuntimeLive(rt) ? location : "";
-  els.modelPillLabel.textContent = setup.busy || setup.paused ? assistantStatus({ runtime: rt, setup }).label : appState.waking ? "Waking up your AI…" : rt.state === "stopped" ? (b.models.some((m) => m.installed) ? "Start your AI" : "Set up your AI") : rt.state === "error" ? "Model needs attention" :
+  els.modelPillBtn.title = isRuntimeLive(rt) ? `${location} · Click to switch AI` : "Click to choose or start your AI";
+  els.modelPillBtn.setAttribute("aria-expanded", String(appState.modelSwitcherOpen));
+  els.modelPillLabel.textContent = setup.busy || setup.paused ? assistantStatus({ runtime: rt, setup }).label : isBusy ? "Waking up your AI…" : rt.state === "stopped" ? (b.models.some((m) => m.installed && !m.damaged) ? "Start your AI" : b.models.some((m) => m.damaged) ? "Repair your AI" : "Set up your AI") : rt.state === "error" ? "Model needs attention" :
     rt.state === "external"
       ? `${b.config.external_model_name || location}${location === "External model server" ? " · Remote" : ""}`
       : selected
         ? selected.name
         : b.config.selected_model_id || "Select model";
+  renderModelSwitcher();
 
   const shortWs = shortPath(appState.workspacePath);
   els.workspacePillLabel.textContent = appState.workspacePath ? shortWs : "Open folder";
@@ -703,7 +723,7 @@ function renderHeader() {
   els.diffsPillBtn.classList.toggle("has-pending", counts.pending > 0);
   els.telemetryRight.textContent = `Keel v${b.version}`;
   if (!appState.streaming) {
-    els.telemetryLeft.textContent = appState.sendWhenReady ? "Your message sends as soon as your AI is ready" : appState.waking ? "Waking up your AI. This takes a few seconds." : isRuntimeLive(rt) ? `${location} · ${appState.session?.messages.length || 0} messages` : "Your AI is off. Send a message to start it.";
+    els.telemetryLeft.textContent = appState.sendWhenReady ? "Your message sends as soon as your AI is ready" : isBusy ? "Waking up your AI. This takes a few seconds." : isRuntimeLive(rt) ? `${location} · ${appState.session?.messages.length || 0} messages` : "Your AI is off. Send a message to start it.";
   }
   const mode = modeForPreset(appState.session?.app_preset);
   els.promptInput.placeholder = MODES[mode].placeholder;
@@ -716,6 +736,193 @@ function renderHeader() {
   els.publishPrBtn.classList.toggle("hidden", mode !== "code" || !appState.workspacePath);
   els.newChatBtn.disabled = appState.streaming;
   els.newAgentBtn.disabled = appState.streaming;
+}
+
+function closeModelSwitcher() {
+  if (!appState.modelSwitcherOpen) return;
+  appState.modelSwitcherOpen = false;
+  els.modelSwitcherMenu?.classList.add("hidden");
+  els.modelPillBtn?.setAttribute("aria-expanded", "false");
+}
+
+async function switchToModel(modelId) {
+  if (appState.busyModelId || appState.waking) return;
+  closeModelSwitcher();
+  appState.busyModelId = modelId;
+  appState.busyModelAction = "starting";
+  renderAll();
+  try {
+    await invoke("start_model", { modelId });
+    await refreshBootstrap();
+    const chosen = appState.bootstrap?.models?.find((m) => m.id === modelId);
+    if (chosen) showToast(`${chosen.name} is ready.`);
+  } catch (err) {
+    showToast(friendlyRuntimeError(err));
+  } finally {
+    appState.busyModelId = null;
+    appState.busyModelAction = null;
+    renderAll();
+  }
+}
+
+async function downloadCatalogModel(modelId, { repair = false } = {}) {
+  if (appState.busyModelId) return;
+  appState.busyModelId = modelId;
+  appState.busyModelAction = repair ? "repairing" : "downloading";
+  renderModelsWorkspace();
+  try {
+    await invoke("download_catalog_model", { modelId });
+    await refreshBootstrap();
+    const wasLive = isRuntimeLive(appState.bootstrap?.runtime);
+    if (!wasLive) {
+      appState.busyModelAction = "starting";
+      renderAll();
+      try {
+        await invoke("start_model", { modelId });
+        await refreshBootstrap();
+        const chosen = appState.bootstrap?.models?.find((m) => m.id === modelId);
+        showToast(`${chosen?.name || "Your AI"} is downloaded and ready.`);
+      } catch (startErr) {
+        showToast(`Downloaded, but couldn't start yet: ${friendlyRuntimeError(startErr)}`);
+      }
+    } else {
+      showToast(repair ? "Model repaired and ready to use." : "Model downloaded.");
+    }
+  } catch (err) {
+    showToast(friendlyRuntimeError(err));
+  } finally {
+    appState.busyModelId = null;
+    appState.busyModelAction = null;
+    renderAll();
+  }
+}
+
+async function removeLocalModel(modelId) {
+  if (appState.busyModelId) return;
+  appState.busyModelId = modelId;
+  appState.busyModelAction = "removing";
+  renderModelsWorkspace();
+  try {
+    await invoke("delete_model", { modelId });
+    await refreshBootstrap();
+    showToast("Model removed from this computer.");
+  } catch (err) {
+    showToast(friendlyRuntimeError(err));
+  } finally {
+    appState.busyModelId = null;
+    appState.busyModelAction = null;
+    renderAll();
+  }
+}
+
+function renderModelSwitcher() {
+  const menu = els.modelSwitcherMenu;
+  const b = appState.bootstrap;
+  if (!menu || !b) return;
+  menu.classList.toggle("hidden", !appState.modelSwitcherOpen);
+  if (!appState.modelSwitcherOpen) return;
+
+  const rt = b.runtime;
+  const healthy = b.models.filter((m) => m.installed && !m.damaged);
+  const damaged = b.models.filter((m) => m.damaged);
+  const busy = Boolean(appState.busyModelId || appState.waking);
+
+  let html = "";
+  if (rt.state === "external") {
+    const extName = b.config.external_model_name || modelLocation(rt);
+    html += `
+      <div class="switcher-section-label">CONNECTED APP</div>
+      <div class="switcher-item active">
+        <span class="switcher-item-main">
+          <strong>${escapeHtml(extName)}</strong>
+          <span class="switcher-item-sub">${escapeHtml(modelLocation(rt))}</span>
+        </span>
+        <span class="switcher-check">✓</span>
+      </div>
+      <button type="button" class="switcher-item" id="switcher-use-builtin" ${busy ? "disabled" : ""}>
+        <span class="switcher-item-main">
+          <strong>Switch back to built-in AI</strong>
+          <span class="switcher-item-sub">Run locally inside Keel</span>
+        </span>
+      </button>
+      <div class="switcher-divider"></div>
+    `;
+  }
+
+  if (healthy.length > 0) {
+    html += `<div class="switcher-section-label">ON THIS COMPUTER</div>`;
+    for (const m of healthy) {
+      const isActive = rt.state === "running" && rt.active_model_id === m.id;
+      const tier = modelTierLabel(m);
+      html += `
+        <button type="button" class="switcher-item ${isActive ? "active" : ""}" data-switch-model="${escapeHtml(m.id)}" role="menuitem" ${busy ? "disabled" : ""}>
+          <span class="switcher-item-main">
+            <strong>${escapeHtml(m.name)}</strong>
+            <span class="switcher-item-sub">${tier ? `${escapeHtml(tier)} · ` : ""}${formatBytes(m.bytes)}</span>
+          </span>
+          <span class="switcher-check">${isActive ? "✓" : ""}</span>
+        </button>
+      `;
+    }
+  }
+
+  if (damaged.length > 0) {
+    html += `<div class="switcher-section-label">NEEDS ATTENTION</div>`;
+    for (const m of damaged) {
+      html += `
+        <button type="button" class="switcher-item damaged" data-inspect-damaged="${escapeHtml(m.id)}" role="menuitem">
+          <span class="switcher-item-main">
+            <strong>${escapeHtml(m.name)}</strong>
+            <span class="switcher-item-sub">Damaged download · click to repair</span>
+          </span>
+          <span class="model-badge warn">Repair</span>
+        </button>
+      `;
+    }
+  }
+
+  html += `<div class="switcher-divider"></div>`;
+  if (isRuntimeLive(rt)) {
+    html += `<button type="button" class="switcher-item" id="switcher-stop" role="menuitem"><span>Turn AI off</span></button>`;
+  }
+  html += `<button type="button" class="switcher-item" id="switcher-browse" role="menuitem"><span>Browse &amp; manage models…</span></button>`;
+
+  menu.innerHTML = html;
+  menu.querySelectorAll("[data-switch-model]").forEach((btn) => {
+    btn.onclick = () => switchToModel(btn.dataset.switchModel);
+  });
+  menu.querySelectorAll("[data-inspect-damaged]").forEach((btn) => {
+    btn.onclick = () => {
+      closeModelSwitcher();
+      appState.selectedModelInspectorId = btn.dataset.inspectDamaged;
+      setActiveView("models");
+    };
+  });
+  menu.querySelector("#switcher-use-builtin")?.addEventListener("click", async () => {
+    closeModelSwitcher();
+    try {
+      await invoke("clear_external_endpoint");
+      await refreshBootstrap();
+      renderAll();
+      if (modelToWake(appState.bootstrap)) await wakeAssistant();
+    } catch (err) {
+      showToast(friendlyRuntimeError(err));
+    }
+  });
+  menu.querySelector("#switcher-stop")?.addEventListener("click", async () => {
+    closeModelSwitcher();
+    try {
+      await invoke("stop_runtime");
+      await refreshBootstrap();
+      renderAll();
+    } catch (err) {
+      showToast(friendlyRuntimeError(err));
+    }
+  });
+  menu.querySelector("#switcher-browse")?.addEventListener("click", () => {
+    closeModelSwitcher();
+    setActiveView("models");
+  });
 }
 
 function renderChat() {
@@ -949,7 +1156,7 @@ async function sendCurrentPrompt() {
     appState.session.messages.push({
       id: `err-${Date.now()}`,
       role: "assistant",
-      content: `Runtime error: ${String(err)}`,
+      content: friendlyRuntimeError(err),
       thinking: null,
       tool_calls: [],
       created_at: Math.floor(Date.now() / 1000),
@@ -1184,28 +1391,53 @@ function renderModelsWorkspace() {
     b.models.find((m) => m.id === rt.active_model_id) ||
     b.models.find((m) => m.id === b.config.selected_model_id) ||
     b.models[0];
+  const anyBusy = Boolean(appState.busyModelId || appState.waking);
 
   const rowsHtml = filtered
     .map((m) => {
       const isRunning = rt.active_model_id === m.id && rt.state === "running";
       const isSelected = inspected?.id === m.id;
+      const isThisBusy = appState.busyModelId === m.id;
+      const tier = modelTierLabel(m);
+      const badgeClass = m.damaged ? "model-badge warn" : isRunning ? "model-badge live" : "model-badge";
+      const badgeText = m.damaged ? "Needs repair" : isRunning ? "In use" : tier;
+      const subText = m.damaged
+        ? m.damage_reason || "This download looks incomplete or damaged."
+        : `${m.detail} · ${formatBytes(m.bytes)}`;
+      const isDownloading = isThisBusy && ["downloading", "repairing"].includes(appState.busyModelAction);
+      let actionHtml = "";
+      if (m.damaged) {
+        actionHtml = `
+          <div class="model-row-actions">
+            <button class="pill-action-get" data-repair-model="${escapeHtml(m.id)}" ${anyBusy ? "disabled" : ""}>${isThisBusy && appState.busyModelAction === "repairing" ? "Repairing…" : "Repair"}</button>
+            <button class="btn btn-ghost btn-sm" data-del-model="${escapeHtml(m.id)}" ${anyBusy ? "disabled" : ""}>Remove</button>
+          </div>
+        `;
+      } else if (m.installed) {
+        const label = isThisBusy && appState.busyModelAction === "starting" ? "Starting…" : isRunning ? "In use" : "Use";
+        actionHtml = `<button class="pill-action-use" data-start-model="${escapeHtml(m.id)}" ${anyBusy || isRunning ? "disabled" : ""}>${label}</button>`;
+      } else {
+        const label = isThisBusy && appState.busyModelAction === "downloading" ? "Downloading…" : "Download";
+        actionHtml = `<button class="pill-action-get" data-dl-model="${escapeHtml(m.id)}" ${anyBusy ? "disabled" : ""}>${label}</button>`;
+      }
       return `
-        <div class="model-clean-row ${isSelected ? "active" : ""}" data-select-model="${escapeHtml(m.id)}">
-          <div>
+        <div class="model-clean-row ${isSelected ? "active" : ""} ${m.damaged ? "damaged" : ""}" data-select-model="${escapeHtml(m.id)}">
+          <div class="grow">
             <div class="model-clean-title">
               <span>${escapeHtml(m.name)}</span>
-              
+              ${badgeText ? `<span class="${badgeClass}">${escapeHtml(badgeText)}</span>` : ""}
             </div>
             <div class="model-clean-sub">
-              ${escapeHtml(m.detail)} · ${formatBytes(m.bytes)}
+              ${escapeHtml(subText)}
               <span id="dl-prog-${escapeHtml(m.id)}" style="color:var(--accent);margin-left:6px"></span>
             </div>
+            ${
+              isDownloading
+                ? `<div class="model-dl-track"><div id="dl-bar-${escapeHtml(m.id)}" class="model-dl-fill" style="width:0%"></div></div>`
+                : ""
+            }
           </div>
-          ${
-            m.installed
-              ? `<button class="pill-action-use" data-start-model="${escapeHtml(m.id)}">${isRunning ? "In use" : "Use"}</button>`
-              : `<button class="pill-action-get" data-dl-model="${escapeHtml(m.id)}">Download</button>`
-          }
+          ${actionHtml}
         </div>
       `;
     })
@@ -1213,10 +1445,17 @@ function renderModelsWorkspace() {
 
   const isRunningExternal = rt.state === "external";
   const isRunningLocal = rt.state === "running";
+  const inspectedStatus = !inspected
+    ? ""
+    : inspected.damaged
+      ? "Needs repair"
+      : inspected.installed
+        ? `${formatBytes(inspected.bytes)} · on this computer`
+        : `${formatBytes(inspected.bytes)} download`;
 
   els.viewModels.innerHTML = `
     <div class="models-main-col">
-      <div class="model-setup-row"><div><strong>Not sure which one?</strong><p class="muted">Keel picks the right model for this computer and sets everything up.</p></div><button id="models-setup-btn" class="btn ${isRunningLocal || isRunningExternal ? "" : "btn-primary "}btn-sm">Set it up for me</button></div>
+      <div class="model-setup-row"><div><strong>Not sure which one?</strong><p class="muted">Keel picks the right model for this computer and sets everything up automatically.</p></div><button id="models-setup-btn" class="btn ${isRunningLocal || isRunningExternal ? "" : "btn-primary "}btn-sm">Set it up for me</button></div>
       <div class="models-search-bar">
         <input id="models-search-in" class="input grow" value="${escapeHtml(appState.modelSearchQuery)}" placeholder="Search models" />
         <div class="models-filter-pills">
@@ -1234,35 +1473,41 @@ function renderModelsWorkspace() {
       </div>
 
       <details class="card">
-        <summary class="import-gguf-toggle">Advanced: add your own model or use Ollama / LM Studio</summary>
+        <summary class="import-gguf-toggle">Other ways to run AI (Ollama, LM Studio, or local file)</summary>
         <div class="row" style="margin-top:8px">
-          <input id="ws-hf-url" class="input grow" placeholder="Hugging Face URL or repo:owner/repo" />
-          <button id="ws-hf-dl" class="btn btn-sm">Download</button>
+          <span class="muted">Quick fill:</span>
+          <button type="button" class="btn btn-sm" data-ext-preset="http://127.0.0.1:11434/v1">Ollama</button>
+          <button type="button" class="btn btn-sm" data-ext-preset="http://127.0.0.1:1234/v1">LM Studio</button>
+          ${isRunningExternal ? '<button type="button" id="ws-ext-clear" class="btn btn-ghost btn-sm">Switch back to built-in AI</button>' : ""}
         </div>
         <div class="row">
-          <input id="ws-local-gguf" class="input grow mono" placeholder="/path/to/model.gguf" />
-          <button id="ws-local-imp" class="btn btn-sm">Import</button>
-        </div>
-        <div class="row">
-          <input id="ws-ext-url" class="input grow mono" value="${escapeHtml(b.config.external_base_url || "")}" placeholder="http://127.0.0.1:8080/v1" />
-          <input id="ws-ext-name" class="input" style="max-width:160px" value="${escapeHtml(b.config.external_model_name || "")}" placeholder="Model name" />
+          <input id="ws-ext-url" class="input grow mono" value="${escapeHtml(b.config.external_base_url || "")}" placeholder="http://127.0.0.1:11434/v1" />
+          <input id="ws-ext-name" class="input" style="max-width:160px" value="${escapeHtml(b.config.external_model_name || "")}" placeholder="Model name (optional)" />
           <button id="ws-ext-use" class="btn btn-primary btn-sm">Connect</button>
         </div>
         <p class="muted" id="ws-ext-notice">${serverDataNotice(b.config.external_base_url || "")}</p>
+        <div class="row">
+          <button id="ws-local-pick" type="button" class="btn btn-sm">Choose file…</button>
+          <input id="ws-local-gguf" class="input grow mono" placeholder="Or paste a local model file path" />
+          <button id="ws-local-imp" class="btn btn-sm">Import</button>
+        </div>
+        <div class="row">
+          <input id="ws-hf-url" class="input grow" placeholder="Or paste a direct Hugging Face model link" />
+          <button id="ws-hf-dl" class="btn btn-sm">Download</button>
+        </div>
       </details>
     </div>
 
     <aside class="models-inspector-col">
       <div>
         <div class="sidebar-section-label">SELECTED</div>
-        <h3 style="margin:6px 0 2px;font-size:17px">${escapeHtml(inspected ? inspected.name : "Local Runtime")}</h3>
-        <div style="font-size:12px;color:var(--muted)">${inspected ? `${formatBytes(inspected.bytes)} download${inspected.installed ? " · on this computer" : ""}` : ""}</div>
+        <h3 style="margin:6px 0 2px;font-size:17px">${escapeHtml(inspected ? inspected.name : "Built-in AI")}</h3>
+        <div style="font-size:12px;color:var(--muted)">${escapeHtml(inspectedStatus)}</div>
       </div>
 
-      <p class="muted">${inspected ? escapeHtml(inspected.detail) : ""}</p>
+      <p class="muted">${inspected ? escapeHtml(inspected.damaged ? inspected.damage_reason || "This model file is incomplete or damaged. Click Repair to download a clean copy." : inspected.detail) : ""}</p>
       <p class="muted">Chat, Work, and Code all use the model you pick here.</p>
       <div class="card">
-        
         <div class="row" style="font-size:12px;color:var(--accent)">
           <span class="status-dot ${rt.state}"></span>
           <span>${isRunningLocal || isRunningExternal ? modelLocation(rt) : "Off"}</span>
@@ -1270,12 +1515,19 @@ function renderModelsWorkspace() {
         <div class="row" style="margin-top:4px">
           ${
             isRunningLocal || isRunningExternal
-              ? `<button id="insp-stop-rt" class="btn btn-sm grow">Turn off</button>`
-              : inspected?.installed
-                ? `<button id="insp-start-rt" class="btn btn-primary btn-sm grow">Start</button>`
-                : ""
+              ? `<button id="insp-stop-rt" class="btn btn-sm grow" ${anyBusy ? "disabled" : ""}>Turn off</button>`
+              : inspected?.damaged
+                ? `<button id="insp-repair-rt" class="btn btn-primary btn-sm grow" ${anyBusy ? "disabled" : ""}>Repair download</button>`
+                : inspected?.installed
+                  ? `<button id="insp-start-rt" class="btn btn-primary btn-sm grow" ${anyBusy ? "disabled" : ""}>Start</button>`
+                  : ""
           }
         </div>
+        ${
+          inspected && (inspected.installed || inspected.damaged)
+            ? `<button id="insp-delete-model" class="btn btn-ghost btn-sm" ${anyBusy ? "disabled" : ""}>Remove from this computer</button>`
+            : ""
+        }
       </div>
     </aside>
   `;
@@ -1304,49 +1556,99 @@ function renderModelsWorkspace() {
     };
   });
   els.viewModels.querySelectorAll("[data-start-model]").forEach((btn) => {
-    btn.onclick = async () => {
-      await invoke("start_model", { modelId: btn.getAttribute("data-start-model") });
-      await refreshBootstrap();
-      renderAll();
-    };
+    btn.onclick = () => switchToModel(btn.getAttribute("data-start-model"));
   });
   els.viewModels.querySelectorAll("[data-dl-model]").forEach((btn) => {
-    btn.onclick = async () => {
-      await invoke("download_catalog_model", { modelId: btn.getAttribute("data-dl-model") });
-      await refreshBootstrap();
-      renderAll();
+    btn.onclick = () => downloadCatalogModel(btn.getAttribute("data-dl-model"));
+  });
+  els.viewModels.querySelectorAll("[data-repair-model]").forEach((btn) => {
+    btn.onclick = () => downloadCatalogModel(btn.getAttribute("data-repair-model"), { repair: true });
+  });
+  els.viewModels.querySelectorAll("[data-del-model]").forEach((btn) => {
+    btn.onclick = () => removeLocalModel(btn.getAttribute("data-del-model"));
+  });
+  els.viewModels.querySelectorAll("[data-ext-preset]").forEach((btn) => {
+    btn.onclick = () => {
+      const urlInput = document.getElementById("ws-ext-url");
+      urlInput.value = btn.getAttribute("data-ext-preset");
+      document.getElementById("ws-ext-notice").textContent = serverDataNotice(urlInput.value);
     };
   });
 
   document.getElementById("insp-stop-rt")?.addEventListener("click", async () => {
-    await invoke("stop_runtime");
-    await refreshBootstrap();
-    renderAll();
+    try {
+      await invoke("stop_runtime");
+      await refreshBootstrap();
+      renderAll();
+    } catch (err) {
+      showToast(friendlyRuntimeError(err));
+    }
   });
-  document.getElementById("insp-start-rt")?.addEventListener("click", async () => {
-    if (!inspected) return;
-    await invoke("start_model", { modelId: inspected.id });
-    await refreshBootstrap();
-    renderAll();
+  document.getElementById("insp-start-rt")?.addEventListener("click", () => {
+    if (inspected) switchToModel(inspected.id);
+  });
+  document.getElementById("insp-repair-rt")?.addEventListener("click", () => {
+    if (inspected) downloadCatalogModel(inspected.id, { repair: true });
+  });
+  document.getElementById("insp-delete-model")?.addEventListener("click", () => {
+    if (inspected) removeLocalModel(inspected.id);
+  });
+  document.getElementById("ws-ext-clear")?.addEventListener("click", async () => {
+    try {
+      await invoke("clear_external_endpoint");
+      await refreshBootstrap();
+      renderAll();
+      if (modelToWake(appState.bootstrap)) await wakeAssistant();
+    } catch (err) {
+      showToast(friendlyRuntimeError(err));
+    }
   });
 
   document.getElementById("ws-hf-dl").onclick = async () => {
-    await invoke("download_huggingface_gguf", { url: document.getElementById("ws-hf-url").value });
-    await refreshBootstrap();
-    renderAll();
+    try {
+      await invoke("download_huggingface_gguf", { url: document.getElementById("ws-hf-url").value });
+      await refreshBootstrap();
+      renderAll();
+      showToast("Model downloaded.");
+    } catch (err) {
+      showToast(friendlyRuntimeError(err));
+    }
+  };
+  document.getElementById("ws-local-pick").onclick = async () => {
+    try {
+      const picked = await invoke("pick_model_file");
+      if (!picked) return;
+      document.getElementById("ws-local-gguf").value = picked;
+      await invoke("import_local_gguf", { path: picked });
+      await refreshBootstrap();
+      renderAll();
+      showToast("Model added.");
+    } catch (err) {
+      showToast(friendlyRuntimeError(err));
+    }
   };
   document.getElementById("ws-local-imp").onclick = async () => {
-    await invoke("import_local_gguf", { path: document.getElementById("ws-local-gguf").value });
-    await refreshBootstrap();
-    renderAll();
+    try {
+      await invoke("import_local_gguf", { path: document.getElementById("ws-local-gguf").value });
+      await refreshBootstrap();
+      renderAll();
+      showToast("Model added.");
+    } catch (err) {
+      showToast(friendlyRuntimeError(err));
+    }
   };
   document.getElementById("ws-ext-use").onclick = async () => {
-    await invoke("set_external_endpoint", {
-      baseUrl: document.getElementById("ws-ext-url").value,
-      modelName: document.getElementById("ws-ext-name").value || null,
-    });
-    await refreshBootstrap();
-    renderAll();
+    try {
+      await invoke("set_external_endpoint", {
+        baseUrl: document.getElementById("ws-ext-url").value,
+        modelName: document.getElementById("ws-ext-name").value || null,
+      });
+      await refreshBootstrap();
+      renderAll();
+      showToast("Connected.");
+    } catch (err) {
+      showToast(friendlyRuntimeError(err));
+    }
   };
   document.getElementById("ws-ext-url").oninput = (event) => {
     document.getElementById("ws-ext-notice").textContent = serverDataNotice(event.target.value);
@@ -1390,9 +1692,9 @@ function renderConnectorsWorkspace() {
         <div style="font-size:12.5px;color:var(--muted)">Keel can read and analyse the CSV files in your folder.</div>
       </div>
 
-      <div class="card">
-        <strong>Advanced: add a tool server (MCP)</strong>
-        <div class="row">
+      <details class="card">
+        <summary class="import-gguf-toggle">Developer: add a custom tool (MCP)</summary>
+        <div class="row" style="margin-top:8px">
           <input id="mcp-name" class="input" placeholder="name (e.g. filesystem)" />
           <input id="mcp-cmd" class="input mono" placeholder="command (e.g. npx)" />
         </div>
@@ -1404,7 +1706,7 @@ function renderConnectorsWorkspace() {
           </select>
           <button id="mcp-add-btn" class="btn btn-primary btn-sm">Add</button>
         </div>
-      </div>
+      </details>
 
       ${serversHtml}
     </div>
@@ -1412,27 +1714,35 @@ function renderConnectorsWorkspace() {
 
   document.getElementById("conn-pick-ws").onclick = () => els.workspacePillBtn.click();
   document.getElementById("mcp-add-btn").onclick = async () => {
-    const args = document.getElementById("mcp-args").value.trim().split(/\s+/).filter(Boolean);
-    await invoke("save_mcp_server", {
-      input: {
-        name: document.getElementById("mcp-name").value,
-        command: document.getElementById("mcp-cmd").value,
-        args,
-        scope: document.getElementById("mcp-scope").value,
-        workspace_path: appState.workspacePath,
-      },
-    });
-    await refreshBootstrap();
-    renderConnectorsWorkspace();
-  };
-  els.viewConnectors.querySelectorAll("[data-rm-mcp]").forEach((btn) => {
-    btn.onclick = async () => {
-      await invoke("remove_mcp_server", {
-        name: btn.getAttribute("data-rm-mcp"),
-        workspacePath: appState.workspacePath,
+    try {
+      const args = document.getElementById("mcp-args").value.trim().split(/\s+/).filter(Boolean);
+      await invoke("save_mcp_server", {
+        input: {
+          name: document.getElementById("mcp-name").value,
+          command: document.getElementById("mcp-cmd").value,
+          args,
+          scope: document.getElementById("mcp-scope").value,
+          workspace_path: appState.workspacePath,
+        },
       });
       await refreshBootstrap();
       renderConnectorsWorkspace();
+    } catch (err) {
+      showToast(friendlyRuntimeError(err));
+    }
+  };
+  els.viewConnectors.querySelectorAll("[data-rm-mcp]").forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        await invoke("remove_mcp_server", {
+          name: btn.getAttribute("data-rm-mcp"),
+          workspacePath: appState.workspacePath,
+        });
+        await refreshBootstrap();
+        renderConnectorsWorkspace();
+      } catch (err) {
+        showToast(friendlyRuntimeError(err));
+      }
     };
   });
 }
@@ -1676,13 +1986,18 @@ function openCustomizeModal() {
     const card = document.createElement("div");
     card.className = "card";
     card.innerHTML = `
-      <label><strong>Engine for Code mode</strong></label>
-      <select id="cust-harness" class="select-field">${harnessOptions}</select>
       <label><strong>Things Keel should always know</strong></label>
       <textarea id="cust-inst" class="textarea-field" rows="3">${escapeHtml(b.config.custom_instructions)}</textarea>
       <label class="row"><input id="cust-auto" type="checkbox" ${b.config.auto_apply_edits ? "checked" : ""} /> Apply file changes without asking me first</label>
-      <label><strong>Advanced: use your own llama-server program</strong></label>
-      <input id="cust-llama" class="input mono" value="${escapeHtml(b.config.llama_server_path || "")}" placeholder="/path/to/llama-server" />
+      <details class="advanced-drawer">
+        <summary class="import-gguf-toggle">Developer options</summary>
+        <div class="advanced-drawer-body">
+          <label><strong>Engine for Code mode</strong></label>
+          <select id="cust-harness" class="select-field">${harnessOptions}</select>
+          <label><strong>Custom local engine path</strong></label>
+          <input id="cust-llama" class="input mono" value="${escapeHtml(b.config.llama_server_path || "")}" placeholder="Leave blank to use Keel's built-in engine" />
+        </div>
+      </details>
       <div class="row">
         <button id="cust-reset-welcome" type="button" class="btn btn-ghost btn-sm">Show the welcome screen again</button>
         <div class="spacer"></div>
@@ -1751,12 +2066,18 @@ function wireUi() {
     appState.pendingDocuments.push(...documents); saveDraft(); renderAttachmentChips();
   };
   document.addEventListener("click", (event) => {
+    if (appState.modelSwitcherOpen && !event.target.closest(".model-pill-wrap")) {
+      closeModelSwitcher();
+    }
     const link = event.target.closest("[data-external-link]");
     if (link) { event.preventDefault(); invoke("open_external_link", { url: link.dataset.externalLink }).catch((error) => showToast(String(error))); }
   });
   document.addEventListener("keydown", (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); document.getElementById("thread-search").focus(); }
-    if (event.key === "Escape") closeModal();
+    if (event.key === "Escape") {
+      closeModelSwitcher();
+      closeModal();
+    }
     if (event.key === "Tab" && !els.modalBackdrop.classList.contains("hidden")) {
       const focusable = [...els.modalBackdrop.querySelectorAll("button, input, textarea, select, a[href]")].filter((el) => !el.disabled && el.getClientRects().length);
       const first = focusable[0], last = focusable[focusable.length - 1];
@@ -1766,7 +2087,7 @@ function wireUi() {
   });
 
   document.querySelectorAll(".mode-nav-item").forEach((btn) => {
-    btn.onclick = () => setActiveView(btn.getAttribute("data-view"));
+    btn.onclick = () => { closeModelSwitcher(); setActiveView(btn.getAttribute("data-view")); };
   });
 
   document.querySelectorAll("[data-viewer-tab]").forEach((tab) => {
@@ -1776,13 +2097,24 @@ function wireUi() {
     };
   });
 
-  els.modelPillBtn.onclick = () => {
-    const rt = appState.bootstrap.runtime;
-    if (welcome.status().paused) welcome.show();
-    else if (isRuntimeLive(rt) || appState.waking) setActiveView("models");
-    else if (modelToWake(appState.bootstrap)) wakeAssistant();
-    else if (!appState.bootstrap.models.some((m) => m.installed)) welcome.show();
-    else setActiveView("models");
+  els.modelPillBtn.onclick = (event) => {
+    event.stopPropagation();
+    const b = appState.bootstrap;
+    if (!b) return;
+    if (welcome.status().paused) {
+      closeModelSwitcher();
+      welcome.show();
+      return;
+    }
+    const hasAnyLocal = b.models.some((m) => m.installed || m.damaged);
+    if (!isRuntimeLive(b.runtime) && !hasAnyLocal && !appState.waking) {
+      closeModelSwitcher();
+      welcome.show();
+      return;
+    }
+    appState.modelSwitcherOpen = !appState.modelSwitcherOpen;
+    els.modelPillBtn.setAttribute("aria-expanded", String(appState.modelSwitcherOpen));
+    renderModelSwitcher();
   };
   document.getElementById("open-customize-btn").onclick = openCustomizeModal;
   els.harnessPillBtn.onclick = openCustomizeModal;
@@ -1874,7 +2206,7 @@ function wireUi() {
 }
 
 window.addEventListener("unhandledrejection", (event) => {
-  showToast(String(event.reason));
+  showToast(friendlyRuntimeError(event.reason));
   event.preventDefault();
 });
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assistantStatus, createProgressTracker, formatEta, formatSpeed, friendlySetupError, isFirstRun, modelLocation, modelToWake, serverDataNotice, stepStates } from "../onboarding.js";
+import { assistantStatus, createProgressTracker, formatEta, formatSpeed, friendlyRuntimeError, friendlySetupError, isFirstRun, modelLocation, modelTierLabel, modelToWake, serverDataNotice, stepStates } from "../onboarding.js";
 
 const MB = 1024 * 1024;
 
@@ -108,4 +108,40 @@ test("modelLocation and serverDataNotice distinguish on-device, local server, an
   assert.equal(modelLocation({ state: "external", base_url: "not-a-url" }), "External model server");
   assert.match(serverDataNotice("http://127.0.0.1:11434/v1"), /on this computer/);
   assert.match(serverDataNotice("https://models.example.com/v1"), /server you connect here/);
+});
+
+test("friendlyRuntimeError strips raw HTTP endpoints, ports, and engine jargon", () => {
+  const raw = "Runtime error: Could not reach model endpoint http://127.0.0.1:18180/v1/chat/completions";
+  const cleaned = friendlyRuntimeError(raw);
+  assert.doesNotMatch(cleaned, /127\.0\.0\.1|18180|\/v1\/chat\/completions|Runtime error/i);
+  assert.match(cleaned, /stopped responding/);
+
+  const runner = friendlyRuntimeError("Model runner exited (exit status: 1) llama-server");
+  assert.doesNotMatch(runner, /llama-server|exit status/i);
+  assert.match(runner, /lighter model/);
+
+  const oom = friendlyRuntimeError("ggml: failed to allocate memory (out of memory)");
+  assert.match(oom, /enough free memory/);
+
+  const lib = "Keel's engine needs a system library this computer doesn't have yet (libssl.so.3). Open a terminal, run: sudo dnf install openssl3-libs — then press Try again.";
+  assert.equal(friendlyRuntimeError(lib), lib);
+});
+
+test("modelToWake skips damaged models and recovers from error state", () => {
+  const models = [
+    { id: "bonsai-9b", installed: false, damaged: true, tier: "balanced" },
+    { id: "bonsai-4b", installed: true, damaged: false, tier: "fast" },
+  ];
+  assert.equal(
+    modelToWake({ runtime: { state: "error" }, config: { selected_model_id: "bonsai-9b" }, models }),
+    "bonsai-4b",
+  );
+  assert.equal(
+    modelToWake({ runtime: { state: "stopped" }, config: { selected_model_id: "bonsai-9b" }, models: [models[0]] }),
+    null,
+  );
+  assert.equal(modelTierLabel({ tier: "fast" }), "Fast");
+  assert.equal(modelTierLabel({ tier: "balanced" }), "Recommended");
+  assert.equal(modelTierLabel({ tier: "desktop" }), "Most capable");
+  assert.equal(modelTierLabel({ tier: "balanced", damaged: true }), "Needs repair");
 });

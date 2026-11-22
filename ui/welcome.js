@@ -2,7 +2,7 @@
 // progress view while the assistant downloads, and never blocks the rest of the app.
 import { escapeHtml } from "./markdown.js";
 import { formatBytes } from "./state.js";
-import { createProgressTracker, formatEta, formatSpeed, friendlySetupError, serverDataNotice, stepStates } from "./onboarding.js";
+import { createProgressTracker, formatEta, formatSpeed, friendlyRuntimeError, friendlySetupError, serverDataNotice, stepStates } from "./onboarding.js";
 
 export function createWelcome(api) {
   const { invoke, root, toast } = api;
@@ -146,12 +146,16 @@ export function createWelcome(api) {
   function renderExisting() {
     body.innerHTML = `
       <div class="welcome-eyebrow">USE WHAT YOU HAVE</div>
-      <h1 class="welcome-headline">Connect your AI server.</h1>
-      <p class="welcome-sub">Works with Ollama, LM Studio, or anything that speaks the OpenAI format. Nothing is downloaded.</p>
-      <label class="welcome-label" for="setup-url">Server address</label>
+      <h1 class="welcome-headline">Connect Ollama or LM Studio.</h1>
+      <p class="welcome-sub">Already running Ollama or LM Studio on this computer? Pick it below — nothing extra is downloaded.</p>
+      <div class="row" style="margin-top:4px">
+        <button type="button" class="btn btn-sm" data-preset-url="http://127.0.0.1:11434/v1">Ollama</button>
+        <button type="button" class="btn btn-sm" data-preset-url="http://127.0.0.1:1234/v1">LM Studio</button>
+      </div>
+      <label class="welcome-label" for="setup-url">App address</label>
       <input id="setup-url" class="input mono" value="http://127.0.0.1:11434/v1" />
       <label class="welcome-label" for="setup-model">Model name (optional)</label>
-      <input id="setup-model" class="input" placeholder="Use the server's first model" />
+      <input id="setup-model" class="input" placeholder="Use the first available model" />
       <p class="welcome-sub" id="welcome-server-notice">${serverDataNotice("http://127.0.0.1:11434/v1")}</p>
       <p id="welcome-existing-error" class="welcome-error" role="alert"></p>
       <div class="welcome-desktop-actions">
@@ -159,6 +163,13 @@ export function createWelcome(api) {
         <button id="welcome-back" class="btn btn-ghost btn-sm" type="button">Back</button>
       </div>`;
     body.querySelector("#welcome-back").onclick = () => { view = "intro"; render(); };
+    body.querySelectorAll("[data-preset-url]").forEach((btn) => {
+      btn.onclick = () => {
+        const input = body.querySelector("#setup-url");
+        input.value = btn.dataset.presetUrl;
+        body.querySelector("#welcome-server-notice").textContent = serverDataNotice(input.value);
+      };
+    });
     body.querySelector("#setup-url").oninput = (event) => {
       body.querySelector("#welcome-server-notice").textContent = serverDataNotice(event.target.value);
     };
@@ -172,7 +183,7 @@ export function createWelcome(api) {
         toast("Connected. Ask your first question.");
         api.ready();
       } catch (failure) {
-        body.querySelector("#welcome-existing-error").textContent = `Couldn't connect: ${String(failure).replace(/^Error:\s*/i, "")}`;
+        body.querySelector("#welcome-existing-error").textContent = friendlyRuntimeError(failure);
         event.target.disabled = false;
       }
     };

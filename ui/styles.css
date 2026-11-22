@@ -1918,3 +1918,155 @@ button:focus:not(:focus-visible) {
   border: 1px solid var(--border);
   border-radius: 8px;
 }
+
+/* Quick model switcher popover & consumer-grade model badges */
+.model-pill-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.model-switcher-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 272px;
+  max-width: 340px;
+  background: var(--sidebar-bg);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  padding: 6px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.52);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.switcher-section-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  padding: 6px 10px 4px;
+}
+
+.switcher-item {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  border-radius: 9px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.switcher-item:hover:not(:disabled) {
+  background: var(--surface-raised);
+}
+
+.switcher-item.active {
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+}
+
+.switcher-item.damaged {
+  color: var(--rust);
+}
+
+.switcher-item-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.switcher-item-main strong {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.switcher-item-sub {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.switcher-check {
+  color: var(--accent);
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.switcher-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 4px;
+}
+
+.model-clean-row.damaged {
+  border-color: color-mix(in srgb, var(--rust) 48%, transparent);
+}
+
+.model-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.model-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+}
+
+.model-badge.live {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.model-badge.warn {
+  color: var(--rust);
+  border-color: color-mix(in srgb, var(--rust) 45%, transparent);
+  background: color-mix(in srgb, var(--rust) 12%, transparent);
+}
+
+.model-dl-track {
+  margin-top: 6px;
+  height: 4px;
+  border-radius: 99px;
+  background: var(--surface-raised);
+  overflow: hidden;
+}
+
+.model-dl-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+
+.advanced-drawer {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.advanced-drawer-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
