@@ -2218,6 +2218,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "hex",
+ "libc",
  "pdf-extract",
  "quick-xml 0.37.5",
  "regex",

@@ -44,6 +44,23 @@ export function createEveryday(api) {
         state().activeProjectId = state().session.project_id; await refresh(); render(); closeModal();
       };
       body.querySelector("#thread-export").onclick = async () => { const path = await invoke("export_thread", { id: thread.id }); if (path) toast(`Saved to ${path}`); };
+      const runtime = state().bootstrap.runtime;
+      if (thread.keel_session_log && thread.workspace_path && runtime.active_model_id) {
+        let endpoint;
+        try { endpoint = new URL(runtime.base_url); } catch { return; }
+        if (endpoint.username || endpoint.password || endpoint.search || endpoint.hash) return;
+        const quote = (text) => `'${String(text).replaceAll("'", "'\\''")}'`;
+        const command = `keel run --safety-mode safe --root ${quote(thread.workspace_path)} --resume ${quote(thread.keel_session_log)} --base-url ${quote(runtime.base_url)} --model ${quote(runtime.active_model_id)}`;
+        const terminal = document.createElement("button");
+        terminal.type = "button";
+        terminal.className = "btn";
+        terminal.textContent = "Copy terminal command";
+        terminal.onclick = async () => {
+          await navigator.clipboard.writeText(command);
+          toast("Copied. Run this command in your terminal to continue the same Keel session.");
+        };
+        body.querySelector("#thread-export").after(terminal);
+      }
     });
   }
 

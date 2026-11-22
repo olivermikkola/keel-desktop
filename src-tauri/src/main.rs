@@ -58,6 +58,7 @@ fn main() {
         active_abort: Arc::new(Mutex::new(None)),
         download_lock: Mutex::new(()),
         setup_pause: Mutex::new(None),
+        active_cli_stop: Mutex::new(None),
     };
 
     let app = tauri::Builder::default()
@@ -116,6 +117,7 @@ fn main() {
             commands::list_workspace_files_cmd,
             commands::read_workspace_file_raw,
             commands::create_session,
+            commands::import_keel_session,
             commands::load_session_cmd,
             commands::delete_session_cmd,
             commands::start_model,

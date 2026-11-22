@@ -161,6 +161,7 @@ pub async fn fork_thread(
         session.title.chars().take(100).collect::<String>()
     );
     session.pinned = false;
+    session.keel_session_log = None;
     session.staged_edits.clear();
     for message in &mut session.messages {
         for tool in &mut message.tool_calls {
