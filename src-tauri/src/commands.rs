@@ -1,7 +1,8 @@
 use keel_core::agent::{run_agent_turn, AgentEvent, ApprovalDecision, TurnParams};
 use keel_core::apps::{AppPreset, AppPresetInfo};
 use keel_core::harnesses::{
-    detect_harnesses, run_external_harness, run_keel_cli_turn, HarnessOption, KeelCliTurn,
+    code_execution_boundary, detect_harnesses, run_external_harness, run_keel_cli_turn,
+    CodeExecutionBoundary, HarnessOption, KeelCliTurn,
 };
 use keel_core::mcp::{
     inspect_mcp_servers, load_mcp_configs, save_global_mcp_config, McpConfigFile, McpServerConfig,
@@ -53,6 +54,7 @@ pub struct BootstrapState {
     pub projects: Vec<keel_core::projects::ProjectInfo>,
     pub presets: Vec<AppPresetInfo>,
     pub harnesses: Vec<HarnessOption>,
+    pub code_execution: CodeExecutionBoundary,
     pub mcp_servers: Vec<McpServerStatus>,
 }
 
@@ -87,6 +89,7 @@ pub async fn get_bootstrap_state(
         projects: keel_core::projects::project_info(&state.data_dir),
         presets,
         harnesses,
+        code_execution: code_execution_boundary(),
         mcp_servers,
     })
 }

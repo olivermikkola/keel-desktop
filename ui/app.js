@@ -689,7 +689,11 @@ function renderHeader() {
   els.workspacePillLabel.textContent = appState.workspacePath ? shortWs : "Open folder";
 
   const harness = b.harnesses.find((h) => h.id === b.config.harness_mode);
-  els.harnessPillLabel.textContent = `Engine: ${harness ? harness.name.replace(" Harness", "") : "Keel"}`;
+  const boundaryLimited = b.code_execution && !b.code_execution.can_run_commands;
+  els.harnessPillLabel.textContent = boundaryLimited
+    ? "Engine: Inspect & propose"
+    : `Engine: ${harness ? harness.name.replace(" Harness", "") : "Keel"}`;
+  els.harnessPillBtn.title = b.code_execution?.notice || "Agent harness";
 
   const counts = countStagedEdits(appState.session?.staged_edits ?? []);
   els.diffsPillLabel.textContent =
@@ -739,13 +743,17 @@ function renderChat() {
     const status = appState.waking ? '<p class="empty-status" role="status">Waking up your AI. You can type your question now.</p>' : "";
     const openCli = preset.id === "code" && b.config.harness_mode === "keel-cli"
       ? '<button class="btn btn-ghost" id="empty-open-cli-session">Open CLI session</button>' : "";
+    const boundaryNotice =
+      preset.id === "code" && b.code_execution && !b.code_execution.can_run_commands && b.code_execution.notice
+        ? `<p id="code-boundary-notice" class="empty-status" role="status">${escapeHtml(b.code_execution.notice)}</p>`
+        : "";
     const heading = preset.id === "chat" && !project ? "What can I help with?" : preset.title;
     els.chatScroll.innerHTML = `
       <div class="empty-state">
         ${project ? `<span class="eyebrow">${escapeHtml(project.name)}</span>` : ""}
         <h1>${escapeHtml(heading)}</h1>
         <p>${escapeHtml(preset.summary)}</p>
-        ${action}${openCli}${status}
+        ${action}${openCli}${status}${boundaryNotice}
         <div class="starters-grid">${starters}</div>
       </div>
     `;
