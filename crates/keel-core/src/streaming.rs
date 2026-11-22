@@ -9,13 +9,13 @@ impl SseLines {
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<String>> {
         self.pending.extend_from_slice(bytes);
         if self.pending.len() > 2 * 1024 * 1024 {
-            bail!("Model server sent an oversized streaming event");
+            bail!("Your AI sent a reply chunk that was too large.");
         }
         let mut result = Vec::new();
         while let Some(index) = self.pending.iter().position(|&b| b == b'\n') {
             let line: Vec<_> = self.pending.drain(..=index).collect();
             let line = std::str::from_utf8(&line)
-                .context("Model server sent invalid UTF-8")?
+                .context("Your AI sent an unreadable response.")?
                 .trim();
             if let Some(data) = line.strip_prefix("data:") {
                 if !data.trim().is_empty() {

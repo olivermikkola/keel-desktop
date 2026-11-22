@@ -243,8 +243,9 @@ pub async fn setup_local_ai(
         cfg.llama_server_path = Some(runner.to_string_lossy().into_owned());
         sessions::save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
     }
+    drop(_download);
     let _ = app.emit("keel://setup-stage", "start");
-    crate::commands::start_model(state.clone(), model.id).await
+    crate::commands::start_model(app, state, model.id).await
 }
 
 #[tauri::command]

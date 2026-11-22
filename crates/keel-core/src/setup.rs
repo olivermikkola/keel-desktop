@@ -153,7 +153,7 @@ where
     }
     let catalog = catalog();
     let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
-    let asset = catalog.assets.get(&platform).context("Automatic setup is not available for this platform yet. Install llama.cpp, or connect an existing model server in Models.")?;
+    let asset = catalog.assets.get(&platform).context("Automatic setup is not available for this platform yet. You can still connect Ollama or LM Studio in Models.")?;
     let runtime_root = data.join("runtime");
     std::fs::create_dir_all(&runtime_root)?;
     let archive = runtime_root.join(&asset.name);
@@ -170,8 +170,8 @@ where
     let temporary = runtime_root.join(format!("install-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&temporary)?;
     let prepare = unpack_runtime(&archive, &temporary).and_then(|()| {
-        let runner =
-            locate_server(&temporary, 4).context("Runtime package did not contain llama-server")?;
+        let runner = locate_server(&temporary, 4)
+            .context("The downloaded AI engine package was incomplete. Try again.")?;
         check_runner_starts(&runner)
     });
     if let Err(error) = prepare {
@@ -184,7 +184,7 @@ where
     }
     std::fs::rename(&temporary, &destination)?;
     let _ = std::fs::remove_file(archive);
-    installed_runtime(data).context("Could not locate the installed model runner")
+    installed_runtime(data).context("Could not locate Keel's AI engine after setup. Try again.")
 }
 
 /// Check the destination volume, accounting for bytes retained by a pause.

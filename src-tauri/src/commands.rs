@@ -1,4 +1,6 @@
-use keel_core::agent::{run_agent_turn, AgentEvent, ApprovalDecision, TurnParams};
+use keel_core::agent::{
+    run_agent_turn, AgentEvent, ApprovalDecision, EndpointUnreachable, TurnParams,
+};
 use keel_core::apps::{AppPreset, AppPresetInfo};
 use keel_core::harnesses::{
     code_execution_boundary, detect_harnesses, run_external_harness, run_keel_cli_turn,
@@ -9,10 +11,12 @@ use keel_core::mcp::{
     McpServerStatus, McpToolInfo,
 };
 use keel_core::models::{
-    catalog_download_url, download_gguf, list_models, models_dir, parse_huggingface_gguf_url,
-    CatalogModel,
+    candidate_models_for_auto_start, catalog_download_url, delete_model_file, download_gguf,
+    list_models, models_dir, parse_huggingface_gguf_url, CatalogModel,
 };
-use keel_core::runtime::{probe_openai_models, RuntimeManager, RuntimeStatus};
+use keel_core::runtime::{
+    check_runner_starts, find_llama_server, probe_openai_models, RuntimeManager, RuntimeStatus,
+};
 use keel_core::sessions::{
     delete_session, list_sessions, load_session, save_config, save_session, ChatSession,
     DesktopConfig, SessionSummary, UiMessage,
@@ -303,32 +307,203 @@ pub async fn delete_session_cmd(
     Ok(list_sessions(&state.data_dir))
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelFallbackNotice {
+    pub from_id: String,
+    pub from_name: String,
+    pub to_id: String,
+    pub to_name: String,
+    pub reason: String,
+}
+
+/// Ensures Keel's built-in local AI engine is available, automatically downloading
+/// and verifying the pinned runner when missing on a supported platform.
+async fn resolve_or_install_engine(app: &AppHandle, state: &AppState) -> Result<PathBuf, String> {
+    let explicit_path = state.config.lock().await.llama_server_path.clone();
+
+    if let Some(installed) = keel_core::setup::installed_runtime(&state.data_dir) {
+        match check_runner_starts(&installed) {
+            Ok(()) => {
+                let mut cfg = state.config.lock().await;
+                let next = Some(installed.to_string_lossy().into_owned());
+                if cfg.llama_server_path != next {
+                    cfg.llama_server_path = next;
+                    let _ = save_config(&state.config_dir, &cfg);
+                }
+                return Ok(installed);
+            }
+            Err(error) => {
+                let msg = error.to_string();
+                if msg.contains("needs a system library") {
+                    return Err(msg);
+                }
+            }
+        }
+    }
+
+    if let Some(ref p) = explicit_path {
+        let pb = PathBuf::from(p);
+        if pb.is_file() {
+            if let Ok(()) = check_runner_starts(&pb) {
+                return Ok(pb);
+            }
+        }
+    }
+
+    if let Some(found) = find_llama_server(None) {
+        if check_runner_starts(&found).is_ok() {
+            let mut cfg = state.config.lock().await;
+            cfg.llama_server_path = Some(found.to_string_lossy().into_owned());
+            let _ = save_config(&state.config_dir, &cfg);
+            return Ok(found);
+        }
+    }
+
+    let plan = keel_core::setup::plan(&state.data_dir, explicit_path.as_deref());
+    if plan.runtime_asset.is_some() {
+        let _download = state.download_lock.lock().await;
+        if let Some(installed) = keel_core::setup::installed_runtime(&state.data_dir) {
+            if check_runner_starts(&installed).is_ok() {
+                let mut cfg = state.config.lock().await;
+                cfg.llama_server_path = Some(installed.to_string_lossy().into_owned());
+                let _ = save_config(&state.config_dir, &cfg);
+                return Ok(installed);
+            }
+        }
+        let installed = keel_core::setup::install_runtime(&state.data_dir, |prog| {
+            let _ = app.emit("keel://download-progress", prog);
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        let mut cfg = state.config.lock().await;
+        cfg.llama_server_path = Some(installed.to_string_lossy().into_owned());
+        let _ = save_config(&state.config_dir, &cfg);
+        return Ok(installed);
+    }
+
+    Err("Keel's built-in AI engine isn't available on this computer yet. You can connect Ollama or LM Studio in Models.".to_string())
+}
+
+async fn auto_start_local_model(
+    app: &AppHandle,
+    state: &AppState,
+) -> Result<RuntimeStatus, String> {
+    {
+        let mut rt = state.runtime.lock().await;
+        let current = rt.status();
+        if matches!(current.state.as_str(), "running" | "external") {
+            return Ok(current);
+        }
+    }
+    let cfg_snapshot = state.config.lock().await.clone();
+    let models = list_models(&state.data_dir, &cfg_snapshot.custom_model_paths);
+    let preferred_id = cfg_snapshot.selected_model_id.clone();
+    let preferred = models.iter().find(|m| m.id == preferred_id).cloned();
+    let candidates = candidate_models_for_auto_start(&models, &preferred_id);
+    if candidates.is_empty() {
+        if models.iter().any(|m| m.damaged) {
+            return Err("Your downloaded model looks damaged. Open Models and click Repair to download a clean copy.".to_string());
+        }
+        return Err("Your AI isn't set up yet. Click Set up my AI to get started.".to_string());
+    }
+
+    let engine = resolve_or_install_engine(app, state).await?;
+    let engine_str = engine.to_string_lossy().into_owned();
+    let mut last_error: Option<String> = None;
+
+    for cand in candidates {
+        let Some(path_str) = cand.local_path.as_deref() else {
+            continue;
+        };
+        let mut cfg = state.config.lock().await;
+        let mut rt = state.runtime.lock().await;
+        match rt
+            .start_model(
+                &cand.id,
+                Path::new(path_str),
+                cand.context_size.min(8192),
+                Some(&engine_str),
+            )
+            .await
+        {
+            Ok(status) => {
+                if cand.id != preferred_id {
+                    if let Some(prev) = preferred
+                        .as_ref()
+                        .filter(|p| p.damaged || p.installed || p.local_path.is_some())
+                    {
+                        let reason = prev
+                            .damage_reason
+                            .clone()
+                            .or_else(|| last_error.clone())
+                            .unwrap_or_else(|| "couldn't start on this computer".to_string());
+                        let _ = app.emit(
+                            "keel://model-fallback",
+                            ModelFallbackNotice {
+                                from_id: prev.id.clone(),
+                                from_name: prev.name.clone(),
+                                to_id: cand.id.clone(),
+                                to_name: cand.name.clone(),
+                                reason,
+                            },
+                        );
+                    }
+                }
+                cfg.selected_model_id = cand.id;
+                cfg.external_base_url = None;
+                cfg.external_model_name = None;
+                save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
+                return Ok(status);
+            }
+            Err(error) => {
+                let msg = error.to_string();
+                if msg.contains("needs a system library") {
+                    return Err(msg);
+                }
+                last_error = Some(msg);
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| {
+        "None of your downloaded models could start on this computer. Try a lighter model in Models."
+            .to_string()
+    }))
+}
+
 #[tauri::command]
 pub async fn start_model(
+    app: AppHandle,
     state: State<'_, AppState>,
     model_id: String,
 ) -> Result<RuntimeStatus, String> {
-    let mut cfg = state.config.lock().await;
-    let models = list_models(&state.data_dir, &cfg.custom_model_paths);
+    let cfg_snapshot = state.config.lock().await.clone();
+    let models = list_models(&state.data_dir, &cfg_snapshot.custom_model_paths);
     let model = models
         .into_iter()
         .find(|m| m.id == model_id)
         .ok_or_else(|| format!("Unknown model: {model_id}"))?;
+    if model.damaged {
+        return Err(format!(
+            "{} looks damaged. Click Repair in Models to download a clean copy.",
+            model.name
+        ));
+    }
     let path_str = model
         .local_path
-        .ok_or_else(|| format!("Model `{}` is not installed yet", model.name))?;
+        .ok_or_else(|| format!("{} isn't downloaded yet.", model.name))?;
 
-    if cfg.llama_server_path.is_none() {
-        cfg.llama_server_path = keel_core::setup::installed_runtime(&state.data_dir)
-            .map(|p| p.to_string_lossy().into_owned());
-    }
+    let engine = resolve_or_install_engine(&app, &state).await?;
+    let engine_str = engine.to_string_lossy().into_owned();
+
+    let mut cfg = state.config.lock().await;
     let mut rt = state.runtime.lock().await;
     let status = rt
         .start_model(
             &model.id,
             Path::new(&path_str),
             model.context_size.min(8192),
-            cfg.llama_server_path.as_deref(),
+            Some(&engine_str),
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -338,6 +513,14 @@ pub async fn start_model(
     cfg.external_model_name = None;
     save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
     Ok(status)
+}
+
+#[tauri::command]
+pub async fn auto_start_model(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<RuntimeStatus, String> {
+    auto_start_local_model(&app, &state).await
 }
 
 #[tauri::command]
@@ -358,9 +541,10 @@ pub async fn set_external_endpoint(
     base_url: String,
     model_name: Option<String>,
 ) -> Result<RuntimeStatus, String> {
-    let probed = probe_openai_models(&base_url)
-        .await
-        .map_err(|e| format!("Could not connect to model server: {e}"))?;
+    let probed = probe_openai_models(&base_url).await.map_err(|_| {
+        "Couldn't connect. Make sure Ollama or LM Studio is open and running, then try again."
+            .to_string()
+    })?;
     let chosen = model_name
         .filter(|s| !s.trim().is_empty())
         .or_else(|| probed.into_iter().next())
@@ -375,6 +559,11 @@ pub async fn set_external_endpoint(
     cfg.external_model_name = Some(chosen);
     save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
     Ok(status)
+}
+
+#[tauri::command]
+pub async fn clear_external_endpoint(state: State<'_, AppState>) -> Result<RuntimeStatus, String> {
+    stop_runtime(state).await
 }
 
 #[tauri::command]
@@ -395,6 +584,9 @@ pub async fn download_catalog_model(
         .ok_or_else(|| format!("Unknown model: {model_id}"))?;
     let url = catalog_download_url(&model);
     let dest = models_dir(&state.data_dir).join(&model.file_name);
+    if model.damaged && dest.is_file() {
+        let _ = std::fs::remove_file(&dest);
+    }
 
     download_gguf(&url, &dest, model.sha256.as_deref(), &model.id, |prog| {
         let _ = app.emit("keel://download-progress", prog);
@@ -403,6 +595,43 @@ pub async fn download_catalog_model(
     .map_err(|e| e.to_string())?;
 
     Ok(list_models(&state.data_dir, &cfg.custom_model_paths))
+}
+
+#[tauri::command]
+pub async fn delete_model(
+    state: State<'_, AppState>,
+    model_id: String,
+) -> Result<Vec<CatalogModel>, String> {
+    let mut cfg = state.config.lock().await;
+    let mut rt = state.runtime.lock().await;
+    if rt.active_model_id.as_deref() == Some(model_id.as_str()) && rt.is_managed() {
+        rt.stop().await;
+    }
+    delete_model_file(&state.data_dir, &model_id, &mut cfg.custom_model_paths)
+        .map_err(|e| e.to_string())?;
+    save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
+    Ok(list_models(&state.data_dir, &cfg.custom_model_paths))
+}
+
+#[tauri::command]
+pub async fn pick_model_file(app: AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    tokio::task::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_title("Choose a local AI model file")
+            .add_filter("Local AI models", &["gguf"])
+            .blocking_pick_file()
+            .map(|selection| {
+                selection
+                    .into_path()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .map_err(|error| error.to_string())
+            })
+            .transpose()
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -437,8 +666,9 @@ pub async fn import_local_gguf(
 ) -> Result<Vec<CatalogModel>, String> {
     let pb = PathBuf::from(path.trim());
     if !pb.is_file() {
-        return Err(format!("File not found: {}", pb.display()));
+        return Err("That file could not be found.".to_string());
     }
+    keel_core::models::validate_gguf_file(&pb, None)?;
     let file_name = pb
         .file_name()
         .and_then(|n| n.to_str())
@@ -519,7 +749,7 @@ pub async fn send_message(
         }
         cfg.clone()
     };
-    let rt_status = state.runtime.lock().await.status();
+    let mut rt_status = state.runtime.lock().await.status();
     let use_external_harness = cfg.harness_mode != "keel" && session.app_preset == AppPreset::Code;
     let use_keel_cli = use_external_harness && cfg.harness_mode == "keel-cli";
     if session.app_preset != AppPreset::Chat && session.workspace_path.is_none() {
@@ -528,9 +758,14 @@ pub async fn send_message(
     if (!use_external_harness || use_keel_cli)
         && !matches!(rt_status.state.as_str(), "running" | "external")
     {
-        return Err(
-            "Load a model in Models, or connect an existing model server first".to_string(),
-        );
+        if cfg.external_base_url.is_none() {
+            rt_status = auto_start_local_model(&app, &state).await?;
+        } else {
+            return Err(
+                "Couldn't reach your connected AI app. Make sure it is running, or switch back to Keel's built-in AI in Models."
+                    .to_string(),
+            );
+        }
     }
     let cli_log = if use_keel_cli {
         if !input.attachments.is_empty() {
@@ -614,8 +849,8 @@ pub async fn send_message(
         return Ok(session);
     }
 
-    let base_url = rt_status.base_url.clone();
-    let model_name = rt_status
+    let mut base_url = rt_status.base_url.clone();
+    let mut model_name = rt_status
         .active_model_id
         .clone()
         .unwrap_or_else(|| cfg.selected_model_id.clone());
@@ -623,7 +858,7 @@ pub async fn send_message(
     let catalog = list_models(&state.data_dir, &cfg.custom_model_paths);
     let context_size = catalog
         .iter()
-        .find(|m| m.id == cfg.selected_model_id)
+        .find(|m| m.id == model_name)
         .map(|m| m.context_size.min(8192) as usize)
         .unwrap_or(8192);
 
@@ -661,111 +896,155 @@ pub async fn send_message(
         .get(&allowance_key)
         .cloned()
         .unwrap_or_default();
-    let approvals_map = Arc::clone(&state.approvals);
-    let app_for_emit = app.clone();
-    let app_for_approval = app.clone();
 
     let mut custom_instructions = keel_core::context::instructions(&cfg, project.as_ref());
     if let (Some(file), Some(root)) = (&input.selected_file, &ws_path) {
         keel_core::tools::confine_path(root, file).map_err(|e| e.to_string())?;
         custom_instructions.push_str(&format!("\n\nThe user currently has `{file}` selected in the workspace inspector. Use it as context when the request refers to this file, and inspect it before editing."));
     }
-    let params = TurnParams {
-        base_url,
-        model_name,
-        context_size,
-        app_preset: session.app_preset,
-        custom_instructions,
-        workspace_root: ws_path,
-        auto_apply_edits: cfg.auto_apply_edits,
-        enable_thinking: input.enable_thinking,
-        history,
-        mcp_config: mcp_cfg,
-        mcp_tools,
-        max_steps: 12,
-    };
 
-    let mut recorder = keel_core::recording::TurnRecorder::new(&state.data_dir, session.clone())
-        .map_err(|e| e.to_string())?;
-    let mut recording_error: Option<String> = None;
+    let mut final_allowed = allowed.clone();
+    let mut final_session = session.clone();
 
-    let handle = tokio::spawn(async move {
-        let res = run_agent_turn(
-            params,
-            &mut allowed,
-            |ev| {
-                if let Err(error) = recorder.record(&ev) {
-                    recording_error = Some(error.to_string());
+    for attempt in 0..2 {
+        let params = TurnParams {
+            base_url: base_url.clone(),
+            model_name: model_name.clone(),
+            context_size,
+            app_preset: session.app_preset,
+            custom_instructions: custom_instructions.clone(),
+            workspace_root: ws_path.clone(),
+            auto_apply_edits: cfg.auto_apply_edits,
+            enable_thinking: input.enable_thinking,
+            history: history.clone(),
+            mcp_config: mcp_cfg.clone(),
+            mcp_tools: mcp_tools.clone(),
+            max_steps: 12,
+        };
+
+        let mut recorder =
+            keel_core::recording::TurnRecorder::new(&state.data_dir, session.clone())
+                .map_err(|e| e.to_string())?;
+        let mut recording_error: Option<String> = None;
+        let mut emitted_any = false;
+        let mut attempt_allowed = allowed.clone();
+        let approvals_map = Arc::clone(&state.approvals);
+        let app_for_emit = app.clone();
+        let app_for_approval = app.clone();
+
+        let handle = tokio::spawn(async move {
+            let res = run_agent_turn(
+                params,
+                &mut attempt_allowed,
+                |ev| {
+                    if matches!(
+                        ev,
+                        AgentEvent::ContentDelta { .. }
+                            | AgentEvent::ThinkingDelta { .. }
+                            | AgentEvent::ToolCallStart { .. }
+                            | AgentEvent::StagedEditAdded { .. }
+                    ) {
+                        emitted_any = true;
+                    }
+                    if let Err(error) = recorder.record(&ev) {
+                        recording_error = Some(error.to_string());
+                    }
+                    if !matches!(ev, AgentEvent::ApprovalRequired { .. }) {
+                        let _ = app_for_emit.emit("keel://agent-event", ev);
+                    }
+                },
+                |req_id, tool, summary, arguments| {
+                    let app = app_for_approval.clone();
+                    let map = Arc::clone(&approvals_map);
+                    async move {
+                        let (tx, rx) = oneshot::channel();
+                        map.lock().await.insert(req_id.clone(), tx);
+                        let _ = app.emit(
+                            "keel://agent-event",
+                            AgentEvent::ApprovalRequired {
+                                id: req_id,
+                                tool,
+                                summary,
+                                arguments,
+                            },
+                        );
+                        rx.await.unwrap_or(ApprovalDecision::Deny)
+                    }
+                },
+            )
+            .await;
+            (res, emitted_any, recording_error, attempt_allowed, recorder)
+        });
+
+        {
+            let mut abort_slot = state.active_abort.lock().await;
+            *abort_slot = Some(handle.abort_handle());
+        }
+
+        let join_res = handle.await;
+        {
+            let mut abort_slot = state.active_abort.lock().await;
+            *abort_slot = None;
+        }
+
+        let (turn_res, emitted_any, recording_error, updated_allowed, mut recorder) = match join_res
+        {
+            Ok(result) => result,
+            Err(error) => {
+                let mut restored =
+                    load_session(&state.data_dir, &input.session_id).map_err(|e| e.to_string())?;
+                if let Some(message) = restored.messages.last_mut() {
+                    message.status = "failed".into();
+                    message.content.push_str(if error.is_cancelled() {
+                        "\n\nReply stopped. Your partial answer and proposed edits have been kept."
+                    } else {
+                        "\n\nThis reply was interrupted. You can try again."
+                    });
                 }
-                if !matches!(ev, AgentEvent::ApprovalRequired { .. }) {
-                    let _ = app_for_emit.emit("keel://agent-event", ev);
-                }
-            },
-            |req_id, tool, summary, arguments| {
-                let app = app_for_approval.clone();
-                let map = Arc::clone(&approvals_map);
-                async move {
-                    let (tx, rx) = oneshot::channel();
-                    map.lock().await.insert(req_id.clone(), tx);
-                    let _ = app.emit(
-                        "keel://agent-event",
-                        AgentEvent::ApprovalRequired {
-                            id: req_id,
-                            tool,
-                            summary,
-                            arguments,
-                        },
-                    );
-                    rx.await.unwrap_or(ApprovalDecision::Deny)
-                }
-            },
-        )
-        .await;
-        if let Err(error) = &res {
-            let _ = recorder.fail(&format!("Could not finish this reply: {error}"));
+                save_session(&state.data_dir, &restored).map_err(|e| e.to_string())?;
+                state.approvals.lock().await.clear();
+                return Ok(restored);
+            }
+        };
+
+        let should_recover = attempt == 0
+            && !emitted_any
+            && cfg.external_base_url.is_none()
+            && turn_res
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.downcast_ref::<EndpointUnreachable>().is_some());
+
+        if should_recover {
+            state.runtime.lock().await.stop().await;
+            if let Ok(recovered) = auto_start_local_model(&app, &state).await {
+                base_url = recovered.base_url;
+                model_name = recovered
+                    .active_model_id
+                    .unwrap_or_else(|| cfg.selected_model_id.clone());
+                allowed = updated_allowed;
+                continue;
+            }
+        }
+
+        if let Err(error) = &turn_res {
+            let _ = recorder.fail(&error.to_string());
         }
         if let Some(error) = recording_error {
             let _ = recorder.fail(&format!("Could not save part of this reply: {error}"));
         }
-        (res, allowed, recorder.session)
-    });
-
-    {
-        let mut abort_slot = state.active_abort.lock().await;
-        *abort_slot = Some(handle.abort_handle());
+        final_allowed = updated_allowed;
+        final_session = recorder.session;
+        break;
     }
 
-    let join_res = handle.await;
-    {
-        let mut abort_slot = state.active_abort.lock().await;
-        *abort_slot = None;
-    }
-
-    let (_turn_res, updated_allowed, recorded_session) = match join_res {
-        Ok(result) => result,
-        Err(error) => {
-            let mut restored =
-                load_session(&state.data_dir, &input.session_id).map_err(|e| e.to_string())?;
-            if let Some(message) = restored.messages.last_mut() {
-                message.status = "failed".into();
-                message.content.push_str(if error.is_cancelled() {
-                    "\n\nReply stopped. Your partial answer and proposed edits have been kept."
-                } else {
-                    "\n\nThis reply was interrupted. You can try again."
-                });
-            }
-            save_session(&state.data_dir, &restored).map_err(|e| e.to_string())?;
-            state.approvals.lock().await.clear();
-            return Ok(restored);
-        }
-    };
     state
         .always_allowed
         .lock()
         .await
-        .insert(allowance_key, updated_allowed);
+        .insert(allowance_key, final_allowed);
     state.approvals.lock().await.clear();
-    session = recorded_session;
+    session = final_session;
     session.updated_at = now_epoch();
     save_session(&state.data_dir, &session).map_err(|e| e.to_string())?;
 

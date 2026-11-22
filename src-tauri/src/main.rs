@@ -33,7 +33,16 @@ fn main() {
         .as_ref()
         .map(|p| p.join("data"))
         .unwrap_or_else(default_data_dir);
-    let cfg = load_config(&config_dir);
+    let mut cfg = load_config(&config_dir);
+    if cfg
+        .external_base_url
+        .as_deref()
+        .is_some_and(keel_core::runtime::is_default_managed_loopback)
+    {
+        cfg.external_base_url = None;
+        cfg.external_model_name = None;
+        let _ = keel_core::sessions::save_config(&config_dir, &cfg);
+    }
     if let Err(error) = keel_core::sessions::recover_interrupted(&data_dir) {
         eprintln!("Could not recover interrupted conversations: {error}");
     }
@@ -121,12 +130,16 @@ fn main() {
             commands::load_session_cmd,
             commands::delete_session_cmd,
             commands::start_model,
+            commands::auto_start_model,
             commands::stop_runtime,
             commands::get_runtime_status,
             commands::set_external_endpoint,
+            commands::clear_external_endpoint,
             commands::download_catalog_model,
+            commands::delete_model,
             commands::download_huggingface_gguf,
             commands::import_local_gguf,
+            commands::pick_model_file,
             commands::send_message,
             commands::stop_generation,
             commands::respond_approval,
