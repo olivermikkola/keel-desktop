@@ -14,10 +14,10 @@ pub async fn pick_documents(app: AppHandle) -> Result<Vec<Document>, String> {
             .dialog()
             .file()
             .add_filter(
-                "Documents",
+                "Documents & Images",
                 &[
                     "pdf", "docx", "txt", "md", "csv", "json", "rs", "py", "js", "ts", "html",
-                    "css", "sql",
+                    "css", "sql", "png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff",
                 ],
             )
             .blocking_pick_files()

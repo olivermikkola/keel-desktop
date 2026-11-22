@@ -27,7 +27,7 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  case 'list_workspace_files_cmd':result=files;break;
  case 'list_image_jobs':result=jobs;break;
  case 'get_runtime_status':result=runtime;break;
- case 'pick_documents':result=[{id:crypto.randomUUID(),name:'brief.txt',kind:'txt',text:'Project Harbor budget is 4800 euros.',truncated:false}];break;
+ case 'pick_documents':result=[{id:crypto.randomUUID(),name:'brief.txt',kind:'txt',text:'Project Harbor budget is 4800 euros.',truncated:false},{id:crypto.randomUUID(),name:'receipt.png',kind:'png',text:'Total due: 480 EUR',truncated:false,image_data_url:''' + json.dumps(PNG) + r'''}];break;
  case 'save_personal_context':cfg.personal_context=args.text;result=null;break;
  case 'save_project':{const old=projects.findIndex(p=>p.id===args.project.id);if(old>=0)projects[old]=args.project;else projects.push(args.project);result=projects;break;}
  case 'get_project':result=projects.find(p=>p.id===args.id);break;
@@ -67,6 +67,8 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  case 'apply_code_worktree': {const s=sessions.find(s=>s.id===args.sessionId);s.applied_code_patch=args.patch;result=s;break;}
  case 'undo_code_worktree': {const s=sessions.find(s=>s.id===args.sessionId);s.applied_code_patch=null;result=s;break;}
  case 'remove_code_worktree': {const s=sessions.find(s=>s.id===args.sessionId);s.code_checkout=null;s.applied_code_patch=null;s.last_code_test=null;result=s;break;}
+ case 'inspect_publish_status': {result={repo_root:'/test/project',branch:'main',head:'abc1234',dirty_files:['brief.md'],remote_name:'origin',remote_url:'https://github.com/example/repo.git',gh_available:true,gh_authenticated:true};break;}
+ case 'publish_code_changes': {result={branch:args.plan.branch_name,commit_sha:'def5678',pushed:args.plan.push_remote,pr_url:args.plan.open_pr?'https://github.com/example/repo/pull/99':null,next_command:null};break;}
  case 'start_image_job': {
  const job={id:crypto.randomUUID(),request:args.request,workspace_path:args.workspacePath,status:'running',artifact_path:null,created_at:Date.now()/1000};jobs.unshift(job);result=job;
  setTimeout(()=>{job.status='succeeded';job.artifact_path='assets/keel-test.png';files.push(job.artifact_path);emit('keel://image-job',job);},250);break;}
@@ -218,12 +220,16 @@ async def main(port):
         await page.screenshot(path=str(OUTPUT / 'chat.png'))
         # Attach a source, inspect it, then save explicit cross-conversation preferences.
         await page.locator('#attach-docs-btn').click()
-        await page.locator('[data-pending-source]').wait_for()
+        await page.locator('[data-pending-source]').first.wait_for()
         await page.locator('#prompt-input').fill('Summarize the attached brief')
         await page.locator('#send-btn').click()
-        await page.locator('[data-message-source]').wait_for()
-        await page.locator('[data-message-source]').click()
+        await page.locator('[data-message-source]').first.wait_for()
+        await page.locator('[data-message-source]').first.click()
         await page.locator('.document-text').get_by_text('Project Harbor budget is 4800 euros.',exact=True).wait_for()
+        await page.locator('#modal-close-btn').click()
+        await page.locator('[data-message-source]').nth(1).click()
+        await page.locator('.modal img.generated-image').wait_for()
+        await page.locator('.document-text').get_by_text('Total due: 480 EUR',exact=True).wait_for()
         await page.locator('#modal-close-btn').click()
         await page.locator('#memory-btn').click()
         await page.locator('#personal-context').fill('I am vegetarian and prefer concise answers.')
@@ -281,6 +287,11 @@ async def main(port):
         await page.locator('.worktree-test-result.passed').get_by_text('exit 0', exact=False).wait_for()
         await page.locator('#code-patch-apply').click()
         await page.locator('#code-patch-undo').wait_for()
+        await page.locator('#publish-pr-btn').click()
+        await page.locator('#pub-commit').fill('Update brief')
+        await page.locator('#pub-submit').click()
+        await page.locator('#pub-status').get_by_text('https://github.com/example/repo/pull/99', exact=False).wait_for()
+        await page.locator('#modal-close-btn').click()
         await page.screenshot(path=str(OUTPUT / 'code.png'))
         await page.locator('#code-patch-undo').click()
         await page.locator('#code-patch-undo').wait_for(state='hidden')

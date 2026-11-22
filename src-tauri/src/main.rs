@@ -139,6 +139,8 @@ fn main() {
             commands::apply_code_worktree,
             commands::undo_code_worktree,
             commands::remove_code_worktree,
+            commands::inspect_publish_status,
+            commands::publish_code_changes,
             commands::save_customize_settings,
             commands::save_mcp_server,
             commands::remove_mcp_server,

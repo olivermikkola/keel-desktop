@@ -196,21 +196,23 @@ pub fn read_workspace_file(
         .extension()
         .and_then(|ext| ext.to_str())
         .unwrap_or_default();
-    let (bytes, extracted_truncated) =
-        if extension.eq_ignore_ascii_case("pdf") || extension.eq_ignore_ascii_case("docx") {
-            let document = crate::documents::import_document(&path)
-                .with_context(|| format!("Failed to extract text from {rel}"))?;
-            (document.text.into_bytes(), document.truncated)
-        } else {
-            let mut bytes = Vec::new();
-            std::fs::File::open(&path)
-                .and_then(|file| {
-                    file.take((MAX_READ_BYTES + 1) as u64)
-                        .read_to_end(&mut bytes)
-                })
-                .with_context(|| format!("Failed to read {rel}"))?;
-            (bytes, false)
-        };
+    let (bytes, extracted_truncated) = if extension.eq_ignore_ascii_case("pdf")
+        || extension.eq_ignore_ascii_case("docx")
+        || crate::documents::is_image_extension(extension)
+    {
+        let document = crate::documents::import_document(&path)
+            .with_context(|| format!("Failed to extract text from {rel}"))?;
+        (document.text.into_bytes(), document.truncated)
+    } else {
+        let mut bytes = Vec::new();
+        std::fs::File::open(&path)
+            .and_then(|file| {
+                file.take((MAX_READ_BYTES + 1) as u64)
+                    .read_to_end(&mut bytes)
+            })
+            .with_context(|| format!("Failed to read {rel}"))?;
+        (bytes, false)
+    };
     let truncated_bytes = extracted_truncated || bytes.len() > MAX_READ_BYTES;
     let slice = &bytes[..bytes.len().min(MAX_READ_BYTES)];
     let text = String::from_utf8_lossy(slice);

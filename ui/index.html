@@ -108,6 +108,9 @@
             <button id="diffs-pill-btn" class="pill-btn pill-subtle" title="Review staged file edits">
               <span id="diffs-pill-label">Local only</span>
             </button>
+            <button id="publish-pr-btn" class="pill-btn pill-subtle hidden" title="Create branch, commit, and publish PR">
+              <span>Publish PR</span>
+            </button>
             <button id="toggle-viewer-btn" class="icon-btn" title="Toggle workspace inspector" aria-label="Toggle workspace inspector">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                 <rect x="3" y="4" width="18" height="16" rx="2"></rect>
@@ -138,7 +141,7 @@
                   placeholder="Ask anything…"
                 ></textarea>
                 <div class="composer-bottom-row">
-                  <button id="attach-docs-btn" class="icon-btn" aria-label="Attach documents" title="Attach PDF, DOCX, text, or CSV">＋</button>
+                  <button id="attach-docs-btn" class="icon-btn" aria-label="Attach documents or images" title="Attach PDF, DOCX, text, CSV, or image (offline OCR)">＋</button>
                   <button type="button" id="composer-ws-chip" class="composer-chip mono" title="Choose workspace folder">Open folder</button>
                   <label class="think-chip" title="Toggle model reasoning tokens">
                     <input id="thinking-toggle" type="checkbox" />

@@ -1248,3 +1248,41 @@ pub async fn remove_code_worktree(
     save_session(&state.data_dir, &session).map_err(|e| e.to_string())?;
     Ok(session)
 }
+
+#[tauri::command]
+pub async fn inspect_publish_status(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<keel_core::publish::PublishStatus, String> {
+    let session = load_session(&state.data_dir, &session_id).map_err(|e| e.to_string())?;
+    let folder = session
+        .workspace_path
+        .ok_or_else(|| "Choose a Git repository folder first".to_string())?;
+    tokio::task::spawn_blocking(move || keel_core::publish::inspect_repo(Path::new(&folder)))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn publish_code_changes(
+    state: State<'_, AppState>,
+    session_id: String,
+    plan: keel_core::publish::PublishPlan,
+    test_passed: Option<bool>,
+) -> Result<keel_core::publish::PublishResult, String> {
+    let _guard = state
+        .turn_lock
+        .try_lock()
+        .map_err(|_| "Wait for the current reply to finish before publishing")?;
+    let session = load_session(&state.data_dir, &session_id).map_err(|e| e.to_string())?;
+    let folder = session
+        .workspace_path
+        .ok_or_else(|| "Choose a Git repository folder first".to_string())?;
+    tokio::task::spawn_blocking(move || {
+        keel_core::publish::publish_changes(Path::new(&folder), &plan, test_passed)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}

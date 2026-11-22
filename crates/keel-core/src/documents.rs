@@ -1,10 +1,13 @@
 //! Document content is imported explicitly and kept with a conversation or project.
 use anyhow::{bail, Context, Result};
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 const MAX_FILE: u64 = 20 * 1024 * 1024;
+const MAX_IMAGE_PREVIEW_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_TEXT_CHARS: usize = 300_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -14,6 +17,78 @@ pub struct Document {
     pub kind: String,
     pub text: String,
     pub truncated: bool,
+    #[serde(default)]
+    pub image_data_url: Option<String>,
+}
+
+pub fn is_image_extension(ext: &str) -> bool {
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "png" | "jpg" | "jpeg" | "webp" | "bmp" | "tif" | "tiff"
+    )
+}
+
+fn image_mime(ext: &str) -> &'static str {
+    match ext.to_ascii_lowercase().as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "tif" | "tiff" => "image/tiff",
+        _ => "application/octet-stream",
+    }
+}
+
+fn find_tesseract() -> Option<PathBuf> {
+    let exe = if cfg!(windows) {
+        "tesseract.exe"
+    } else {
+        "tesseract"
+    };
+    if let Some(path_var) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let cand = dir.join(exe);
+            if cand.is_file() {
+                return Some(cand);
+            }
+        }
+    }
+    for extra in [
+        "/opt/homebrew/bin/tesseract",
+        "/usr/local/bin/tesseract",
+        "/usr/bin/tesseract",
+    ] {
+        let cand = PathBuf::from(extra);
+        if cand.is_file() {
+            return Some(cand);
+        }
+    }
+    None
+}
+
+pub fn ocr_available() -> bool {
+    find_tesseract().is_some()
+}
+
+pub fn extract_image_ocr(path: &Path) -> Result<String> {
+    let bin = find_tesseract().context(
+        "Offline image reading needs Tesseract OCR installed locally (e.g. 'sudo apt install tesseract-ocr' or 'brew install tesseract').",
+    )?;
+    let output = Command::new(bin)
+        .arg(path)
+        .arg("stdout")
+        .args(["--psm", "6"])
+        .output()
+        .context("Could not start local Tesseract OCR")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("Could not read text from this image: {}", stderr.trim());
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if text.is_empty() {
+        bail!("No readable text found in this image.");
+    }
+    Ok(text)
 }
 
 pub fn import_document(path: &Path) -> Result<Document> {
@@ -30,11 +105,19 @@ pub fn import_document(path: &Path) -> Result<Document> {
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_lowercase();
+    let mut image_data_url = None;
     let text = match kind.as_str() {
         "pdf" => pdf_extract::extract_text_from_mem(&bytes).context("Could not read this PDF. Scanned pages need OCR; try a text-based PDF or paste its text.")?,
         "docx" => extract_docx(&bytes)?,
+        ext if is_image_extension(ext) => {
+            if bytes.len() <= MAX_IMAGE_PREVIEW_BYTES {
+                let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                image_data_url = Some(format!("data:{};base64,{encoded}", image_mime(ext)));
+            }
+            extract_image_ocr(path)?
+        }
         "txt" | "md" | "csv" | "tsv" | "json" | "html" | "htm" | "xml" | "yaml" | "yml" | "toml" | "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "css" | "sql" | "log" => String::from_utf8(bytes).context("This file is not UTF-8 text. Export it as UTF-8 and try again.")?,
-        _ => bail!("Attach a PDF, DOCX, text, Markdown, CSV, or source-code file. Images and other binary formats are not supported in Chat yet."),
+        _ => bail!("Attach a PDF, DOCX, text, Markdown, CSV, source-code file, or image (PNG, JPG, WebP, BMP, TIFF)."),
     };
     if text.trim().is_empty() {
         bail!("No readable text found. Scanned PDFs need OCR before they can be attached.");
@@ -51,6 +134,7 @@ pub fn import_document(path: &Path) -> Result<Document> {
         kind,
         text,
         truncated,
+        image_data_url,
     })
 }
 
