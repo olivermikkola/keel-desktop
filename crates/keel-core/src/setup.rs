@@ -1,5 +1,6 @@
 //! Curated, checksum-verified runtime installation. No shell installer is executed.
 use crate::models::{CatalogModel, DownloadProgress};
+use crate::runtime::check_runner_starts;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -39,6 +40,16 @@ pub fn plan(data: &Path, explicit: Option<&str>) -> SetupPlan {
     let memory = system.total_memory();
     let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
     let catalog = catalog();
+    let runtime_asset = catalog.assets.get(&platform).cloned();
+    // Guided setup owns its runner on supported systems. An existing server is
+    // an explicit choice and an arbitrary PATH binary cannot block setup.
+    let runtime_path = installed_runtime(data).or_else(|| {
+        if runtime_asset.is_none() {
+            explicit.map(PathBuf::from).filter(|path| path.is_file())
+        } else {
+            None
+        }
+    });
     let recommended = if memory >= 12 * 1024 * 1024 * 1024 {
         "bonsai-9b"
     } else {
@@ -52,10 +63,8 @@ pub fn plan(data: &Path, explicit: Option<&str>) -> SetupPlan {
     SetupPlan {
         memory_bytes: memory,
         platform: platform.clone(),
-        runtime_asset: catalog.assets.get(&platform).cloned(),
-        runtime_path: crate::runtime::find_llama_server(explicit)
-            .or_else(|| installed_runtime(data))
-            .map(|p| p.to_string_lossy().into_owned()),
+        runtime_asset,
+        runtime_path: runtime_path.map(|p| p.to_string_lossy().into_owned()),
         recommended_model: find(recommended).unwrap(),
         fast_model: if recommended == "bonsai-4b" {
             None
@@ -110,7 +119,7 @@ pub async fn install_runtime<F>(data: &Path, mut progress: F) -> Result<PathBuf>
 where
     F: FnMut(DownloadProgress),
 {
-    if let Some(path) = installed_runtime(data) {
+    if let Some(path) = installed_runtime(data).filter(|path| check_runner_starts(path).is_ok()) {
         return Ok(path);
     }
     let catalog = catalog();
@@ -129,12 +138,15 @@ where
     .await?;
     let temporary = runtime_root.join(format!("install-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&temporary)?;
-    let unpack = unpack_runtime(&archive, &temporary);
-    if let Err(error) = unpack {
+    let prepare = unpack_runtime(&archive, &temporary).and_then(|()| {
+        let runner =
+            locate_server(&temporary, 4).context("Runtime package did not contain llama-server")?;
+        check_runner_starts(&runner)
+    });
+    if let Err(error) = prepare {
         let _ = std::fs::remove_dir_all(&temporary);
         return Err(error);
     }
-    locate_server(&temporary, 4).context("Runtime package did not contain llama-server")?;
     let destination = runtime_root.join(catalog.version);
     if destination.exists() {
         std::fs::remove_dir_all(&destination)?;
@@ -238,9 +250,21 @@ mod tests {
 
     #[test]
     fn real_plan_matches_this_computers_memory() {
-        let dir = std::env::temp_dir();
+        let dir = std::env::temp_dir().join(format!("keel-plan-{}", uuid::Uuid::new_v4()));
         let plan = plan(&dir, None);
         let offered_fast = plan.fast_model.is_some();
         assert_eq!(offered_fast, plan.recommended_model.id != "bonsai-4b");
+    }
+
+    #[test]
+    fn guided_setup_prefers_the_managed_runner_over_an_explicit_path() {
+        let dir = std::env::temp_dir().join(format!("keel-plan-{}", uuid::Uuid::new_v4()));
+        let explicit = std::env::current_exe().unwrap();
+        let setup = plan(&dir, explicit.to_str());
+        if setup.runtime_asset.is_some() {
+            assert!(setup.runtime_path.is_none());
+        } else {
+            assert_eq!(setup.runtime_path.as_deref(), explicit.to_str());
+        }
     }
 }
