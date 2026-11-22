@@ -21,7 +21,7 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  window.__test.calls.push({cmd,args});
  let result;
  switch(cmd) {
- case 'get_bootstrap_state': result={version:'0.1.0',config:cfg, runtime,models:[{id:'test',name:'Test local model',installed:true,quantization:'Q4',bytes:1000000000,detail:'Fast local model',tier:'fast'}],sessions:sessions.map(s=>({...s})),projects,presets,harnesses:[{id:'keel',name:'Keel Harness'}],code_execution:window.__test.codeExecution || {can_run_commands:true,sandbox:'landlock',notice:null},mcp_servers:[]};break;
+ case 'get_bootstrap_state': result={version:'0.1.0',config:cfg, runtime,models:[{id:'test',name:'Test local model',installed:true,damaged:false,quantization:'Q4',bytes:1000000000,detail:'Fast local model',tier:'fast'},{id:'broken-9b',name:'Damaged 9B',installed:false,damaged:true,damage_reason:'This model file is incomplete or damaged.',quantization:'Q2_0',bytes:2556640128,detail:'Balanced model',tier:'balanced'}].filter(m=>m.id!=='broken-9b'||window.__test.includeDamaged),sessions:sessions.map(s=>({...s})),projects,presets,harnesses:[{id:'keel',name:'Keel Harness'}],code_execution:window.__test.codeExecution || {can_run_commands:true,sandbox:'landlock',notice:null},mcp_servers:[]};break;
  case 'create_session': result={id:crypto.randomUUID(),title:'New '+args.preset+' chat',app_preset:args.preset,workspace_path:args.workspacePath,project_id:args.projectId || null,pinned:false,messages:[],staged_edits:[],updated_at:Date.now()/1000};sessions.unshift(result);break;
  case 'load_session_cmd':result=sessions.find(s=>s.id===args.id);break;
  case 'list_workspace_files_cmd':result=files;break;
@@ -42,8 +42,13 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  case 'set_workspace_folder': {
  const s=sessions.find(s=>s.id===args.sessionId); if(s) s.workspace_path=args.path;
  cfg.recent_workspaces=[args.path];result=args.path;break;}
- case 'start_model':runtime={...runtime,state:'running',active_model_id:'test'};result=runtime;break;
- case 'stop_runtime':runtime={...runtime,state:'stopped',active_model_id:null};result=runtime;break;
+ case 'start_model':runtime={...runtime,state:'running',active_model_id:args.modelId || 'test'};cfg.external_base_url=null;cfg.external_model_name=null;result=runtime;break;
+ case 'auto_start_model':runtime={...runtime,state:'running',active_model_id:'test'};result=runtime;break;
+ case 'stop_runtime':runtime={...runtime,state:'stopped',active_model_id:null};cfg.external_base_url=null;cfg.external_model_name=null;result=runtime;break;
+ case 'clear_external_endpoint':runtime={...runtime,state:'stopped',active_model_id:null};cfg.external_base_url=null;cfg.external_model_name=null;result=runtime;break;
+ case 'download_catalog_model':window.__test.includeDamaged=false;result=[{id:'test',name:'Test local model',installed:true,damaged:false,quantization:'Q4',bytes:1000000000,detail:'Fast local model',tier:'fast'}];break;
+ case 'delete_model':window.__test.includeDamaged=false;result=[{id:'test',name:'Test local model',installed:true,damaged:false,quantization:'Q4',bytes:1000000000,detail:'Fast local model',tier:'fast'}];break;
+ case 'pick_model_file':result=null;break;
  case 'set_external_endpoint':cfg.external_base_url=args.baseUrl;cfg.external_model_name=args.modelName || null;runtime={state:'external',active_model_id:null,base_url:args.baseUrl};result=runtime;break;
  case 'connect_image_server':cfg.image_endpoint=args.endpoint;result=['Local checkpoint'];break;
  case 'read_workspace_png':result=''' + json.dumps(PNG) + r''';break;
@@ -91,7 +96,7 @@ core.invoke = async (cmd,args={}) => {
   t.calls.push({cmd,args}); t.emit('keel://setup-stage','runner');
   return new Promise((resolve,reject) => { t.finishSetup=async()=>{ t.setupDone=true; resolve(await base('setup_local_ai',args)); }; t.failSetup=(message)=>reject(message); });
  }
- if (cmd==='start_model' && t.holdStart) {
+ if ((cmd==='start_model' || cmd==='auto_start_model') && t.holdStart) {
   t.calls.push({cmd,args});
   return new Promise((resolve) => { t.releaseStart=async()=>{ resolve(await base(cmd,args)); }; });
  }
@@ -186,7 +191,7 @@ async def first_run(browser, port):
 async def second_launch(browser, port):
     """The model is already installed: opening the app starts it, and a message typed early is not lost."""
     page = await new_page(browser, port, hold_start=True)
-    await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='start_model')")
+    await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='auto_start_model')")
     await page.locator('#model-pill-label').get_by_text('Waking up your AI', exact=False).wait_for()
     await page.locator('#prompt-input').fill('Hello early Keel')
     await page.locator('#send-btn').click()
@@ -211,8 +216,17 @@ async def main(port):
         await page.get_by_role('heading', name='What can I help with?', exact=True).wait_for()
         assert await page.locator('#workspace-pill-btn').is_hidden()
         # The installed model starts by itself on launch; nobody has to find a button.
-        await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='start_model')")
+        await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='auto_start_model')")
         await page.locator('#model-pill-label').get_by_text('Test local model', exact=False).wait_for()
+        # Quick model switcher opens right in place from the top pill.
+        await page.locator('#model-pill-btn').click()
+        await page.locator('#model-switcher-menu').get_by_text('ON THIS COMPUTER', exact=False).wait_for()
+        await page.keyboard.press('Escape')
+        await page.locator('#model-switcher-menu').wait_for(state='hidden')
+        # Settings hides developer options (llama-server / Code engine) by default.
+        await page.locator('#open-customize-btn').click()
+        assert await page.locator('#cust-llama').is_hidden()
+        await page.locator('#modal-close-btn').click()
         await page.locator('#prompt-input').fill('Hello Keel')
         await page.locator('#send-btn').click()
         await page.get_by_text('Ready to help.',exact=True).wait_for()
@@ -319,6 +333,9 @@ async def main(port):
         await page.locator('.library-card').first.wait_for()
         await page.screenshot(path=str(OUTPUT / 'library.png'))
         await page.locator('[data-view=models]').click()
+        models_text = await page.locator('#view-models').inner_text()
+        for jargon in ('GGUF', 'Q4', 'Q2_0', 'OpenAI', 'llama-server'):
+            assert jargon not in models_text, (jargon, models_text)
         await page.locator('#ws-ext-url').evaluate('(el) => { el.closest("details").open = true; }')
         await page.locator('#ws-ext-url').fill('https://models.example.com/v1')
         await page.locator('#ws-ext-name').fill('shared-qwen')
@@ -327,14 +344,29 @@ async def main(port):
         await page.locator('#model-pill-label').get_by_text('shared-qwen · Remote', exact=True).wait_for()
         await page.locator('[data-view=chat]').click()
         await page.locator('#telemetry-left').get_by_text('External model server', exact=False).wait_for()
+        # Switcher lets you jump back to built-in local AI in one click.
+        await page.locator('#model-pill-btn').click()
+        await page.locator('#switcher-use-builtin').click()
+        await page.locator('#model-pill-label').get_by_text('Test local model', exact=False).wait_for()
         await page.locator('[data-view=models]').click()
         await page.locator('#models-setup-btn').click()
+        await page.locator('#welcome-existing').click()
+        existing_text = await page.locator('#welcome-overlay').inner_text()
+        assert 'OpenAI' not in existing_text and 'Ollama' in existing_text and 'LM Studio' in existing_text, existing_text
+        await page.locator('#welcome-back').click()
         await page.locator('#welcome-start').wait_for()
         await page.screenshot(path=str(OUTPUT / 'setup.png'))
         await page.locator('#welcome-start').click()
         await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='setup_local_ai')")
         await page.evaluate("window.__test.finishSetup()")
         await page.locator('#welcome-overlay').wait_for(state='hidden')
+        # Damaged model shows Repair button and recovers cleanly.
+        await page.evaluate("window.__test.includeDamaged = true")
+        await page.locator('[data-view=chat]').click()
+        await page.locator('[data-view=models]').click()
+        await page.locator('[data-repair-model="broken-9b"]').wait_for()
+        await page.locator('[data-repair-model="broken-9b"]').click()
+        await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='download_catalog_model'&&c.args.modelId==='broken-9b')")
         assert not errors,errors
         await first_run(browser, port)
         await second_launch(browser, port)

@@ -87,11 +87,14 @@
                 <line x1="9" y1="4" x2="9" y2="20"></line>
               </svg>
             </button>
-            <button id="model-pill-btn" class="model-pill-center" title="Switch or inspect local models">
-              <span id="runtime-dot" class="status-dot"></span>
-              <span id="model-pill-label">Select model</span>
-              <svg class="pill-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
-            </button>
+            <div class="model-pill-wrap">
+              <button id="model-pill-btn" class="model-pill-center" title="Switch AI model" aria-haspopup="menu" aria-expanded="false">
+                <span id="runtime-dot" class="status-dot"></span>
+                <span id="model-pill-label">Select model</span>
+                <svg class="pill-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+              </button>
+              <div id="model-switcher-menu" class="model-switcher-menu hidden" role="menu" aria-label="Switch AI model"></div>
+            </div>
             <button id="workspace-pill-btn" class="pill-btn pill-subtle" title="Choose workspace folder">
               <svg class="pill-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>

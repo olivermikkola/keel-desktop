@@ -96,12 +96,54 @@ export function friendlySetupError(raw) {
   return { message: "Something went wrong while setting up. Trying again usually fixes it.", retry: true, existing: false, detail };
 }
 
+/** Turns a raw runtime/chat error into plain language without leaking URLs, ports, or engine names. */
+export function friendlyRuntimeError(raw) {
+  const text = String(raw ?? "").replace(/^Error:\s*/i, "").replace(/^Runtime error:\s*/i, "").trim();
+  if (!text) return "Something went wrong while replying. Try sending your message again.";
+  if (/needs a system library/i.test(text)) return text;
+  if (/no space|disk (is )?full|ENOSPC|not enough (disk )?space/i.test(text)) {
+    return "Your disk is full. Free up a few GB, then try again.";
+  }
+  if (/out of memory|enough free memory|failed to allocate|bad_alloc/i.test(text)) {
+    return "This computer doesn't have enough free memory for this model. Try a lighter model in Models.";
+  }
+  if (/damaged|corrupt|incomplete|not a valid local model|sha-?256|checksum/i.test(text)) {
+    return "This model file looks damaged. Open Models and click Repair to download a clean copy.";
+  }
+  if (/127\.0\.0\.1|localhost|\/v1\/chat\/completions|could not reach model endpoint|connection refused|error sending request/i.test(text)) {
+    return "Your AI stopped responding. Try sending your message again, or pick another model.";
+  }
+  if (/llama-server|llama\.cpp|model runner exited|exit status/i.test(text)) {
+    return "This model couldn't start on this computer. Try a lighter model in Models.";
+  }
+  if (/timed? ?out/i.test(text)) {
+    return "Your AI took too long to respond. Try again, or switch to a lighter model in Models.";
+  }
+  return text;
+}
+
+/** Plain-language tier label for a model card; never exposes quant names or file formats. */
+export function modelTierLabel(model) {
+  if (model?.damaged) return "Needs repair";
+  switch (model?.tier) {
+    case "fast": return "Fast";
+    case "balanced": return "Recommended";
+    case "desktop": return "Most capable";
+    case "custom": return "Your file";
+    default: return "";
+  }
+}
+
 /** Which installed model to start automatically when the app opens, or null. */
 export function modelToWake(bootstrap) {
-  if (!bootstrap || bootstrap.runtime?.state !== "stopped" || bootstrap.config?.external_base_url) return null;
+  if (!bootstrap || bootstrap.config?.external_base_url) return null;
+  if (!["stopped", "error"].includes(bootstrap.runtime?.state)) return null;
   const wanted = bootstrap.config?.selected_model_id;
-  const models = bootstrap.models || [];
-  const chosen = models.find((m) => m.id === wanted && m.installed) || models.find((m) => m.installed && m.tier !== "desktop");
+  const healthy = (bootstrap.models || []).filter((m) => m.installed && !m.damaged);
+  const chosen =
+    healthy.find((m) => m.id === wanted) ||
+    healthy.find((m) => m.tier !== "desktop") ||
+    healthy[0];
   return chosen ? chosen.id : null;
 }
 
@@ -110,7 +152,7 @@ export function isFirstRun(storageValue, bootstrap) {
   if (storageValue === "1") return false;
   if (!bootstrap) return true;
   if (["running", "external"].includes(bootstrap.runtime?.state)) return false;
-  return !(bootstrap.models || []).some((m) => m.installed);
+  return !(bootstrap.models || []).some((m) => m.installed && !m.damaged);
 }
 
 export function modelLocation(runtime) {
