@@ -37,8 +37,11 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  case 'list_library':result=files.map(path=>({id:path,name:path,path,kind:path.split('.').pop(),workspace_path:'/test/project',project_id:projects[0]?.id || null,updated_at:Date.now()/1000}));break;
  case 'get_setup_plan':result={memory_bytes:17179869184,runtime_path:null,runtime_asset:{bytes:20000000},recommended_model:{id:'test',name:'Recommended model',detail:'A balanced local assistant',bytes:1000000000}};break;
  case 'setup_local_ai':runtime={...runtime,state:'running',active_model_id:'test'};result=runtime;break;
- case 'pick_workspace_folder':result='/test/project';break;
- case 'set_workspace_folder':cfg.recent_workspaces=['/test/project'];result='/test/project';break;
+ case 'pick_workspace_folder':result=window.__test.cancelPicker ? null : '/test/project';break;
+ case 'prepare_sample_workspace':result='/test/Sample Work';break;
+ case 'set_workspace_folder': {
+ const s=sessions.find(s=>s.id===args.sessionId); if(s) s.workspace_path=args.path;
+ cfg.recent_workspaces=[args.path];result=args.path;break;}
  case 'start_model':runtime={...runtime,state:'running',active_model_id:'test'};result=runtime;break;
  case 'stop_runtime':runtime={...runtime,state:'stopped',active_model_id:null};result=runtime;break;
  case 'connect_image_server':cfg.image_endpoint=args.endpoint;result=['Local checkpoint'];break;
@@ -237,10 +240,18 @@ async def main(port):
 
         await page.locator('[data-view=work]').click()
         await page.get_by_role('heading',name='Work',exact=True).wait_for()
-        await page.locator('#workspace-pill-btn').click()
+        await page.locator('#empty-open-folder').wait_for()
+        await page.screenshot(path=str(OUTPUT / 'work-folder-first.png'))
+        await page.evaluate("window.__test.cancelPicker = true")
         await page.locator('#prompt-input').fill('Make a project brief')
         await page.locator('#send-btn').click()
+        await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='pick_workspace_folder')")
+        assert await page.locator('#prompt-input').input_value() == 'Make a project brief'
+        assert await page.evaluate("!window.__test.calls.some(c=>c.cmd==='send_message' && c.args.input.prompt==='Make a project brief')")
+        await page.evaluate("window.__test.cancelPicker = false")
+        await page.locator('#send-btn').click()
         await page.locator('[data-edit-approve]').wait_for()
+        assert await page.evaluate("window.__test.calls.filter(c=>c.cmd==='send_message' && c.args.input.prompt==='Make a project brief' && c.args.input.workspace_path==='/test/project').length === 1")
         await page.screenshot(path=str(OUTPUT / 'work.png'))
         await page.locator('[data-edit-approve]').click()
         await page.get_by_text('Approved · written to workspace',exact=True).wait_for(state='attached')
@@ -287,6 +298,12 @@ async def main(port):
         assert not errors,errors
         await first_run(browser, port)
         await second_launch(browser, port)
+        sample = await new_page(browser, port)
+        await sample.locator('[data-view=work]').click()
+        await sample.get_by_role('button', name='Try with sample files').click()
+        await sample.locator('#workspace-pill-label').get_by_text('Sample Work').wait_for()
+        assert await sample.evaluate("window.__test.calls.some(c=>c.cmd==='set_workspace_folder' && c.args.path==='/test/Sample Work' && c.args.sessionId)")
+        await sample.close()
         print('PASS: first-run welcome and setup (progress, queued first question, error and skip), launch wake-up, attachments, source preview, saved preferences, projects, thread rename/pin/search, Chat/Work/Code, file approval, Library, Images, safe HTML previews; no browser errors.')
         await browser.close()
 
