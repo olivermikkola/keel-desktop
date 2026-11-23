@@ -186,8 +186,10 @@ pub fn prepare_turn(case: &EvalCase) -> (Vec<ChatTurnMessage>, String) {
             (crate::context::history(&session, None, 8192), String::new())
         }
         EvalSetup::SavedPreference => {
-            let mut config = DesktopConfig::default();
-            config.personal_context = SAVED_PREFERENCE_CONTEXT.into();
+            let config = DesktopConfig {
+                personal_context: SAVED_PREFERENCE_CONTEXT.into(),
+                ..Default::default()
+            };
             let session = ChatSession {
                 id: "fixture".into(),
                 title: "Preference".into(),
@@ -413,7 +415,7 @@ mod tests {
             is_error: true,
             edit_id: None,
         };
-        assert!(grade_csv_total("The total is 100.", &[ok_log.clone()]));
+        assert!(grade_csv_total("The total is 100.", std::slice::from_ref(&ok_log)));
         assert!(!grade_csv_total("The total is 100.", &[bad_log]));
         assert!(!grade_csv_total("The total is 99.", &[ok_log]));
         assert!(!grade_csv_total("The total is 100.", &[]));
