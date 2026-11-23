@@ -1399,7 +1399,7 @@ mod tests {
             None => std::env::remove_var("USERPROFILE"),
         }
         assert!(
-            exported.starts_with(&fake_home.join(".keel").join("sessions")),
+            exported.starts_with(fake_home.join(".keel").join("sessions")),
             "exported={exported:?} fake_home={fake_home:?}"
         );
         assert_eq!(
