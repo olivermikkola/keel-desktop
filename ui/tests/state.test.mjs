@@ -11,6 +11,7 @@ import {
   filterModels,
   formatBytes,
   formatRelativeTime,
+  modelFitLabel,
   normalizeAppearance,
   parseDiffLines,
   shortPath,
@@ -75,7 +76,7 @@ test("formats relative timestamps concisely", () => {
 
 test("normalizes appearance settings", () => {
   assert.deepEqual(ACCENT_MODES, ["sage", "copper", "ice"]);
-  assert.deepEqual(TONE_MODES, ["slate", "ink"]);
+  assert.deepEqual(TONE_MODES, ["slate", "ink", "paper"]);
   assert.deepEqual(DENSITY_MODES, ["cozy", "compact"]);
   assert.deepEqual(APPEARANCE_DEFAULTS, {
     accent: "sage",
@@ -120,4 +121,12 @@ test("parses diff lines and filters models", () => {
   assert.equal(filterModels(models, "", "all").length, 2);
   assert.equal(filterModels(models, "", "installed").length, 1);
   assert.equal(filterModels(models, "qwen", "all")[0].id, "qwen3");
+});
+
+test("estimates model RAM fit clearly", () => {
+  const gb = 1024 * 1024 * 1024;
+  assert.equal(modelFitLabel(2 * gb, 16), "Fits easily");
+  assert.equal(modelFitLabel(4 * gb, 8), "Tight fit");
+  assert.equal(modelFitLabel(8 * gb, 8), "Heavy for your RAM");
+  assert.equal(modelFitLabel(0, 16), "");
 });

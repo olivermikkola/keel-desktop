@@ -91,6 +91,71 @@ pub fn extract_image_ocr(path: &Path) -> Result<String> {
     Ok(text)
 }
 
+struct TempFileGuard(PathBuf);
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+pub fn import_document_base64(name: &str, base64_data: &str) -> Result<Document> {
+    if base64_data.len() > 28 * 1024 * 1024 {
+        bail!("{name} is larger than the 20 MB attachment limit");
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64_data.trim())
+        .context("Could not decode pasted or dropped file data.")?;
+    import_document_bytes(name, &bytes)
+}
+
+pub fn import_document_bytes(name: &str, bytes: &[u8]) -> Result<Document> {
+    if (bytes.len() as u64) > MAX_FILE {
+        bail!("{name} is larger than the 20 MB attachment limit");
+    }
+    let clean_name = Path::new(name)
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "attachment.txt".to_string());
+    let kind = Path::new(&clean_name)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let mut image_data_url = None;
+    let text = match kind.as_str() {
+        "pdf" => pdf_extract::extract_text_from_mem(bytes).context("Could not read this PDF. Scanned pages need OCR; try a text-based PDF or paste its text.")?,
+        "docx" => extract_docx(bytes)?,
+        ext if is_image_extension(ext) => {
+            if bytes.len() <= MAX_IMAGE_PREVIEW_BYTES {
+                let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+                image_data_url = Some(format!("data:{};base64,{encoded}", image_mime(ext)));
+            }
+            let tmp = std::env::temp_dir().join(format!("keel_ocr_{}.{ext}", uuid::Uuid::new_v4()));
+            std::fs::write(&tmp, bytes)?;
+            let _guard = TempFileGuard(tmp.clone());
+            extract_image_ocr(&tmp)?
+        }
+        "txt" | "md" | "csv" | "tsv" | "json" | "html" | "htm" | "xml" | "yaml" | "yml" | "toml" | "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "css" | "sql" | "log" => {
+            String::from_utf8(bytes.to_vec()).context("This file is not UTF-8 text. Export it as UTF-8 and try again.")?
+        }
+        _ => bail!("Attach a PDF, DOCX, text, Markdown, CSV, source-code file, or image (PNG, JPG, WebP, BMP, TIFF)."),
+    };
+    if text.trim().is_empty() {
+        bail!("No readable text found. Scanned PDFs need OCR before they can be attached.");
+    }
+    let truncated = text.chars().count() > MAX_TEXT_CHARS;
+    let text = text.chars().take(MAX_TEXT_CHARS).collect();
+    Ok(Document {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: clean_name,
+        kind,
+        text,
+        truncated,
+        image_data_url,
+    })
+}
+
 pub fn import_document(path: &Path) -> Result<Document> {
     let size = std::fs::metadata(path)?.len();
     if size > MAX_FILE {

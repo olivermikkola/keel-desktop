@@ -1,5 +1,5 @@
 export const ACCENT_MODES = ["sage", "copper", "ice"];
-export const TONE_MODES = ["slate", "ink"];
+export const TONE_MODES = ["slate", "ink", "paper"];
 export const DENSITY_MODES = ["cozy", "compact"];
 export const TEXT_SIZES = ["small", "regular", "large"];
 
@@ -57,6 +57,16 @@ export function filterModels(models = [], query = "", filter = "all") {
     const hay = `${m.name || ""} ${m.id || ""} ${m.detail || ""} ${m.quantization || ""}`.toLowerCase();
     return hay.includes(q);
   });
+}
+
+export function modelFitLabel(modelBytes, systemRamGb) {
+  if (!Number.isFinite(modelBytes) || modelBytes <= 0 || !Number.isFinite(systemRamGb) || systemRamGb <= 0) {
+    return "";
+  }
+  const modelGb = modelBytes / (1024 * 1024 * 1024);
+  if (modelGb * 2.2 <= systemRamGb) return "Fits easily";
+  if (modelGb * 1.4 <= systemRamGb) return "Tight fit";
+  return "Heavy for your RAM";
 }
 
 export function formatBytes(bytes) {
