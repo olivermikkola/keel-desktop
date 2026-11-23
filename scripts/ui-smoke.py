@@ -88,11 +88,6 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
   {id:'stt-whisper-base',capability:'stt',display_name:'Speech to text · Whisper base (unpinned)',min_vram_mib:1024,runner_kind:'audio_stt',download_url:'keel-pack:unpinned/stt-whisper-base',sha256:null,file_name:null,bytes:0,installed:false,runner_path:null},
   {id:'tts-local-en',capability:'tts',display_name:'Text to speech · English (stub)',min_vram_mib:512,runner_kind:'audio_tts',download_url:null,sha256:null,file_name:null,bytes:0,installed:false,runner_path:null}
  ]);break;
- case 'mark_audio_pack_installed': {
-  const packs=window.__audioPacks || [];
-  const pack=packs.find(p=>p.id===args.packId); if(!pack) throw new Error('Unknown audio pack');
-  pack.installed=true; result=structuredClone(pack); break;
- }
  case 'register_audio_pack_runner': {
   const packs=window.__audioPacks || [];
   const pack=packs.find(p=>p.id===args.packId); if(!pack) throw new Error('Unknown audio pack');
@@ -101,16 +96,8 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  case 'register_whisper_cpp_runner': {
   const packs=window.__audioPacks || [];
   const pack=packs.find(p=>p.id===args.packId); if(!pack) throw new Error('Unknown audio pack');
-  if(!args.model) throw new Error('Provide a ggml model path for the Whisper.cpp adapter. No Whisper weights are bundled yet.');
+  if(!args.model && !pack.installed) throw new Error('Download this pack’s model or provide a local model file.');
   pack.installed=true; pack.runner_path=args.command; result=structuredClone(pack); break;
- }
- case 'install_audio_pack_download_stub': {
-  const packs=window.__audioPacks || [];
-  const pack=packs.find(p=>p.id===args.packId); if(!pack) throw new Error('Unknown audio pack');
-  const resolved=(args.url&&String(args.url).trim()) || pack.download_url;
-  if(!resolved) throw new Error('Pack has no download URL yet. Register a local runner path instead, or provide a URL.');
-  if(String(resolved).startsWith('keel-pack:unpinned/') || String(resolved).includes('#unpinned')) throw new Error("Pack download is not pinned yet (no checksummed artifact URL). Register a local or Whisper.cpp runner, or provide a real http(s) URL / archive path.");
-  pack.installed=true; result=structuredClone(pack); break;
  }
  case 'download_audio_pack': {
   const packs=window.__audioPacks || [];
@@ -136,7 +123,7 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  }
  case 'run_audio_stt': {
   const packs=window.__audioPacks || [];
-  if(!packs.some(p=>p.capability==='stt'&&p.installed)) throw new Error('No speech-to-text pack is installed. Download or register an audio pack from Settings before using speech-to-text.');
+  if(!packs.some(p=>p.capability==='stt'&&p.installed&&p.runner_path)) throw new Error('No local runner is registered for speech-to-text.');
   const text='Hello from smoke STT.';
   window.__audioArtifacts = window.__audioArtifacts || [];
   window.__audioArtifacts.unshift({kind:'stt_transcript',path:'/test/data/audio-artifacts/smoke-stt.txt',created_at:Date.now()/1000,text_preview:text});
@@ -144,7 +131,7 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  }
  case 'run_audio_tts': {
   const packs=window.__audioPacks || [];
-  if(!packs.some(p=>p.capability==='tts'&&p.installed)) throw new Error('No text-to-speech pack is installed. Download or register an audio pack from Settings before using text-to-speech.');
+  if(!packs.some(p=>p.capability==='tts'&&p.installed&&p.runner_path)) throw new Error('No local runner is registered for text-to-speech.');
   const out='/test/data/audio-try/try-tts.wav';
   window.__audioArtifacts = window.__audioArtifacts || [];
   window.__audioArtifacts.unshift({kind:'tts_output',path:out,created_at:Date.now()/1000,text_preview:args.text||''});
@@ -303,20 +290,28 @@ async def main(port):
         assert await page.evaluate("document.documentElement.dataset.tone === 'paper'")
         await page.locator('[data-tone-pick="ink"]').click()
         assert await page.evaluate("document.documentElement.dataset.tone === 'ink'")
-        # Audio packs: mark installed → Try STT/TTS happy path → artifacts list.
-        await page.locator('#audio-packs-list').get_by_text('Whisper tiny', exact=False).wait_for()
-        await page.locator('[data-audio-pack="stt-demo-fixture"] [data-audio-mark]').click()
-        await page.locator('[data-audio-pack="stt-demo-fixture"] .muted').filter(
-            has_text='Installed · no runner yet'
-        ).wait_for()
-        await page.locator('[data-audio-pack="tts-local-en"] [data-audio-mark]').click()
-        await page.locator('[data-audio-pack="tts-local-en"] .muted').filter(
-            has_text='Installed · no runner yet'
-        ).wait_for()
+        # Downloaded weights need a runner. Registering one enables the native contract.
+        whisper = page.locator('[data-audio-pack="stt-whisper-tiny-q5"]')
+        await whisper.locator('[data-audio-download]').click()
+        await whisper.locator('[data-audio-remove]').wait_for()
+        await page.locator('#audio-try-stt').click()
+        await page.locator('#audio-try-status').get_by_text('No local runner is registered', exact=False).wait_for()
+        prompts = iter(("whisper-cli", ""))
+        async def answer_whisper_prompt(dialog):
+            await dialog.accept(next(prompts))
+        page.on('dialog', answer_whisper_prompt)
+        await whisper.locator('[data-audio-whisper]').click()
+        await whisper.get_by_text('Runner configured', exact=False).wait_for()
+        page.remove_listener('dialog', answer_whisper_prompt)
+        tts = page.locator('[data-audio-pack="tts-local-en"]')
+        page.once('dialog', lambda dialog: dialog.accept('fixture-tts'))
+        await tts.locator('[data-audio-runner]').click()
+        await tts.get_by_text('Runner configured', exact=False).wait_for()
         await page.locator('#audio-try-stt').click()
         await page.locator('#audio-try-status').get_by_text('STT ok:', exact=False).wait_for()
         await page.locator('#audio-try-tts').click()
         await page.locator('#audio-try-status').get_by_text('TTS ok', exact=False).wait_for()
+        await page.screenshot(path=str(OUTPUT / 'audio-runners.png'))
         await page.locator('#audio-artifacts-list').get_by_text('smoke-stt.txt', exact=False).wait_for()
         await page.locator('#modal-close-btn').click()
         await page.locator('#prompt-input').fill('Hello Keel')

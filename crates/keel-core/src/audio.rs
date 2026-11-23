@@ -43,7 +43,7 @@
 //! }
 //! ```
 //!
-//! TTS argv: `command …args… --model <model> --output_file <path>` with synthesis
+//! TTS argv: `command …args… --model <model> -f <path>` with synthesis
 //! text on **stdin** (Piper's documented contract). Piper also expects
 //! `<model>.onnx.json` beside the ONNX file; the checksummed
 //! [`PIPER_EN_KUSAL_Q8_PACK_ID`] download fetches that sidecar after the weights.
@@ -133,7 +133,7 @@ pub const DEMO_STT_BYTES: u64 = 43;
 /// Raw GitHub URL for the demo STT fixture on this pillar branch (checksum-pinned).
 pub fn demo_stt_download_url() -> String {
     format!(
-        "https://raw.githubusercontent.com/olivermikkola/keel-desktop/cursor/v06-audio-packs-adf8/crates/keel-core/fixtures/audio/{DEMO_STT_FILE}"
+        "https://raw.githubusercontent.com/olivermikkola/keel-desktop/590d132bbf29fca2db9ab59d88d15c01ec1ba865/crates/keel-core/fixtures/audio/{DEMO_STT_FILE}"
     )
 }
 
@@ -191,7 +191,7 @@ pub enum AudioSttAdapterKind {
     Local,
     /// Whisper.cpp CLI: `command …args… -m <model> -f <audio_path>` → stdout.
     WhisperCpp,
-    /// Piper TTS CLI (TTS packs only): stdin text + `--model` / `--output_file`.
+    /// Piper TTS CLI (TTS packs only): stdin text + `--model` / `-f`.
     Piper,
 }
 
@@ -223,7 +223,7 @@ pub enum AudioTtsAdapterKind {
     /// Generic: `command …args… --text <text> --output <path>` (must create the file).
     #[default]
     Local,
-    /// Piper CLI: text on stdin, `command …args… --model <model> --output_file <path>`.
+    /// Piper CLI: text on stdin, `command …args… --model <model> -f <path>`.
     Piper,
 }
 
@@ -240,7 +240,7 @@ impl AudioTtsAdapterKind {
             "" | "local" | "command" | "generic" => Ok(Self::Local),
             "piper" => Ok(Self::Piper),
             other => bail!(
-                "Unknown TTS adapter '{other}'. Use 'local' (command … --text <text> --output <path>) or 'piper' (stdin text; --model / --output_file)."
+                "Unknown TTS adapter '{other}'. Use 'local' (command … --text <text> --output <path>) or 'piper' (stdin text; --model / -f)."
             ),
         }
     }
@@ -254,7 +254,7 @@ impl AudioTtsAdapterKind {
             AudioSttAdapterKind::Local => Ok(Self::Local),
             AudioSttAdapterKind::Piper => Ok(Self::Piper),
             AudioSttAdapterKind::WhisperCpp => bail!(
-                "TTS runner adapter 'whisper_cpp' is not supported. Use 'local' (command … --text <text> --output <path>) or 'piper' (stdin text; --model / --output_file)."
+                "TTS runner adapter 'whisper_cpp' is not supported. Use 'local' (command … --text <text> --output <path>) or 'piper' (stdin text; --model / -f)."
             ),
         }
     }
@@ -700,6 +700,27 @@ pub fn require_installed_audio_pack(
     );
 }
 
+/// Prefer a registered runner over packs that only have downloaded weights.
+pub fn resolve_audio_runner(
+    data_dir: &Path,
+    capability: AudioCapability,
+) -> Result<(AudioPackManifest, AudioRunnerConfig)> {
+    let packs = list_audio_packs();
+    for pack in packs
+        .into_iter()
+        .filter(|pack| pack.capability == capability)
+    {
+        if is_audio_pack_installed(data_dir, &pack.id) {
+            if let Some(runner) = read_audio_runner(data_dir, &pack.id) {
+                return Ok((pack, runner));
+            }
+        }
+    }
+    let pack = require_installed_audio_pack(data_dir, capability)?;
+    let runner = require_runner(data_dir, &pack)?;
+    Ok((pack, runner))
+}
+
 fn write_install_meta(dir: &Path, meta: &AudioInstallMeta) -> Result<()> {
     let raw = serde_json::to_string_pretty(meta).context("serialize install meta")?;
     fs::write(dir.join(INSTALL_META), raw).context("write install meta")?;
@@ -786,17 +807,22 @@ pub fn register_whisper_cpp_runner(
     if command.is_empty() {
         bail!("Provide a whisper.cpp binary path or PATH name (for example whisper-cli).");
     }
-    let model = model.trim();
-    if model.is_empty() {
-        bail!(
-            "Provide a ggml model path for the Whisper.cpp adapter (or set {KEEL_WHISPER_MODEL_ENV} later). No Whisper weights are bundled yet."
-        );
-    }
-    let model_path = Path::new(model);
+    let catalog_model = pack
+        .file_name
+        .as_ref()
+        .map(|name| pack_dir(data_dir, pack_id).join(name));
+    let model_path = if model.trim().is_empty() {
+        catalog_model
+            .as_deref()
+            .filter(|path| path.is_file())
+            .context("Download this pack's model or provide the path to a local model file.")?
+    } else {
+        Path::new(model.trim())
+    };
     if !model_path.is_file() {
         bail!(
             "Whisper.cpp model '{}' does not exist. Pin checksummed weights before registering, or point at a ggml file already on this machine.",
-            model
+            model_path.display()
         );
     }
     let cmd_path = Path::new(command);
@@ -816,7 +842,7 @@ pub fn register_whisper_cpp_runner(
             command: command.to_string(),
             args: args.to_vec(),
             adapter: AudioSttAdapterKind::WhisperCpp,
-            model: Some(model.to_string()),
+            model: Some(model_path.to_string_lossy().into_owned()),
         },
         "whisper_cpp_runner\n",
         AudioInstallMeta::LocalRunner {
@@ -849,17 +875,22 @@ pub fn register_piper_runner(
     if command.is_empty() {
         bail!("Provide a Piper binary path or PATH name (for example piper).");
     }
-    let model = model.trim();
-    if model.is_empty() {
-        bail!(
-            "Provide an ONNX model path for the Piper adapter (or set {KEEL_PIPER_MODEL_ENV} later). No Piper voices are bundled."
-        );
-    }
-    let model_path = Path::new(model);
+    let catalog_model = pack
+        .file_name
+        .as_ref()
+        .map(|name| pack_dir(data_dir, pack_id).join(name));
+    let model_path = if model.trim().is_empty() {
+        catalog_model
+            .as_deref()
+            .filter(|path| path.is_file())
+            .context("Download this pack's model or provide the path to a local model file.")?
+    } else {
+        Path::new(model.trim())
+    };
     if !model_path.is_file() {
         bail!(
             "Piper model '{}' does not exist. Download the checksummed catalog voice or point at an ONNX file already on this machine.",
-            model
+            model_path.display()
         );
     }
     let json_sidecar = PathBuf::from(format!("{}.json", model_path.display()));
@@ -886,7 +917,7 @@ pub fn register_piper_runner(
             command: command.to_string(),
             args: args.to_vec(),
             adapter: AudioSttAdapterKind::Piper,
-            model: Some(model.to_string()),
+            model: Some(model_path.to_string_lossy().into_owned()),
         },
         "piper_runner\n",
         AudioInstallMeta::LocalRunner {
@@ -1237,12 +1268,12 @@ pub fn resolve_piper_model(config: &AudioRunnerConfig) -> Result<String> {
 
 /// Build Piper CLI args after `command` (does not include the binary name).
 ///
-/// Contract: `…args… --model <model> --output_file <path>` with text on stdin.
+/// Contract: `…args… --model <model> -f <path>` with text on stdin.
 pub fn piper_argv(config: &AudioRunnerConfig, model: &str, output_path: &Path) -> Vec<String> {
     let mut argv = config.args.clone();
     argv.push("--model".into());
     argv.push(model.to_string());
-    argv.push("--output_file".into());
+    argv.push("-f".into());
     argv.push(output_path.to_string_lossy().into_owned());
     argv
 }
@@ -1310,13 +1341,19 @@ pub fn stt_adapter_from_runner(config: AudioRunnerConfig) -> Result<Box<dyn SttA
 /// Dispatches to [`LocalCommandSttAdapter`] or [`WhisperCppSttAdapter`] from
 /// `runner.json`'s `adapter` field.
 pub fn run_stt(data_dir: &Path, audio_path: &Path) -> Result<String> {
-    let pack = require_installed_audio_pack(data_dir, AudioCapability::Stt)?;
-    // VRAM prepare / keep-alive unload runs in the Desktop shell via
-    // `prepare_pack_vram` before this entry is called.
-    if !audio_path.exists() {
+    let (pack, runner) = resolve_audio_runner(data_dir, AudioCapability::Stt)?;
+    run_stt_with_runner(data_dir, audio_path, &pack, runner)
+}
+
+pub fn run_stt_with_runner(
+    data_dir: &Path,
+    audio_path: &Path,
+    pack: &AudioPackManifest,
+    mut runner: AudioRunnerConfig,
+) -> Result<String> {
+    if !audio_path.is_file() {
         bail!("Audio file not found: {}", audio_path.display());
     }
-    let mut runner = require_runner(data_dir, &pack)?;
     // Prefer checksummed pack weights when Whisper.cpp has no explicit model path.
     if runner.adapter == AudioSttAdapterKind::WhisperCpp && runner.model.is_none() {
         if let Some(name) = pack.file_name.as_deref() {
@@ -1378,7 +1415,7 @@ impl TtsAdapter for LocalCommandTtsAdapter {
     }
 }
 
-/// Piper TTS adapter: text on stdin, `command …args… --model <model> --output_file <path>`.
+/// Piper TTS adapter: text on stdin, `command …args… --model <model> -f <path>`.
 ///
 /// Fails honestly when the ONNX model (or sibling `.onnx.json`) is missing.
 pub struct PiperTtsAdapter {
@@ -1422,9 +1459,17 @@ pub fn tts_adapter_from_runner(config: AudioRunnerConfig) -> Result<Box<dyn TtsA
 /// Dispatches to [`LocalCommandTtsAdapter`] or [`PiperTtsAdapter`] from
 /// `runner.json`'s `adapter` field.
 pub fn run_tts(data_dir: &Path, text: &str, output_path: &Path) -> Result<()> {
-    let pack = require_installed_audio_pack(data_dir, AudioCapability::Tts)?;
-    // VRAM prepare / keep-alive unload runs in the Desktop shell via
-    // `prepare_pack_vram` before this entry is called.
+    let (pack, runner) = resolve_audio_runner(data_dir, AudioCapability::Tts)?;
+    run_tts_with_runner(data_dir, text, output_path, &pack, runner)
+}
+
+pub fn run_tts_with_runner(
+    data_dir: &Path,
+    text: &str,
+    output_path: &Path,
+    pack: &AudioPackManifest,
+    mut runner: AudioRunnerConfig,
+) -> Result<()> {
     let text = text.trim();
     if text.is_empty() {
         bail!("Provide text to speak.");
@@ -1435,7 +1480,6 @@ pub fn run_tts(data_dir: &Path, text: &str, output_path: &Path) -> Result<()> {
                 .with_context(|| format!("create TTS output dir {}", parent.display()))?;
         }
     }
-    let mut runner = require_runner(data_dir, &pack)?;
     // Prefer checksummed pack weights when Piper has no explicit model path.
     if runner.adapter == AudioSttAdapterKind::Piper && runner.model.is_none() {
         if let Some(name) = pack.file_name.as_deref() {
@@ -1791,6 +1835,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile_dir("stt-runner");
+        mark_audio_pack_installed(&dir, DEMO_STT_PACK_ID).unwrap();
         let script = dir.join("fake-stt.sh");
         fs::write(&script, "#!/bin/sh\nprintf 'hello from stt\\n'\n").unwrap();
         let mut perms = fs::metadata(&script).unwrap().permissions();
@@ -1966,7 +2011,7 @@ mod tests {
                 "--quiet".to_string(),
                 "--model".into(),
                 "/voices/en.onnx".into(),
-                "--output_file".into(),
+                "-f".into(),
                 "/tmp/out.wav".into(),
             ]
         );
@@ -2034,10 +2079,10 @@ mod tests {
         fs::write(&model, b"not-real-onnx").unwrap();
         fs::write(format!("{}.json", model.display()), b"{\"audio\":{}}").unwrap();
         let script = dir.join("fake-piper.sh");
-        // Read stdin, require --model / --output_file, write a tiny wav to output.
+        // Read stdin, require --model / -f, write a tiny wav to output.
         fs::write(
             &script,
-            "#!/bin/sh\nmodel=\"\"\nout=\"\"\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"--model\" ]; then model=\"$2\"; shift 2; continue; fi\n  if [ \"$1\" = \"--output_file\" ]; then out=\"$2\"; shift 2; continue; fi\n  shift\ndone\n[ -n \"$model\" ] && [ -n \"$out\" ] || exit 2\ncat >/dev/null\nprintf 'RIFFPIPE' > \"$out\"\n",
+            "#!/bin/sh\nmodel=\"\"\nout=\"\"\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"--model\" ]; then model=\"$2\"; shift 2; continue; fi\n  if [ \"$1\" = \"-f\" ]; then out=\"$2\"; shift 2; continue; fi\n  shift\ndone\n[ -n \"$model\" ] && [ -n \"$out\" ] || exit 2\ncat >/dev/null\nprintf 'RIFFPIPE' > \"$out\"\n",
         )
         .unwrap();
         let mut perms = fs::metadata(&script).unwrap().permissions();
@@ -2083,7 +2128,7 @@ mod tests {
         let script = dir.join("fake-piper.sh");
         fs::write(
             &script,
-            "#!/bin/sh\n# print model path then write output\nmodel=\"\"\nout=\"\"\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"--model\" ]; then model=\"$2\"; shift 2; continue; fi\n  if [ \"$1\" = \"--output_file\" ]; then out=\"$2\"; shift 2; continue; fi\n  shift\ndone\ncat >/dev/null\nprintf '%s' \"$model\" > \"$out\"\n",
+            "#!/bin/sh\n# print model path then write output\nmodel=\"\"\nout=\"\"\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"--model\" ]; then model=\"$2\"; shift 2; continue; fi\n  if [ \"$1\" = \"-f\" ]; then out=\"$2\"; shift 2; continue; fi\n  shift\ndone\ncat >/dev/null\nprintf '%s' \"$model\" > \"$out\"\n",
         )
         .unwrap();
         let mut perms = fs::metadata(&script).unwrap().permissions();

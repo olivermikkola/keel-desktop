@@ -2579,17 +2579,17 @@ function openCustomizeModal() {
     audioCard.className = "card";
     audioCard.innerHTML = `
       <strong>Speech packs</strong>
-      <p class="muted">Local speech-to-text and text-to-speech only. Mark a pack installed, register a local / Whisper.cpp / Piper runner, download a checksum-pinned fixture (Whisper tiny q5_1 or Piper en_US kusal q8), or record a download URL stub. Whisper base stays unpinned until a real ggml URL + SHA-256 are published — no fake fetch.</p>
+      <p class="muted">Download Whisper or Piper model files, then register the matching local runner. You can also register a runner for a model you already have.</p>
       <div id="audio-packs-list"><p class="muted">Loading…</p></div>
       <strong style="display:block;margin-top:14px">Try STT / TTS</strong>
-      <p class="muted">${escapeHtml(AUDIO_TRY_STT_INPUT_HELP)} ${escapeHtml(AUDIO_TRY_TTS_INPUT_HELP)} Needs an installed pack with a registered runner; missing pack or runner surfaces the same messages as the core runner.</p>
+      <p class="muted">${escapeHtml(AUDIO_TRY_STT_INPUT_HELP)} ${escapeHtml(AUDIO_TRY_TTS_INPUT_HELP)} Register a local runner before trying speech to text or text to speech.</p>
       <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
         <button type="button" class="btn btn-sm btn-ghost" id="audio-try-stt">Try STT</button>
         <button type="button" class="btn btn-sm btn-ghost" id="audio-try-tts">Try TTS</button>
       </div>
       <p id="audio-try-status" class="muted" role="status" style="margin-top:8px"></p>
       <strong style="display:block;margin-top:14px">Recent audio artifacts</strong>
-      <p class="muted">Local STT transcripts and TTS wav copies written under the data directory after a successful run. Paths only — no cloud upload or fake player.</p>
+      <p class="muted">Local transcripts and WAV files from successful runs.</p>
       <div id="audio-artifacts-list"><p class="muted">Loading…</p></div>
       <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
         <button type="button" class="btn btn-sm btn-ghost" id="audio-artifacts-refresh">Refresh</button>
@@ -2711,6 +2711,7 @@ function openCustomizeModal() {
           return;
         }
         slot.innerHTML = packs
+          .filter((pack) => pack.id !== "stt-demo-fixture")
           .map((pack) => {
             const kind =
               pack.capability === "stt"
@@ -2718,11 +2719,12 @@ function openCustomizeModal() {
                 : pack.capability === "tts"
                   ? "Text to speech"
                   : String(pack.capability || "Audio");
-            const status = pack.installed
-              ? pack.runner_path
-                ? `Installed · runner ${pack.runner_path}`
-                : "Installed · no runner yet"
-              : "Not installed";
+            const status = pack.runner_path
+              ? `Runner configured · ${pack.runner_path}`
+              : "Runner required";
+            const downloadable = Boolean(
+              pack.sha256 && pack.download_url && !String(pack.download_url).startsWith("keel-pack:unpinned/"),
+            );
             const id = escapeHtml(pack.id);
             return `
               <div class="row" style="align-items:flex-start;gap:10px;margin-bottom:10px" data-audio-pack="${id}">
@@ -2732,13 +2734,12 @@ function openCustomizeModal() {
                 </div>
                 <div class="row" style="gap:6px;flex-wrap:wrap;justify-content:flex-end">
                   ${
-                    pack.sha256 && pack.download_url && !String(pack.download_url).startsWith("keel-pack:unpinned/")
-                      ? pack.installed
-                        ? `<button type="button" class="btn btn-sm btn-ghost" data-audio-remove="${id}">Remove</button>`
-                        : `<button type="button" class="btn btn-sm btn-ghost" data-audio-download="${id}">Download</button>`
-                      : ""
+                    pack.installed
+                      ? `<button type="button" class="btn btn-sm btn-ghost" data-audio-remove="${id}">Remove</button>`
+                      : downloadable
+                        ? `<button type="button" class="btn btn-sm btn-ghost" data-audio-download="${id}">Download model</button>`
+                        : ""
                   }
-                  <button type="button" class="btn btn-sm btn-ghost" data-audio-mark="${id}">Mark installed</button>
                   <button type="button" class="btn btn-sm btn-ghost" data-audio-runner="${id}">Register runner…</button>
                   ${
                     pack.capability === "stt"
@@ -2747,7 +2748,6 @@ function openCustomizeModal() {
                         ? `<button type="button" class="btn btn-sm btn-ghost" data-audio-piper="${id}">Piper…</button>`
                         : ""
                   }
-                  <button type="button" class="btn btn-sm btn-ghost" data-audio-url="${id}">Download URL…</button>
                 </div>
               </div>
             `;
@@ -2774,19 +2774,6 @@ function openCustomizeModal() {
             try {
               await invoke("remove_audio_pack", { packId: btn.getAttribute("data-audio-remove") });
               showToast("Audio pack removed.");
-              await renderAudioPacks();
-            } catch (err) {
-              showToast(friendlyRuntimeError(err));
-              btn.disabled = false;
-            }
-          });
-        });
-        slot.querySelectorAll("[data-audio-mark]").forEach((btn) => {
-          btn.addEventListener("click", async () => {
-            btn.disabled = true;
-            try {
-              await invoke("mark_audio_pack_installed", { packId: btn.getAttribute("data-audio-mark") });
-              showToast("Pack marked installed.");
               await renderAudioPacks();
             } catch (err) {
               showToast(friendlyRuntimeError(err));
@@ -2832,15 +2819,11 @@ function openCustomizeModal() {
               return;
             }
             const model = window.prompt(
-              "Path to an existing ggml model file on this machine.\nNo weights are bundled; catalog download stays unpinned until a checksummed artifact is pinned.",
+              "Path to a local Whisper model file. Leave blank to use the model downloaded for this pack.",
               "",
             );
             if (model == null) return;
             const trimmedModel = model.trim();
-            if (!trimmedModel) {
-              showToast("Provide a ggml model path.");
-              return;
-            }
             btn.disabled = true;
             try {
               await invoke("register_whisper_cpp_runner", {
@@ -2860,7 +2843,7 @@ function openCustomizeModal() {
           btn.addEventListener("click", async () => {
             const packId = btn.getAttribute("data-audio-piper");
             const command = window.prompt(
-              "Piper binary (absolute path or PATH name, e.g. piper).\nInvokes: command …args… --model <onnx> --output_file <path> with text on stdin.",
+              "Piper binary (absolute path or PATH name, e.g. piper).\nInvokes: command …args… --model <onnx> -f <path> with text on stdin.",
               "piper",
             );
             if (command == null) return;
@@ -2870,15 +2853,11 @@ function openCustomizeModal() {
               return;
             }
             const model = window.prompt(
-              "Path to an existing Piper ONNX voice on this machine.\nRequires a sibling <model>.onnx.json. Download the checksummed tts-piper-en-kusal-q8 pack or point at your own voice.",
+              "Path to a local Piper ONNX voice with its .onnx.json file. Leave blank to use the voice downloaded for this pack.",
               "",
             );
             if (model == null) return;
             const trimmedModel = model.trim();
-            if (!trimmedModel) {
-              showToast("Provide a Piper ONNX model path.");
-              return;
-            }
             btn.disabled = true;
             try {
               await invoke("register_piper_runner", {
@@ -2887,28 +2866,6 @@ function openCustomizeModal() {
                 model: trimmedModel,
               });
               showToast("Piper runner registered.");
-              await renderAudioPacks();
-            } catch (err) {
-              showToast(friendlyRuntimeError(err));
-              btn.disabled = false;
-            }
-          });
-        });
-        slot.querySelectorAll("[data-audio-url]").forEach((btn) => {
-          btn.addEventListener("click", async () => {
-            const packId = btn.getAttribute("data-audio-url");
-            const url = window.prompt(
-              "Download URL stub (https://… or a local archive path). Unpinned catalog placeholders are refused. Bytes are not fetched yet — register a runner to actually run.",
-              "",
-            );
-            if (url == null) return;
-            btn.disabled = true;
-            try {
-              await invoke("install_audio_pack_download_stub", {
-                packId,
-                url: url.trim() || null,
-              });
-              showToast("Download stub recorded.");
               await renderAudioPacks();
             } catch (err) {
               showToast(friendlyRuntimeError(err));
