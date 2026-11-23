@@ -2554,7 +2554,7 @@ function openCustomizeModal() {
     audioCard.className = "card";
     audioCard.innerHTML = `
       <strong>Speech packs</strong>
-      <p class="muted">Local speech-to-text and text-to-speech only. Mark a pack installed, register a local runner binary/script, or record a download URL stub (bytes are not fetched yet).</p>
+      <p class="muted">Local speech-to-text and text-to-speech only. Mark a pack installed, register a local or Whisper.cpp runner, or record a download URL stub. Whisper catalog downloads stay unpinned until a checksummed artifact is published — no fake fetch.</p>
       <div id="audio-packs-list"><p class="muted">Loading…</p></div>
     `;
     body.appendChild(audioCard);
@@ -2589,6 +2589,11 @@ function openCustomizeModal() {
                 <div class="row" style="gap:6px;flex-wrap:wrap;justify-content:flex-end">
                   <button type="button" class="btn btn-sm btn-ghost" data-audio-mark="${id}">Mark installed</button>
                   <button type="button" class="btn btn-sm btn-ghost" data-audio-runner="${id}">Register runner…</button>
+                  ${
+                    pack.capability === "stt"
+                      ? `<button type="button" class="btn btn-sm btn-ghost" data-audio-whisper="${id}">Whisper.cpp…</button>`
+                      : ""
+                  }
                   <button type="button" class="btn btn-sm btn-ghost" data-audio-url="${id}">Download URL…</button>
                 </div>
               </div>
@@ -2613,7 +2618,7 @@ function openCustomizeModal() {
           btn.addEventListener("click", async () => {
             const packId = btn.getAttribute("data-audio-runner");
             const command = window.prompt(
-              "Local binary or script for this pack (absolute path or PATH name).\nSTT: command <audio_path> → transcript on stdout.\nTTS: command --text <text> --output <path>.",
+              "Local binary or script for this pack (absolute path or PATH name).\nSTT: command <audio_path> → transcript on stdout.\nTTS: command --text <text> --output <path>.\nFor Whisper.cpp use the Whisper.cpp… button instead.",
               "",
             );
             if (command == null) return;
@@ -2633,11 +2638,49 @@ function openCustomizeModal() {
             }
           });
         });
+        slot.querySelectorAll("[data-audio-whisper]").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const packId = btn.getAttribute("data-audio-whisper");
+            const command = window.prompt(
+              "Whisper.cpp binary (absolute path or PATH name, e.g. whisper-cli).\nInvokes: command …args… -m <model> -f <audio_path> → transcript on stdout.",
+              "whisper-cli",
+            );
+            if (command == null) return;
+            const trimmedCmd = command.trim();
+            if (!trimmedCmd) {
+              showToast("Provide a Whisper.cpp binary.");
+              return;
+            }
+            const model = window.prompt(
+              "Path to an existing ggml model file on this machine.\nNo weights are bundled; catalog download stays unpinned until a checksummed artifact is pinned.",
+              "",
+            );
+            if (model == null) return;
+            const trimmedModel = model.trim();
+            if (!trimmedModel) {
+              showToast("Provide a ggml model path.");
+              return;
+            }
+            btn.disabled = true;
+            try {
+              await invoke("register_whisper_cpp_runner", {
+                packId,
+                command: trimmedCmd,
+                model: trimmedModel,
+              });
+              showToast("Whisper.cpp runner registered.");
+              await renderAudioPacks();
+            } catch (err) {
+              showToast(friendlyRuntimeError(err));
+              btn.disabled = false;
+            }
+          });
+        });
         slot.querySelectorAll("[data-audio-url]").forEach((btn) => {
           btn.addEventListener("click", async () => {
             const packId = btn.getAttribute("data-audio-url");
             const url = window.prompt(
-              "Download URL stub (https://… or a local archive path). Bytes are not fetched yet — register a runner to actually run.",
+              "Download URL stub (https://… or a local archive path). Unpinned catalog placeholders are refused. Bytes are not fetched yet — register a runner to actually run.",
               "",
             );
             if (url == null) return;

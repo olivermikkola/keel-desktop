@@ -2316,6 +2316,27 @@ pub async fn register_audio_pack_runner(
     .map_err(|e| e.to_string())?
 }
 
+/// Register a Whisper.cpp runner (`-m <model> -f <audio>`) and mark the pack installed.
+///
+/// Requires an existing ggml model file on disk; does not download weights.
+#[tauri::command]
+pub async fn register_whisper_cpp_runner(
+    state: State<'_, AppState>,
+    pack_id: String,
+    command: String,
+    model: String,
+    args: Option<Vec<String>>,
+) -> Result<AudioPackManifest, String> {
+    let data_dir = state.data_dir.clone();
+    let extra = args.unwrap_or_default();
+    tokio::task::spawn_blocking(move || {
+        audio::register_whisper_cpp_runner(&data_dir, &pack_id, &command, &model, &extra)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Record a download-URL stub (no bytes fetched yet) and mark the pack installed.
 #[tauri::command]
 pub async fn install_audio_pack_download_stub(
