@@ -137,6 +137,7 @@ fn main() {
             commands::auto_start_model,
             commands::check_current_model,
             commands::stop_runtime,
+            commands::prepare_pack_vram,
             commands::get_runtime_status,
             commands::set_external_endpoint,
             commands::clear_external_endpoint,

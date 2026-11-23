@@ -38,6 +38,16 @@ impl PackManifest {
     }
 }
 
+/// Parse a runner kind from UI / command input (`text`, `audio_stt`, `audio_tts`).
+pub fn parse_runner_kind(value: &str) -> Result<RunnerKind, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "text" => Ok(RunnerKind::Text),
+        "audio_stt" | "stt" => Ok(RunnerKind::AudioStt),
+        "audio_tts" | "tts" => Ok(RunnerKind::AudioTts),
+        other => Err(format!("Unknown runner kind: {other}")),
+    }
+}
+
 /// Where a pack should run given the current VRAM inventory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PackPlacement {
@@ -192,5 +202,17 @@ mod tests {
         assert!(!should_unload_for_pack(&roomy, &pack, true));
         let cpu_pack = PackManifest::new("text.cpu", 0, RunnerKind::Text);
         assert!(!should_unload_for_pack(&tight, &cpu_pack, true));
+    }
+
+    #[test]
+    fn parses_runner_kind_aliases() {
+        assert_eq!(parse_runner_kind("text").unwrap(), RunnerKind::Text);
+        assert_eq!(
+            parse_runner_kind("audio_stt").unwrap(),
+            RunnerKind::AudioStt
+        );
+        assert_eq!(parse_runner_kind("stt").unwrap(), RunnerKind::AudioStt);
+        assert_eq!(parse_runner_kind("TTS").unwrap(), RunnerKind::AudioTts);
+        assert!(parse_runner_kind("bogus").is_err());
     }
 }

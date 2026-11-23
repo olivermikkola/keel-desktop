@@ -540,8 +540,7 @@ fn launch_for<'a>(
 
 /// Keeps the managed runner when the model and the graphics-or-processor choice
 /// have not changed. The next message does not pay for another load.
-/// Future pack unload UI should call `keel_core::runtime::should_stop_keep_alive_for_pack`
-/// with a fresh `hardware::inventory` before relying on this keep-alive path.
+/// Pack starts should call [`prepare_pack_vram`] first so keep-alive can yield.
 async fn loaded_model_can_stay(state: &AppState) -> Option<RuntimeStatus> {
     let cfg = state.config.lock().await.clone();
     if cfg.external_base_url.is_some() {
@@ -815,6 +814,68 @@ pub async fn stop_runtime(state: State<'_, AppState>) -> Result<RuntimeStatus, S
     cfg.external_model_name = None;
     save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
     Ok(rt.status())
+}
+
+/// Result of probing VRAM and optionally stopping keep-alive for a pack.
+#[derive(Debug, Clone, Serialize)]
+pub struct PackVramResult {
+    /// `unloaded` | `already_free` | `processor_fallback`
+    pub status: String,
+    pub reason: String,
+    pub capability_id: String,
+    pub usable_free_mib: u64,
+    pub runtime: RuntimeStatus,
+}
+
+fn fresh_vram_inventory(state: &AppState) -> keel_core::hardware::VramInventory {
+    let devices = keel_core::setup::installed_graphics_runtime(&state.data_dir)
+        .map(|bin| keel_core::hardware::probe_devices(&bin))
+        .unwrap_or_default();
+    let machine = keel_core::hardware::detect_machine();
+    keel_core::hardware::inventory(&machine, &devices)
+}
+
+/// Probe current VRAM and stop keep-alive when a pack needs the graphics memory.
+///
+/// Returns `unloaded` when the managed runner was stopped, `already_free` when
+/// the pack can use graphics without unloading, or `processor_fallback` when
+/// the pack should run on the processor.
+#[tauri::command]
+pub async fn prepare_pack_vram(
+    state: State<'_, AppState>,
+    capability_id: String,
+    min_vram_mib: u64,
+    runner_kind: Option<String>,
+) -> Result<PackVramResult, String> {
+    let kind = match runner_kind.as_deref() {
+        Some(raw) => keel_core::packs::parse_runner_kind(raw)?,
+        None => keel_core::packs::RunnerKind::Text,
+    };
+    let pack = keel_core::packs::PackManifest::new(capability_id, min_vram_mib, kind);
+    let inventory = fresh_vram_inventory(&state);
+
+    // Same lock order as stop_runtime / start_model: config, then runtime.
+    let mut cfg = state.config.lock().await;
+    let mut rt = state.runtime.lock().await;
+    let plan = keel_core::runtime::plan_pack_vram(&inventory, &pack, rt.loaded_launch());
+    if plan.stop_keep_alive {
+        rt.stop().await;
+        // Keep-alive unload only — leave any external endpoint config alone.
+        let _ = &cfg;
+        *state.placement_cache.lock().await = None;
+    }
+    let status = match plan.status {
+        keel_core::runtime::PackVramStatus::Unloaded => "unloaded",
+        keel_core::runtime::PackVramStatus::AlreadyFree => "already_free",
+        keel_core::runtime::PackVramStatus::ProcessorFallback => "processor_fallback",
+    };
+    Ok(PackVramResult {
+        status: status.to_string(),
+        reason: plan.reason,
+        capability_id: pack.capability_id,
+        usable_free_mib: inventory.usable_free_mib,
+        runtime: rt.status(),
+    })
 }
 
 #[tauri::command]
