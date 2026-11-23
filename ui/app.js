@@ -611,6 +611,33 @@ async function importKeelSession() {
   }
 }
 
+async function revealKeelSessionLog() {
+  const id = appState.session?.id;
+  if (!id) return;
+  try {
+    const path = await invoke("reveal_keel_session_log", { sessionId: id });
+    try {
+      await navigator.clipboard.writeText(path);
+      showToast(`Opened folder. Path copied: ${path}`);
+    } catch {
+      showToast(`Opened journal folder for ${path.split(/[/\\]/).pop() || "session"}`);
+    }
+  } catch (error) {
+    showNotice(String(error));
+  }
+}
+
+async function exportKeelSessionLog() {
+  const id = appState.session?.id;
+  if (!id) return;
+  try {
+    const path = await invoke("export_keel_session_log", { sessionId: id });
+    showToast(`Exported journal to ${path}`);
+  } catch (error) {
+    showNotice(String(error));
+  }
+}
+
 function renderAll() {
   renderSidebar();
   renderHeader();
@@ -1067,8 +1094,12 @@ function renderChat() {
     const status = appState.waking ? '<p class="empty-status" role="status">Waking up your AI. You can type your question now.</p>' : "";
     const openCli = preset.id === "code" && b.config.harness_mode === "keel-cli"
       ? '<button class="btn btn-ghost" id="empty-open-cli-session">Open CLI session</button>' : "";
+    const journalBtns =
+      preset.id === "code" && s.keel_session_log
+        ? '<button class="btn btn-ghost" id="empty-reveal-cli-journal">Show journal</button><button class="btn btn-ghost" id="empty-export-cli-journal">Export journal</button>'
+        : "";
     const boundaryNotice =
-      preset.id === "code" && b.code_execution && !b.code_execution.can_run_commands && b.code_execution.notice
+      preset.id === "code" && b.code_execution?.notice
         ? `<p id="code-boundary-notice" class="empty-status" role="status">${escapeHtml(b.code_execution.notice)}</p>`
         : "";
     const heading = preset.id === "chat" && !project ? "What can I help with?" : preset.title;
@@ -1077,7 +1108,7 @@ function renderChat() {
         ${project ? `<span class="eyebrow">${escapeHtml(project.name)}</span>` : ""}
         <h1>${escapeHtml(heading)}</h1>
         <p>${escapeHtml(preset.summary)}</p>
-        ${action}${openCli}${status}${boundaryNotice}
+        ${action}${openCli}${journalBtns}${status}${boundaryNotice}
         <div class="starters-grid">${starters}</div>
       </div>
     `;
@@ -1085,6 +1116,8 @@ function renderChat() {
     els.chatScroll.querySelector("#empty-open-folder")?.addEventListener("click", () => openWorkspace());
     els.chatScroll.querySelector("#empty-sample-folder")?.addEventListener("click", () => openWorkspace({ sample: true }));
     els.chatScroll.querySelector("#empty-open-cli-session")?.addEventListener("click", importKeelSession);
+    els.chatScroll.querySelector("#empty-reveal-cli-journal")?.addEventListener("click", () => revealKeelSessionLog());
+    els.chatScroll.querySelector("#empty-export-cli-journal")?.addEventListener("click", () => exportKeelSessionLog());
     els.chatScroll.querySelectorAll("[data-starter]").forEach((btn) => {
       btn.onclick = () => {
         els.promptInput.value = btn.getAttribute("data-starter");
@@ -2692,12 +2725,20 @@ function openCustomizeModal() {
     });
     body.appendChild(appearanceCard);
 
+    const recommendedHarness = b.recommended_code_harness || "keel";
     const harnessOptions = b.harnesses
-      .map(
-        (h) =>
-          `<option value="${escapeHtml(h.id)}" ${h.id === b.config.harness_mode ? "selected" : ""}>${escapeHtml(h.name)}${h.available ? "" : " (not installed)"}</option>`,
-      )
+      .map((h) => {
+        const recommended = h.id === recommendedHarness && h.available ? " — recommended" : "";
+        const missing = h.available ? "" : " (not installed)";
+        return `<option value="${escapeHtml(h.id)}" ${h.id === b.config.harness_mode ? "selected" : ""}>${escapeHtml(h.name)}${recommended}${missing}</option>`;
+      })
       .join("");
+    const harnessHint =
+      recommendedHarness === "keel-cli" && b.config.harness_mode !== "keel-cli"
+        ? `<p class="muted">The Keel CLI is installed. Prefer it for Code so Desktop and the terminal share one session journal.</p>`
+        : recommendedHarness === "keel-cli"
+          ? `<p class="muted">Code uses the Keel CLI. Finish the current turn before resuming the same journal in a terminal.</p>`
+          : `<p class="muted">Install the Keel CLI on PATH to make it the recommended Code engine.</p>`;
     const card = document.createElement("div");
     card.className = "card";
     card.innerHTML = `
@@ -2716,6 +2757,7 @@ function openCustomizeModal() {
           </select>
           <label><strong>Engine for Code mode</strong></label>
           <select id="cust-harness" class="select-field">${harnessOptions}</select>
+          ${harnessHint}
           <label><strong>Custom local engine path</strong></label>
           <input id="cust-llama" class="input mono" value="${escapeHtml(b.config.llama_server_path || "")}" placeholder="Leave blank to use Keel's built-in engine" />
         </div>

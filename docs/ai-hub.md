@@ -27,9 +27,16 @@ Successful images are written as new `assets/keel-<job-id>.png` files in the sel
 3. **Keep the model loaded:** the graphics-or-processor choice from Settings reaches the runner, and a later message reuses that process when the model, context, and that choice are unchanged.
 4. **Check this model:** Settings can run three short questions (a saved preference, a number in a note, and a question the note does not answer). A model that fails is not offered as the one for this computer; it stays installed and can still be started by hand.
 
+## 0.6.0 direction
+
+1. **One coding engine:** Code mode prefers the Keel CLI when installed (streaming events, GUI approvals, shared JSONL journals). The built-in `keel-core` harness remains available and is still the default until the CLI is on PATH. Chat, Work, and Images stay Desktop-owned.
+2. **Model packs & scheduling:** VRAM-aware detection, verified capability packs, and unload/scheduling on top of keep-alive. Curate Lightweight / Balanced / Powerful from measurements.
+3. **Reliability evidence:** expand Check this model / `evaluate_local` into a held-out suite with published latency and success targets per recommended model (including GPU/Metal numbers).
+4. **Hub expansion:** optional audio STT/TTS packs; explicit opt-in remote providers with secure credentials and location/cost labels — never a silent cloud fallback. Video waits until image/audio jobs are dependable.
+
 ## Next milestones
 
-1. **Reliable everyday use:** PDF/DOCX/text attachments, search/rename/pin/export, reusable projects, saved preferences, a file Library, durable partial replies, guided runtime/model setup, web search, Chat vision, keep-alive, and model check are implemented. Next: broader real-model evaluations, native interaction tests, richer Code context, and better CPU/GPU latency.
+1. **Reliable everyday use:** PDF/DOCX/text attachments, search/rename/pin/export, reusable projects, saved preferences, a file Library, durable partial replies, guided runtime/model setup, web search, Chat vision, keep-alive, and model check are implemented. Next: broader real-model evaluations, native interaction tests, richer Code context via the Keel CLI, and better CPU/GPU latency.
 2. **Model packs:** capability-specific runtime adapters, verified manifests, resumable/cancellable downloads, removal, measured hardware requirements, and resource scheduling/unloading. Curate Lightweight / Balanced / Powerful choices where real measurements support them; parameter counts alone are insufficient.
 3. **Audio:** Desktop exposes STT/TTS packs from `keel-core` via Tauri (`list_audio_packs`, `mark_audio_pack_installed`, `register_audio_pack_runner`, `install_audio_pack_download_stub`, `prepare_audio_pack_vram`, `run_audio_stt`, `run_audio_tts`; capability ids `stt` / `tts`). Settings shows Installed vs Not installed and can mark a pack, register a local runner binary/script, or record a download-URL stub (bytes not fetched yet). `run_*` calls real `prepare_pack_vram` (keep-alive unload when free VRAM is short) then invokes the registered local command; missing runner or pack fails clearly. Bundled Whisper/TTS adapters, resumable downloads, and audio artifacts UI are still ahead. Do not force music generation into a speech model's interface. Remote text-provider auth is a separate pillar and is not part of these audio packs.
 4. **Video:** asynchronous generation with engine-specific requirements, progress, cancellation semantics, and playable artifacts after image/audio jobs are dependable.
