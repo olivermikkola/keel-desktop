@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod apps;
 pub mod compaction;
+pub mod eval_cases;
 pub mod guard;
 pub mod hardware;
 pub mod harnesses;

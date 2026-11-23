@@ -22,11 +22,28 @@ The target is an assistant a person can use for recurring writing, document, dat
 - Linux CI also starts a real Tauri window under Xvfb with `--ui-smoke-test`, using a temporary app data directory. The actual frontend must bootstrap through native IPC, create its initial Chat session, and render its composer. This complements the fixture-based flow checks; it does not operate native file dialogs.
 - `python scripts/ui-smoke.py`: real frontend with a test-only Tauri IPC fixture. Exercises guided setup, attachments/source preview, preferences, projects, thread rename/pin/search, Chat/Work/Code, file review, Library, Images, and sandboxed asset previews. Native pickers and GPU inference are not simulated as real interactions by this test.
 - `KEEL_EVAL_MODEL_PATH=/path/model.gguf cargo run -p keel-core --example check_managed_setup`: an opt-in real download/start/stop check. It downloads and verifies the pinned runner, loads a supplied GGUF, checks its model alias, and stops it. Passed locally on Linux with Bonsai 4B and runner b12428.
-- `KEEL_EVAL_URL=http://127.0.0.1:19181/v1 KEEL_EVAL_MODEL=model-name cargo run -p keel-core --example evaluate_local`: opt-in task checks using the actual agent engine and a running model. `KEEL_EVAL_CASE` restricts a run to one case. It creates disposable CSV/code fixtures; the code check applies a staged edit in that fixture and checks the result with Python. Review answers as well as heuristic pass flags.
+- `KEEL_EVAL_URL=http://127.0.0.1:19181/v1 KEEL_EVAL_MODEL=model-name cargo run -p keel-core --example evaluate_local`: opt-in task checks using the actual agent engine and a running model. Case definitions and graders live in `keel_core::eval_cases` (pack tag `smoke` for the current five cases). `KEEL_EVAL_CASE` restricts a run to one case; `KEEL_EVAL_PACK` selects a pack (default `smoke`); `KEEL_EVAL_RUNS` repeats each case and reports success rate plus p50 latency (default `1`). It creates disposable CSV/code fixtures; the code check applies a staged edit in that fixture and checks the result with Python. Review answers as well as heuristic pass flags.
+
+## Published targets
+
+Formal targets for recommended model × hardware combinations (time to first token, p50 answer latency, task success rate on the held-out suite, peak RSS). **Every cell is TBD** until measured on the intended hardware. Do not treat the informal CPU samples below as these targets. **GPU/Metal is unmeasured** — do not infer GPU numbers from CPU runs.
+
+| Model | Hardware | TTFT | p50 latency | Success rate | Peak RSS |
+| --- | --- | --- | --- | --- | --- |
+| LFM3 · 1.7B | CPU | TBD | TBD | TBD | TBD |
+| LFM3 · 1.7B | GPU | TBD | TBD | TBD | TBD |
+| MiniCPM5 · 2B | CPU | TBD | TBD | TBD | TBD |
+| MiniCPM5 · 2B | GPU | TBD | TBD | TBD | TBD |
+| Bonsai 2 · 4B | CPU | TBD | TBD | TBD | TBD |
+| Bonsai 2 · 4B | GPU | TBD | TBD | TBD | TBD |
+| Bonsai 2 · 9B | CPU | TBD | TBD | TBD | TBD |
+| Bonsai 2 · 9B | GPU | TBD | TBD | TBD | TBD |
+| Bonsai 2 · 27B | CPU | TBD | TBD | TBD | TBD |
+| Bonsai 2 · 27B | GPU | TBD | TBD | TBD | TBD |
 
 ## Observed real-model results
 
-Single CPU runs during development (Bonsai 4B Q2_0, 8K context, llama.cpp b12428; these are task samples, not representative benchmarks):
+These are separate from the Published targets table above. Single CPU runs during development (Bonsai 4B Q2_0, 8K context, llama.cpp b12428; these are task samples, not representative benchmarks):
 
 | Task | Result | Approximate elapsed time |
 | --- | --- | --- |
