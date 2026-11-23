@@ -99,7 +99,10 @@ def main() -> int:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print the patched row only; do not write",
+        help=(
+            "Print the would-be Published targets row only; do not write the doc. "
+            "Still requires a real held_out report (runs≥5); never invents TTFT/p50."
+        ),
     )
     args = parser.parse_args()
 

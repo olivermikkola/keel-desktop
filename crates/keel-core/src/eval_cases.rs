@@ -823,4 +823,96 @@ mod tests {
             let _ = std::fs::remove_dir_all(&root);
         }
     }
+
+    /// No-model CI gate: both packs resolve, every case can prepare a turn, and
+    /// `grade` is wired (does not bail with "unknown eval case").
+    #[test]
+    fn smoke_and_held_out_registries_load_and_wire_graders() {
+        assert_eq!(known_packs(), &[PACK_SMOKE, PACK_HELD_OUT]);
+        assert!(
+            cases_for_pack("not_a_pack").is_empty(),
+            "unknown pack must resolve to zero cases"
+        );
+
+        for pack in [PACK_SMOKE, PACK_HELD_OUT] {
+            let cases = cases_for_pack(pack);
+            assert!(
+                !cases.is_empty(),
+                "{pack} registry must load at least one case"
+            );
+            for case in &cases {
+                assert!(
+                    case.packs.contains(&pack),
+                    "{} missing pack tag {pack}",
+                    case.name
+                );
+
+                let (history, instructions) = prepare_turn(case);
+                assert!(
+                    !history.is_empty(),
+                    "prepare_turn returned empty history for {}",
+                    case.name
+                );
+                match case.setup {
+                    EvalSetup::SavedPreference | EvalSetup::PreferenceConflict => {
+                        assert!(
+                            instructions.to_lowercase().contains("vegetarian"),
+                            "preference setup must inject saved prefs for {}",
+                            case.name
+                        );
+                    }
+                    _ => {}
+                }
+
+                let root = std::env::temp_dir()
+                    .join(format!("keel_eval_pack_gate_{}", uuid::Uuid::new_v4()));
+                write_workspace_fixtures(&root).unwrap();
+                let mut edits: Vec<StagedEdit> = vec![];
+                let result = grade(
+                    case,
+                    GradeInput {
+                        answer: "",
+                        tool_logs: &[],
+                        staged_edits: &mut edits,
+                        workspace: Some(root.as_path()),
+                    },
+                );
+                assert!(
+                    result.is_ok(),
+                    "grader not wired for {} in pack {pack}: {result:?}",
+                    case.name
+                );
+                let _ = std::fs::remove_dir_all(&root);
+            }
+        }
+
+        assert_eq!(cases_for_pack(PACK_SMOKE).len(), 5);
+        assert_eq!(cases_for_pack(PACK_HELD_OUT).len(), 10);
+    }
+
+    #[test]
+    fn grade_rejects_unknown_case_name() {
+        let phantom = EvalCase {
+            name: "not_registered",
+            packs: BOTH_PACKS,
+            preset: AppPreset::Chat,
+            prompt: "noop",
+            setup: EvalSetup::Plain,
+        };
+        let mut edits: Vec<StagedEdit> = vec![];
+        let err = grade(
+            &phantom,
+            GradeInput {
+                answer: "",
+                tool_logs: &[],
+                staged_edits: &mut edits,
+                workspace: None,
+            },
+        )
+        .expect_err("unknown case must fail closed");
+        assert!(
+            err.to_string().contains("unknown eval case"),
+            "unexpected error: {err}"
+        );
+    }
 }

@@ -107,7 +107,7 @@ python3 scripts/publish_eval_targets.py \
 The script refuses packs other than `held_out`, `KEEL_EVAL_RUNS` < 5, and CPU/GPU mismatches. Update only measured cells; leave the rest TBD.
 3. **Informal samples:** one-off development runs may stay under Observed real-model results below; they do not count as published targets.
 
-Unit tests for graders and aggregation: `cargo test -p keel-core --lib eval`. Real-model runs stay opt-in (no CI GPU requirement).
+No-model CI gate (registry load + grader wiring, no live server): `cargo test -p keel-core --lib eval`. That filter covers pack membership, `prepare_turn` for every smoke/held_out case, grader dispatch, and aggregation — including `smoke_and_held_out_registries_load_and_wire_graders`. Real-model runs stay opt-in (no CI GPU requirement); do not invent TTFT/p50 cells in Published targets.
 
 ## Observed real-model results
 
