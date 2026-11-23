@@ -153,7 +153,10 @@ where
     } else {
         mcp_tools_to_openai_schemas(&params.mcp_tools)
     };
-    let allow_shell = crate::harnesses::code_execution_boundary().can_run_commands;
+    // Built-in `run_shell` invokes an unconfined OS shell, so never enable it on
+    // macOS where command execution is reserved for the Seatbelt-confined Keel CLI.
+    let allow_shell = cfg!(not(target_os = "macos"))
+        && crate::harnesses::code_execution_boundary().can_run_commands;
     let tool_schemas = if params.app_preset != AppPreset::Chat
         && (validated_ws.is_some() || !mcp_schemas.is_empty())
     {
@@ -345,7 +348,7 @@ where
                 tool_calls: None,
             });
 
-            if breaker.record_failure_peek() {
+            if breaker.is_tripped() {
                 final_content =
                     "Stopped after repeated tool failures. Check the tool output above."
                         .to_string();
@@ -396,17 +399,6 @@ where
         completion_tokens: total_completion_tokens,
         tokens_per_sec: tps,
     })
-}
-
-trait CircuitPeek {
-    fn record_failure_peek(&self) -> bool;
-}
-
-impl CircuitPeek for CircuitBreaker {
-    fn record_failure_peek(&self) -> bool {
-        // Expose only via existing failure counting: handled inside record_failure error string
-        false
-    }
 }
 
 #[allow(clippy::too_many_arguments)]

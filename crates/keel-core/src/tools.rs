@@ -65,7 +65,7 @@ pub fn confine_path(root: &Path, rel: &str) -> Result<PathBuf> {
     for comp in rel_path.components() {
         match comp {
             Component::Normal(p) => {
-                if p == ".git" {
+                if p.to_string_lossy().eq_ignore_ascii_case(".git") {
                     bail!("Refusing to modify internal .git metadata");
                 }
                 clean.push(p);
@@ -510,6 +510,35 @@ pub fn is_destructive_shell_command(cmd: &str) -> Option<&'static str> {
     None
 }
 
+async fn read_capped_and_drain<R: tokio::io::AsyncRead + Unpin>(
+    mut reader: Option<R>,
+    limit: usize,
+) -> (Vec<u8>, bool) {
+    let Some(ref mut r) = reader else {
+        return (Vec::new(), false);
+    };
+    let mut out = Vec::new();
+    let mut truncated = false;
+    let mut chunk = [0u8; 8192];
+    loop {
+        match r.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                if out.len() < limit {
+                    let take = (limit - out.len()).min(n);
+                    out.extend_from_slice(&chunk[..take]);
+                    if take < n {
+                        truncated = true;
+                    }
+                } else {
+                    truncated = true;
+                }
+            }
+        }
+    }
+    (out, truncated)
+}
+
 pub async fn run_shell_command(root: &Path, command: &str) -> Result<String> {
     let canon_root = validate_workspace_root(root)?;
     if let Some(reason) = is_destructive_shell_command(command) {
@@ -528,48 +557,47 @@ pub async fn run_shell_command(root: &Path, command: &str) -> Result<String> {
 
     cmd.current_dir(&canon_root)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
 
     let mut child = cmd.spawn().context("Failed to spawn shell command")?;
-    let mut stdout = child.stdout.take();
-    let mut stderr = child.stderr.take();
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
 
     let fut = async {
-        let mut out_buf = Vec::new();
-        let mut err_buf = Vec::new();
-        if let Some(ref mut s) = stdout {
-            let _ = s
-                .take(MAX_SHELL_OUTPUT_BYTES as u64)
-                .read_to_end(&mut out_buf)
-                .await;
-        }
-        if let Some(ref mut s) = stderr {
-            let _ = s
-                .take(MAX_SHELL_OUTPUT_BYTES as u64)
-                .read_to_end(&mut err_buf)
-                .await;
-        }
-        let status = child.wait().await?;
-        Ok::<_, anyhow::Error>((status, out_buf, err_buf))
+        let ((out_buf, out_trunc), (err_buf, err_trunc), status) = tokio::join!(
+            read_capped_and_drain(stdout, MAX_SHELL_OUTPUT_BYTES),
+            read_capped_and_drain(stderr, MAX_SHELL_OUTPUT_BYTES),
+            child.wait()
+        );
+        let status = status?;
+        Ok::<_, anyhow::Error>((status, out_buf, out_trunc, err_buf, err_trunc))
     };
 
     match tokio::time::timeout(Duration::from_secs(SHELL_TIMEOUT_SECS), fut).await {
         Ok(res) => {
-            let (status, out_buf, err_buf) = res?;
+            let (status, out_buf, out_trunc, err_buf, err_trunc) = res?;
             let out = String::from_utf8_lossy(&out_buf);
             let err = String::from_utf8_lossy(&err_buf);
             let code = status.code().unwrap_or(-1);
             let mut text = format!("exit code: {code}\n");
             if !out.trim().is_empty() {
                 text.push_str(&format!("stdout:\n{out}\n"));
+                if out_trunc {
+                    text.push_str("... (stdout truncated)\n");
+                }
             }
             if !err.trim().is_empty() {
                 text.push_str(&format!("stderr:\n{err}\n"));
+                if err_trunc {
+                    text.push_str("... (stderr truncated)\n");
+                }
             }
             Ok(text)
         }
         Err(_) => {
             let _ = child.kill().await;
+            let _ = child.wait().await;
             bail!("Shell command timed out after {SHELL_TIMEOUT_SECS}s");
         }
     }
@@ -750,6 +778,8 @@ mod tests {
         assert!(confine_path(&dir, "../etc/passwd").is_err());
         assert!(confine_path(&dir, "/etc/passwd").is_err());
         assert!(confine_path(&dir, ".git/config").is_err());
+        assert!(confine_path(&dir, ".GIT/config").is_err());
+        assert!(confine_path(&dir, ".Git/hooks/pre-commit").is_err());
 
         let mut edit = build_staged_edit(
             &dir,

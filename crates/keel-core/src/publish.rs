@@ -26,6 +26,8 @@ pub struct PublishPlan {
     pub pr_body: String,
     pub push_remote: bool,
     pub open_pr: bool,
+    #[serde(default)]
+    pub files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,7 +141,25 @@ pub fn publish_changes(
     }
 
     if !status.dirty_files.is_empty() {
-        run(&root, ["add", "--all", "--"])?;
+        let scoped: Vec<&str> = plan
+            .files
+            .iter()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if scoped.is_empty() {
+            run(&root, ["add", "--all", "--"])?;
+        } else {
+            let mut add_args: Vec<&OsStr> = vec![OsStr::new("add"), OsStr::new("--")];
+            for path in &scoped {
+                add_args.push(OsStr::new(path));
+            }
+            run(&root, add_args)?;
+            let staged = text(&root, ["diff", "--cached", "--name-only"])?;
+            if staged.trim().is_empty() {
+                bail!("None of the applied patch files have uncommitted changes to publish.");
+            }
+        }
         run(&root, ["commit", "-m", message])?;
     }
     let commit_sha = text(&root, ["rev-parse", "--short", "HEAD"])?
@@ -167,6 +187,7 @@ pub fn publish_changes(
         if plan.open_pr && status.gh_authenticated {
             let output = Command::new("gh")
                 .current_dir(&root)
+                .env("GH_PROMPT_DISABLED", "1")
                 .args([
                     "pr", "create", "--head", branch, "--title", title, "--body", body,
                 ])
@@ -201,12 +222,30 @@ pub fn publish_changes(
 }
 
 fn redact_remote_url(raw: &str) -> String {
-    if let Some((scheme, rest)) = raw.split_once("://") {
-        if let Some((_, host_path)) = rest.split_once('@') {
-            return format!("{scheme}://{host_path}");
+    if let Ok(mut parsed) = reqwest::Url::parse(raw.trim()) {
+        if !parsed.username().is_empty() || parsed.password().is_some() {
+            let _ = parsed.set_username("");
+            let _ = parsed.set_password(None);
         }
+        return parsed.to_string();
     }
     raw.to_owned()
+}
+
+fn redact_credentials_in_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for token in text.split_inclusive(char::is_whitespace) {
+        let trimmed = token.trim_end();
+        let trailing = &token[trimmed.len()..];
+        let clean = trimmed.trim_matches(|c| matches!(c, '\'' | '"' | '`' | '(' | ')'));
+        if clean.contains("://") && clean.contains('@') {
+            out.push_str(&trimmed.replace(clean, &redact_remote_url(clean)));
+        } else {
+            out.push_str(trimmed);
+        }
+        out.push_str(trailing);
+    }
+    out
 }
 
 fn shell_quote(value: &str) -> String {
@@ -263,7 +302,7 @@ where
     if !output.status.success() {
         bail!(
             "Git could not complete the operation: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            redact_credentials_in_text(String::from_utf8_lossy(&output.stderr).trim())
         );
     }
     Ok(output)
@@ -321,6 +360,7 @@ mod tests {
             pr_body: "## Summary\n- Update app".into(),
             push_remote: true,
             open_pr: false,
+            files: vec!["app.txt".into()],
         };
         assert!(publish_changes(&repo, &plan, Some(false))
             .unwrap_err()
@@ -350,6 +390,14 @@ mod tests {
             redact_remote_url("https://user:secret@github.com/org/repo.git"),
             "https://github.com/org/repo.git"
         );
+        assert_eq!(
+            redact_remote_url("https://github.com/org/repo@tag.git"),
+            "https://github.com/org/repo@tag.git"
+        );
+        assert!(!redact_credentials_in_text(
+            "fatal: unable to access 'https://tok:ghp_secret@github.com/o/r.git/'"
+        )
+        .contains("ghp_secret"));
         std::fs::remove_dir_all(scratch).unwrap();
     }
 }

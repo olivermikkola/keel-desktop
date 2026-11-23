@@ -25,7 +25,7 @@ pub fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let temp = path.with_extension("json.tmp");
+    let temp = path.with_extension(format!("json.{}.tmp", uuid::Uuid::new_v4()));
     std::fs::write(&temp, serde_json::to_vec_pretty(value)?)?;
     std::fs::rename(temp, path)?;
     Ok(())

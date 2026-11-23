@@ -23,6 +23,7 @@ pub struct RuntimeManager {
     pub active_model_path: Option<String>,
     pub llama_server_bin: Option<String>,
     pub port: u16,
+    log_path: Option<PathBuf>,
     last_error: Option<String>,
 }
 
@@ -42,6 +43,7 @@ impl RuntimeManager {
             active_model_path: None,
             llama_server_bin,
             port,
+            log_path: None,
             last_error: None,
         }
     }
@@ -84,6 +86,7 @@ impl RuntimeManager {
             .join("keel-desktop");
         std::fs::create_dir_all(&log_dir)?;
         let log_path = log_dir.join("model-runner.log");
+        self.log_path = Some(log_path.clone());
         let log = std::fs::File::create(&log_path)?;
         let mut command = Command::new(&bin);
         command
@@ -168,6 +171,7 @@ impl RuntimeManager {
     pub fn stop_sync(&mut self) {
         if let Some(mut child) = self.child.take() {
             let _ = child.start_kill();
+            let _ = child.try_wait();
         }
         self.active_model_path = None;
         self.active_model_id = None;
@@ -180,10 +184,28 @@ impl RuntimeManager {
                 self.child = None;
                 self.active_model_id = None;
                 self.active_model_path = None;
-                self.last_error = Some(
+                let details = self
+                    .log_path
+                    .as_deref()
+                    .and_then(|p| std::fs::read_to_string(p).ok())
+                    .map(|raw| {
+                        raw.lines()
+                            .rev()
+                            .take(16)
+                            .collect::<Vec<_>>()
+                            .into_iter()
+                            .rev()
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    })
+                    .unwrap_or_default();
+                let msg = if details.trim().is_empty() {
                     "Your AI stopped unexpectedly. Send a message or click Start to wake it back up, or try a lighter model."
-                        .to_string(),
-                );
+                        .to_string()
+                } else {
+                    friendly_runner_exit_message(&details, &os_release())
+                };
+                self.last_error = Some(msg);
             }
         }
         let state = if self.child.is_some() {
@@ -251,17 +273,27 @@ pub fn find_llama_server(explicit: Option<&str>) -> Option<PathBuf> {
 
 /// Queries `/v1/models` on an OpenAI-compatible server to list available model IDs.
 pub async fn probe_openai_models(base_url: &str) -> Result<Vec<String>> {
-    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let trimmed = base_url.trim().trim_end_matches('/');
+    let parsed =
+        reqwest::Url::parse(trimmed).context("Enter a valid http:// or https:// server URL")?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        bail!("Server URL must use http:// or https://");
+    }
+    let url = format!("{trimmed}/models");
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
+        .redirect(reqwest::redirect::Policy::none())
         .build()?;
-    let val: serde_json::Value = client
-        .get(&url)
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let mut resp = client.get(&url).send().await?.error_for_status()?;
+    let mut body = Vec::new();
+    const MAX_PROBE_BYTES: usize = 2 * 1024 * 1024;
+    while let Some(chunk) = resp.chunk().await? {
+        if body.len() + chunk.len() > MAX_PROBE_BYTES {
+            bail!("Server returned an unexpectedly large models list");
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let val: serde_json::Value = serde_json::from_slice(&body)?;
     let ids = val
         .get("data")
         .and_then(|d| d.as_array())

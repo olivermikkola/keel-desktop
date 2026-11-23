@@ -162,6 +162,9 @@ pub async fn fork_thread(
     );
     session.pinned = false;
     session.keel_session_log = None;
+    session.code_checkout = None;
+    session.applied_code_patch = None;
+    session.last_code_test = None;
     session.staged_edits.clear();
     for message in &mut session.messages {
         for tool in &mut message.tool_calls {

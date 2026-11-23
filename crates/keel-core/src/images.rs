@@ -190,8 +190,7 @@ impl ImageService {
 
 fn save_job(directory: &Path, job: &ImageJob) -> Result<()> {
     let path = directory.join(format!("{}.json", job.id));
-    std::fs::write(path, serde_json::to_vec_pretty(job)?)?;
-    Ok(())
+    crate::projects::write_json(&path, job)
 }
 
 pub fn local_endpoint(raw: &str) -> Result<String> {

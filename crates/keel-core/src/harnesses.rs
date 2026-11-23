@@ -480,6 +480,29 @@ where
     }
 }
 
+async fn read_capped_and_drain<R: tokio::io::AsyncRead + Unpin>(
+    mut reader: Option<R>,
+    limit: usize,
+) -> Vec<u8> {
+    let Some(ref mut r) = reader else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        match r.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                if out.len() < limit {
+                    let take = (limit - out.len()).min(n);
+                    out.extend_from_slice(&chunk[..take]);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Runs a single prompt through a supported external CLI harness in `workspace`.
 pub async fn run_external_harness(
     harness_id: &str,
@@ -488,11 +511,12 @@ pub async fn run_external_harness(
     base_url: Option<&str>,
     model: Option<&str>,
 ) -> Result<String> {
+    let workspace = crate::tools::validate_workspace_root(workspace)?;
     let mut cmd = match harness_id {
         "opencode" => {
             let bin = find_on_path("opencode").context("`opencode` is not installed on PATH")?;
             let mut c = Command::new(bin);
-            c.arg("run").arg(prompt);
+            c.arg("run").arg("--").arg(prompt);
             c
         }
         "keel-cli" => {
@@ -504,36 +528,34 @@ pub async fn run_external_harness(
             if let Some(m) = model {
                 c.arg("--model").arg(m);
             }
-            c.arg(prompt);
+            c.arg("--").arg(prompt);
             c
         }
         "claude" => {
             let bin = find_on_path("claude").context("`claude` CLI is not installed on PATH")?;
             let mut c = Command::new(bin);
-            c.arg("-p").arg(prompt);
+            c.arg("-p").arg("--").arg(prompt);
             c
         }
         other => bail!("Unsupported external harness: {other}"),
     };
 
-    cmd.current_dir(workspace)
+    cmd.current_dir(&workspace)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
 
     let mut child = cmd.spawn().context("Failed to launch external harness")?;
-    let mut stdout = child.stdout.take();
-    let mut stderr = child.stderr.take();
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
 
     let res = tokio::time::timeout(Duration::from_secs(120), async {
-        let mut out = Vec::new();
-        let mut err = Vec::new();
-        if let Some(ref mut s) = stdout {
-            let _ = s.take(128 * 1024).read_to_end(&mut out).await;
-        }
-        if let Some(ref mut s) = stderr {
-            let _ = s.take(32 * 1024).read_to_end(&mut err).await;
-        }
-        let status = child.wait().await?;
+        let (out, err, status) = tokio::join!(
+            read_capped_and_drain(stdout, 128 * 1024),
+            read_capped_and_drain(stderr, 32 * 1024),
+            child.wait()
+        );
+        let status = status?;
         Ok::<_, anyhow::Error>((status, out, err))
     })
     .await;
@@ -554,6 +576,7 @@ pub async fn run_external_harness(
         }
         Err(_) => {
             let _ = child.kill().await;
+            let _ = child.wait().await;
             bail!("External harness timed out after 120s")
         }
     }
