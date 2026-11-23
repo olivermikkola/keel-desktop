@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{ChildStdin, ChildStdout, Command};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::process::Command;
 use tokio::sync::watch;
 
 use crate::agent::{AgentEvent, ApprovalDecision};
@@ -642,13 +642,18 @@ where
     result
 }
 
-async fn read_keel_turn<E, A, F>(
-    stdout: ChildStdout,
-    stdin: &mut ChildStdin,
+/// Drive a Keel-CLI-shaped NDJSON event stream through Desktop's projection
+/// (capabilities handshake → text/tool/approval → done). Production wires this
+/// to a spawned `keel` process; tests use a fake CLI over duplex pipes.
+async fn read_keel_turn<R, W, E, A, F>(
+    stdout: R,
+    stdin: &mut W,
     mut emit: E,
     mut approve: A,
 ) -> Result<String>
 where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
     E: FnMut(AgentEvent),
     A: FnMut(String, String, String, Value) -> F,
     F: std::future::Future<Output = ApprovalDecision>,
@@ -1097,6 +1102,7 @@ mod tests {
     fn streaming_protocol_has_no_file_edit_event_for_diff_projection() {
         // Checklist: do not invent Diff projection until Keel CLI emits a dedicated
         // file-edit / patch event type. Unknown types stay KeelEvent::Other.
+        // Diff/--shadow parity cannot be asserted until that protocol lands.
         let other = parse_keel_event_line(
             br#"{"type":"file_edit","path":"src/main.rs","diff":"--- a\n+++ b\n"}"#,
         )
@@ -1104,6 +1110,251 @@ mod tests {
         assert_eq!(other, KeelEvent::Other);
         let patch = parse_keel_event_line(br#"{"type":"patch","files":[]}"#).unwrap();
         assert_eq!(patch, KeelEvent::Other);
+    }
+
+    fn fake_cli_sandbox() -> &'static str {
+        if cfg!(target_os = "macos") {
+            "seatbelt"
+        } else {
+            "landlock"
+        }
+    }
+
+    async fn write_ndjson_line(w: &mut (impl AsyncWriteExt + Unpin), line: &str) {
+        w.write_all(line.as_bytes()).await.unwrap();
+        w.write_all(b"\n").await.unwrap();
+        w.flush().await.unwrap();
+    }
+
+    /// Fake-CLI e2e: duplex NDJSON peer speaks capabilities → text → tool →
+    /// approval (allow) → tool_result → done. Proves Desktop drives the stream
+    /// and writes stdio-line-v1 decisions without a real `keel` binary.
+    #[tokio::test]
+    async fn fake_cli_e2e_stream_text_tool_approval_allow_and_done() {
+        let (mut cli_out, desktop_in) = tokio::io::duplex(64 * 1024);
+        let (mut desktop_out, cli_in) = tokio::io::duplex(64 * 1024);
+        let sandbox = fake_cli_sandbox();
+
+        let fake = tokio::spawn(async move {
+            let mut cli_in = BufReader::new(cli_in);
+            write_ndjson_line(
+                &mut cli_out,
+                &format!(
+                    r#"{{"type":"capabilities","approval_protocol":"stdio-line-v1","stop_protocol":"sigint-shell-v1","sandbox":"{sandbox}"}}"#
+                ),
+            )
+            .await;
+            write_ndjson_line(
+                &mut cli_out,
+                r#"{"type":"text","content":"I'll list files."}"#,
+            )
+            .await;
+            write_ndjson_line(
+                &mut cli_out,
+                r#"{"type":"tool_call","id":"tc1","name":"run_shell","arguments":{"command":"ls"}}"#,
+            )
+            .await;
+            write_ndjson_line(
+                &mut cli_out,
+                r#"{"type":"approval_request","protocol":"stdio-line-v1","id":"ap1","tool_call_id":"tc1","tool":"run_shell","arguments":{"command":"ls"}}"#,
+            )
+            .await;
+
+            let mut decision = Vec::new();
+            cli_in.read_until(b'\n', &mut decision).await.unwrap();
+            assert_eq!(
+                decision, b"allow\n",
+                "Desktop must write allow for AllowOnce"
+            );
+
+            write_ndjson_line(
+                &mut cli_out,
+                r#"{"type":"tool_result","id":"tc1","output":"src\n"}"#,
+            )
+            .await;
+            write_ndjson_line(
+                &mut cli_out,
+                r#"{"type":"turn_summary","summary":{"tools":1,"files":0,"tokens":12}}"#,
+            )
+            .await;
+            write_ndjson_line(
+                &mut cli_out,
+                r#"{"type":"done","status":"ok","answer":"Listed the workspace.","error":null}"#,
+            )
+            .await;
+        });
+
+        let mut events = Vec::new();
+        let answer = read_keel_turn(
+            desktop_in,
+            &mut desktop_out,
+            |event| events.push(event),
+            |_id, tool, summary, args| {
+                assert_eq!(tool, "run_shell");
+                assert!(summary.contains("run_shell"));
+                assert_eq!(args.get("command").and_then(Value::as_str), Some("ls"));
+                async { ApprovalDecision::AllowOnce }
+            },
+        )
+        .await
+        .expect("fake CLI turn should succeed");
+
+        fake.await.expect("fake CLI task");
+        assert_eq!(answer, "Listed the workspace.");
+        assert!(
+            events.iter().any(
+                |e| matches!(e, AgentEvent::ContentDelta { text } if text == "I'll list files.")
+            ),
+            "expected text delta: {events:?}"
+        );
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                AgentEvent::ToolCallStart { name, .. } if name == "run_shell"
+            )),
+            "expected tool start: {events:?}"
+        );
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                AgentEvent::ToolCallResult {
+                    name,
+                    result,
+                    is_error: false,
+                    edit_id: None,
+                } if name == "run_shell" && result == "src\n"
+            )),
+            "expected tool result: {events:?}"
+        );
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                AgentEvent::Compacted { note } if note.contains("1 tool call")
+            )),
+            "expected turn summary: {events:?}"
+        );
+        // Diff/--shadow: no staged edits until CLI advertises a file-edit event.
+        assert!(
+            events
+                .iter()
+                .all(|e| !matches!(e, AgentEvent::StagedEditAdded { .. })),
+            "must not invent staged edits from the stream: {events:?}"
+        );
+    }
+
+    /// Fake-CLI e2e deny path: Desktop writes `deny\n` and projects a denied tool result.
+    #[tokio::test]
+    async fn fake_cli_e2e_approval_deny_projects_error_without_tool_result() {
+        let (mut cli_out, desktop_in) = tokio::io::duplex(64 * 1024);
+        let (mut desktop_out, cli_in) = tokio::io::duplex(64 * 1024);
+        let sandbox = fake_cli_sandbox();
+
+        let fake = tokio::spawn(async move {
+            let mut cli_in = BufReader::new(cli_in);
+            write_ndjson_line(
+                &mut cli_out,
+                &format!(
+                    r#"{{"type":"capabilities","approval_protocol":"stdio-line-v1","stop_protocol":"sigint-shell-v1","sandbox":"{sandbox}"}}"#
+                ),
+            )
+            .await;
+            write_ndjson_line(
+                &mut cli_out,
+                r#"{"type":"tool_call","id":"tc2","name":"run_shell","arguments":{"command":"rm -rf /"}}"#,
+            )
+            .await;
+            write_ndjson_line(
+                &mut cli_out,
+                r#"{"type":"approval_request","protocol":"stdio-line-v1","id":"ap2","tool_call_id":"tc2","tool":"run_shell","arguments":{"command":"rm -rf /"}}"#,
+            )
+            .await;
+
+            let mut decision = Vec::new();
+            cli_in.read_until(b'\n', &mut decision).await.unwrap();
+            assert_eq!(decision, b"deny\n");
+
+            write_ndjson_line(
+                &mut cli_out,
+                r#"{"type":"done","status":"ok","answer":"Stopped.","error":null}"#,
+            )
+            .await;
+        });
+
+        let mut events = Vec::new();
+        let answer = read_keel_turn(
+            desktop_in,
+            &mut desktop_out,
+            |event| events.push(event),
+            |_id, _tool, _summary, _args| async { ApprovalDecision::Deny },
+        )
+        .await
+        .expect("denied turn should still finish");
+
+        fake.await.expect("fake CLI task");
+        assert_eq!(answer, "Stopped.");
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                AgentEvent::ToolCallResult {
+                    name,
+                    is_error: true,
+                    result,
+                    ..
+                } if name == "run_shell" && result.contains("Denied by you")
+            )),
+            "expected denied tool projection: {events:?}"
+        );
+    }
+
+    /// Diff/--shadow parity is intentionally not claimed yet: unknown file-edit
+    /// lines stay `Other` and never become `StagedEditAdded`. When the CLI
+    /// advertises a dedicated event, replace this with a real shadow assertion.
+    #[tokio::test]
+    async fn fake_cli_diff_shadow_parity_blocked_until_file_edit_protocol() {
+        let (mut cli_out, desktop_in) = tokio::io::duplex(64 * 1024);
+        let (mut desktop_out, _cli_in) = tokio::io::duplex(64 * 1024);
+        let sandbox = fake_cli_sandbox();
+
+        let fake = tokio::spawn(async move {
+            write_ndjson_line(
+                &mut cli_out,
+                &format!(
+                    r#"{{"type":"capabilities","approval_protocol":"stdio-line-v1","stop_protocol":"sigint-shell-v1","sandbox":"{sandbox}"}}"#
+                ),
+            )
+            .await;
+            // Hypothetical future event — must not be treated as production Diff input.
+            write_ndjson_line(
+                &mut cli_out,
+                r#"{"type":"file_edit","path":"src/main.rs","diff":"--- a\n+++ b\n"}"#,
+            )
+            .await;
+            write_ndjson_line(
+                &mut cli_out,
+                r#"{"type":"done","status":"ok","answer":"no diff yet","error":null}"#,
+            )
+            .await;
+        });
+
+        let mut events = Vec::new();
+        let answer = read_keel_turn(
+            desktop_in,
+            &mut desktop_out,
+            |event| events.push(event),
+            |_id, _tool, _summary, _args| async { ApprovalDecision::Deny },
+        )
+        .await
+        .expect("unknown event types are skipped, turn still completes");
+
+        fake.await.expect("fake CLI task");
+        assert_eq!(answer, "no diff yet");
+        assert!(
+            events.is_empty()
+                || events
+                    .iter()
+                    .all(|e| !matches!(e, AgentEvent::StagedEditAdded { .. })),
+            "Diff/--shadow must stay off until a real file-edit protocol event exists: {events:?}"
+        );
     }
 
     #[test]
