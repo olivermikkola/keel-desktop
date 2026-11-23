@@ -1,14 +1,20 @@
 use anyhow::{bail, Result};
-use rusqlite::{types::ValueRef, Connection};
+use rusqlite::{types::Value as SqlValue, types::ValueRef, Connection};
 use std::path::Path;
+use std::sync::mpsc;
+use std::time::Duration;
 
 const MAX_CSV_FILES: usize = 32;
 const MAX_CSV_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_RESULT_ROWS: usize = 200;
+const MAX_FILES_TABLE_ROWS: usize = 2_000;
+const SQL_QUERY_TIMEOUT_SECS: u64 = 5;
 
 /// Runs a SQL query in an isolated in-memory SQLite database.
 /// Any `.csv` files in `workspace_root` (top level and `data/`) are auto-mounted
-/// as tables named after their filename (e.g. `SELECT * FROM "sales.csv"` or `sales`).
+/// as tables named after their filename (e.g. `SELECT * FROM "sales.csv"` or `sales`),
+/// with inferred INTEGER/REAL/TEXT column types so numeric comparisons and ORDER BY work naturally.
+/// A read-only `files` table also lists workspace files (`path`, `size_bytes`, `extension`).
 pub fn run_sql_in_workspace(workspace_root: Option<&Path>, query: &str) -> Result<String> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
@@ -21,8 +27,27 @@ pub fn run_sql_in_workspace(workspace_root: Option<&Path>, query: &str) -> Resul
     let mut mounted = Vec::new();
     if let Some(root) = workspace_root {
         mounted = mount_workspace_csvs(&conn, root)?;
+        let _ = mount_workspace_files_table(&conn, root);
     }
 
+    // Bound runaway SQLite queries (e.g. huge cross-joins) with an instant-cancelling watchdog.
+    let interrupt = conn.get_interrupt_handle();
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+    let watchdog = std::thread::spawn(move || {
+        if let Err(mpsc::RecvTimeoutError::Timeout) =
+            done_rx.recv_timeout(Duration::from_secs(SQL_QUERY_TIMEOUT_SECS))
+        {
+            interrupt.interrupt();
+        }
+    });
+
+    let outcome = execute_sql_inner(&conn, trimmed, &mounted);
+    drop(done_tx);
+    let _ = watchdog.join();
+    outcome
+}
+
+fn execute_sql_inner(conn: &Connection, trimmed: &str, mounted: &[String]) -> Result<String> {
     let mut stmt = conn.prepare(trimmed)?;
     let col_count = stmt.column_count();
 
@@ -89,11 +114,10 @@ fn mount_workspace_csvs(conn: &Connection, root: &Path) -> Result<Vec<String>> {
     candidates.truncate(MAX_CSV_FILES);
 
     for path in candidates {
-        let meta = match std::fs::metadata(&path) {
-            Ok(m) if m.len() <= MAX_CSV_BYTES => m,
+        match std::fs::metadata(&path) {
+            Ok(m) if m.len() <= MAX_CSV_BYTES => {}
             _ => continue,
-        };
-        let _ = meta;
+        }
         let Ok(raw) = std::fs::read_to_string(&path) else {
             continue;
         };
@@ -110,13 +134,93 @@ fn mount_workspace_csvs(conn: &Connection, root: &Path) -> Result<Vec<String>> {
 
         if load_csv_into_table(conn, &table_file_name, &raw).is_ok() {
             mounted.push(table_file_name.clone());
-            // Also expose a bare stem alias when distinct and valid.
+            // Expose a bare stem alias as a VIEW instead of duplicating all rows.
             if stem != table_file_name {
-                let _ = load_csv_into_table(conn, &stem, &raw);
+                let view_sql = format!(
+                    "CREATE VIEW IF NOT EXISTS {} AS SELECT * FROM {}",
+                    quote_ident(&stem),
+                    quote_ident(&table_file_name)
+                );
+                let _ = conn.execute(&view_sql, []);
             }
         }
     }
     Ok(mounted)
+}
+
+fn mount_workspace_files_table(conn: &Connection, root: &Path) -> Result<()> {
+    // Only create `files` if no CSV table/view already claimed that name.
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE lower(name) = 'files'",
+        [],
+        |r| r.get(0),
+    )?;
+    if exists > 0 {
+        return Ok(());
+    }
+    conn.execute(
+        "CREATE TABLE \"files\" (\"path\" TEXT, \"size_bytes\" INTEGER, \"extension\" TEXT)",
+        [],
+    )?;
+    let mut stmt = conn.prepare(
+        "INSERT INTO \"files\" (\"path\", \"size_bytes\", \"extension\") VALUES (?1, ?2, ?3)",
+    )?;
+    let mut rows = Vec::new();
+    collect_workspace_files_meta(root, root, 0, &mut rows);
+    for (rel, size, ext) in rows {
+        let _ = stmt.execute(rusqlite::params![rel, size as i64, ext]);
+    }
+    Ok(())
+}
+
+fn collect_workspace_files_meta(
+    root: &Path,
+    dir: &Path,
+    depth: usize,
+    out: &mut Vec<(String, u64, String)>,
+) {
+    if depth > 4 || out.len() >= MAX_FILES_TABLE_ROWS {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if out.len() >= MAX_FILES_TABLE_ROWS {
+            break;
+        }
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        if ft.is_symlink() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.eq_ignore_ascii_case(".git")
+            || name_str == "node_modules"
+            || name_str == "target"
+        {
+            continue;
+        }
+        let path = entry.path();
+        if ft.is_dir() {
+            collect_workspace_files_meta(root, &path, depth + 1, out);
+        } else if ft.is_file() {
+            let rel = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            out.push((rel, size, ext));
+        }
+    }
 }
 
 fn collect_csvs(dir: &Path, out: &mut Vec<PathBufRef>) -> Result<()> {
@@ -162,6 +266,55 @@ fn collect_csvs(dir: &Path, out: &mut Vec<PathBufRef>) -> Result<()> {
 
 type PathBufRef = std::path::PathBuf;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ColType {
+    Integer,
+    Real,
+    Text,
+}
+
+fn infer_column_types(col_count: usize, records: &[Vec<String>]) -> Vec<ColType> {
+    let mut types = vec![ColType::Integer; col_count];
+    let mut seen_non_empty = vec![false; col_count];
+
+    for row in records {
+        for (i, cell) in row.iter().enumerate().take(col_count) {
+            let trimmed = cell.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            seen_non_empty[i] = true;
+            if types[i] == ColType::Text {
+                continue;
+            }
+            // Keep strings with leading zeros (like ZIP codes "00123") as TEXT.
+            let leading_zero_code = trimmed.len() > 1
+                && trimmed.starts_with('0')
+                && !trimmed.starts_with("0.")
+                && !trimmed.starts_with("-0.");
+            if leading_zero_code {
+                types[i] = ColType::Text;
+                continue;
+            }
+            if types[i] == ColType::Integer && trimmed.parse::<i64>().is_ok() {
+                continue;
+            }
+            if trimmed.parse::<f64>().is_ok_and(|v| v.is_finite()) {
+                types[i] = ColType::Real;
+            } else {
+                types[i] = ColType::Text;
+            }
+        }
+    }
+
+    for i in 0..col_count {
+        if !seen_non_empty[i] {
+            types[i] = ColType::Text;
+        }
+    }
+    types
+}
+
 fn load_csv_into_table(conn: &Connection, table_name: &str, raw: &str) -> Result<()> {
     let mut reader = csv::ReaderBuilder::new()
         .flexible(true)
@@ -171,6 +324,14 @@ fn load_csv_into_table(conn: &Connection, table_name: &str, raw: &str) -> Result
         return Ok(());
     }
 
+    let mut records: Vec<Vec<String>> = Vec::new();
+    for record in reader.records() {
+        let mut fields: Vec<String> = record?.iter().map(String::from).collect();
+        fields.resize(headers.len(), String::new());
+        records.push(fields);
+    }
+
+    let col_types = infer_column_types(headers.len(), &records);
     let safe_table = quote_ident(table_name);
     let col_defs: Vec<String> = headers
         .iter()
@@ -181,7 +342,12 @@ fn load_csv_into_table(conn: &Connection, table_name: &str, raw: &str) -> Result
             } else {
                 h.trim().to_string()
             };
-            format!("{} TEXT", quote_ident(&name))
+            let sql_type = match col_types[i] {
+                ColType::Integer => "INTEGER",
+                ColType::Real => "REAL",
+                ColType::Text => "TEXT",
+            };
+            format!("{} {sql_type}", quote_ident(&name))
         })
         .collect();
 
@@ -197,11 +363,37 @@ fn load_csv_into_table(conn: &Connection, table_name: &str, raw: &str) -> Result
     let insert_sql = format!("INSERT INTO {safe_table} VALUES ({placeholders})");
     let mut stmt = conn.prepare(&insert_sql)?;
 
-    for record in reader.records() {
-        let mut fields: Vec<String> = record?.iter().map(String::from).collect();
-        fields.resize(headers.len(), String::new());
+    for fields in &records {
+        let values: Vec<SqlValue> = fields
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let trimmed = s.trim();
+                match col_types[i] {
+                    ColType::Integer => {
+                        if trimmed.is_empty() {
+                            SqlValue::Null
+                        } else if let Ok(n) = trimmed.parse::<i64>() {
+                            SqlValue::Integer(n)
+                        } else {
+                            SqlValue::Text(s.clone())
+                        }
+                    }
+                    ColType::Real => {
+                        if trimmed.is_empty() {
+                            SqlValue::Null
+                        } else if let Ok(f) = trimmed.parse::<f64>() {
+                            SqlValue::Real(f)
+                        } else {
+                            SqlValue::Text(s.clone())
+                        }
+                    }
+                    ColType::Text => SqlValue::Text(s.clone()),
+                }
+            })
+            .collect();
         let params: Vec<&dyn rusqlite::ToSql> =
-            fields.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+            values.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
         stmt.execute(params.as_slice())?;
     }
     Ok(())
@@ -248,17 +440,31 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("sales.csv"),
-            "item,amount\nCoffee,4.50\nTea,3.00\n\"Croissant, Butter\",5.50\n",
+            "item,amount,zip\nCoffee,4.50,00100\nTea,100.00,00200\n\"Croissant, Butter\",9.50,00300\n",
         )
         .unwrap();
 
+        // Numeric ORDER BY works without explicit CAST (100 > 9.5 > 4.5, not lexicographic "9.5" > "100").
         let out = run_sql_in_workspace(
             Some(&dir),
-            "SELECT item, CAST(amount AS REAL) AS price FROM \"sales.csv\" ORDER BY price DESC",
+            "SELECT item, amount, zip FROM sales ORDER BY amount DESC",
         )
         .unwrap();
-        assert!(out.contains("Croissant, Butter | 5.5"));
-        assert!(out.contains("Coffee | 4.5"));
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines[2].starts_with("Tea | 100 | 00200"), "{out}");
+        assert!(
+            lines[3].starts_with("Croissant, Butter | 9.5 | 00300"),
+            "{out}"
+        );
+        assert!(lines[4].starts_with("Coffee | 4.5 | 00100"), "{out}");
+
+        // Read-only `files` table lists workspace files.
+        let files_out = run_sql_in_workspace(
+            Some(&dir),
+            "SELECT path, extension FROM files WHERE extension = 'csv'",
+        )
+        .unwrap();
+        assert!(files_out.contains("sales.csv | csv"), "{files_out}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

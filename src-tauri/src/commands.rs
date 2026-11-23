@@ -61,6 +61,8 @@ pub struct BootstrapState {
     pub harnesses: Vec<HarnessOption>,
     pub code_execution: CodeExecutionBoundary,
     pub mcp_servers: Vec<McpServerStatus>,
+    pub ocr_available: bool,
+    pub system_ram_gb: u64,
 }
 
 fn now_epoch() -> u64 {
@@ -97,6 +99,8 @@ pub async fn get_bootstrap_state(
         harnesses,
         code_execution: code_execution_boundary(),
         mcp_servers,
+        ocr_available: keel_core::documents::ocr_available(),
+        system_ram_gb: keel_core::setup::system_ram_gb(),
     })
 }
 
@@ -423,15 +427,14 @@ async fn auto_start_local_model(
         let Some(path_str) = cand.local_path.as_deref() else {
             continue;
         };
+        let configured_ctx = state.config.lock().await.context_window;
+        let ram_gb = keel_core::setup::system_ram_gb();
+        let ctx_size =
+            keel_core::setup::effective_context_size(cand.context_size, configured_ctx, ram_gb);
         let started = {
             let mut rt = state.runtime.lock().await;
-            rt.start_model(
-                &cand.id,
-                Path::new(path_str),
-                cand.context_size.min(8192),
-                Some(&engine_str),
-            )
-            .await
+            rt.start_model(&cand.id, Path::new(path_str), ctx_size, Some(&engine_str))
+                .await
         };
         match started {
             Ok(status) => {
@@ -505,16 +508,17 @@ pub async fn start_model(
     let engine = resolve_or_install_engine(&app, &state).await?;
     let engine_str = engine.to_string_lossy().into_owned();
 
+    let ram_gb = keel_core::setup::system_ram_gb();
+    let ctx_size = keel_core::setup::effective_context_size(
+        model.context_size,
+        cfg_snapshot.context_window,
+        ram_gb,
+    );
     let status = {
         let mut rt = state.runtime.lock().await;
-        rt.start_model(
-            &model.id,
-            Path::new(&path_str),
-            model.context_size.min(8192),
-            Some(&engine_str),
-        )
-        .await
-        .map_err(|e| e.to_string())?
+        rt.start_model(&model.id, Path::new(&path_str), ctx_size, Some(&engine_str))
+            .await
+            .map_err(|e| e.to_string())?
     };
 
     let mut cfg = state.config.lock().await;
@@ -897,12 +901,18 @@ pub async fn send_message(
         .clone()
         .unwrap_or_else(|| cfg.selected_model_id.clone());
 
+    let ram_gb = keel_core::setup::system_ram_gb();
     let catalog = list_models(&state.data_dir, &cfg.custom_model_paths);
     let context_size = catalog
         .iter()
         .find(|m| m.id == model_name)
-        .map(|m| m.context_size.min(8192) as usize)
-        .unwrap_or(8192);
+        .map(|m| {
+            keel_core::setup::effective_context_size(m.context_size, cfg.context_window, ram_gb)
+                as usize
+        })
+        .unwrap_or_else(|| {
+            keel_core::setup::effective_context_size(8192, cfg.context_window, ram_gb) as usize
+        });
 
     let ws_path = if session.app_preset == AppPreset::Chat {
         None
@@ -1307,6 +1317,8 @@ pub struct CustomizeUpdate {
     pub auto_apply_edits: bool,
     pub harness_mode: String,
     pub llama_server_path: Option<String>,
+    #[serde(default)]
+    pub context_window: Option<u32>,
 }
 
 #[tauri::command]
@@ -1319,6 +1331,9 @@ pub async fn save_customize_settings(
     cfg.auto_apply_edits = update.auto_apply_edits;
     cfg.harness_mode = update.harness_mode;
     cfg.llama_server_path = update.llama_server_path.filter(|s| !s.trim().is_empty());
+    if let Some(ctx) = update.context_window {
+        cfg.context_window = if ctx == 0 { 0 } else { ctx.clamp(2048, 32768) };
+    }
     save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
     Ok(cfg.clone())
 }

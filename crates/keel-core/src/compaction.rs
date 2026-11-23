@@ -36,6 +36,7 @@ pub fn compact_messages(
         return (messages, false);
     }
 
+    let original_len = messages.len();
     let mut split_idx = messages.len().saturating_sub(keep_tail.max(1)).max(1);
     while split_idx > 1 && messages[split_idx].role != "user" {
         split_idx -= 1;
@@ -61,6 +62,7 @@ pub fn compact_messages(
     let mut out = Vec::with_capacity(1 + tail.len());
     out.extend_from_slice(head);
     out.extend_from_slice(tail);
+    let mut changed = out.len() < original_len;
     // Drop complete older turns when snippets plus the tail still exceed the budget.
     while estimate_tokens(&out) > budget_tokens {
         let latest_user = out.iter().rposition(|m| m.role == "user").unwrap_or(1);
@@ -75,6 +77,7 @@ pub fn compact_messages(
             .map(|(i, _)| i)
             .unwrap_or(latest_user);
         out.drain(1..end);
+        changed = true;
     }
     if estimate_tokens(&out) > budget_tokens {
         let non_tool_cost = estimate_tokens(
@@ -89,6 +92,7 @@ pub fn compact_messages(
         for message in out.iter_mut().filter(|m| m.role == "tool") {
             if message.content.chars().count() > each {
                 message.content = format!("{}\n[Tool output shortened to fit context. Read a smaller line range or query fewer rows for details.]",message.content.chars().take(each).collect::<String>());
+                changed = true;
             }
         }
     }
@@ -120,10 +124,11 @@ pub fn compact_messages(
                     .collect::<Vec<_>>()
                     .join("\n");
                 user.content = format!("{intro}{excerpts}{separator}{}", user.content);
+                changed = true;
             }
         }
     }
-    (out, true)
+    (out, changed)
 }
 
 #[cfg(test)]

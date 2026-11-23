@@ -35,6 +35,8 @@ impl SseLines {
 pub struct TextRouter {
     pending: String,
     mode: u8,
+    in_code_fence: bool,
+    backtick_run: usize,
 }
 impl TextRouter {
     pub fn push(&mut self, text: &str) -> Vec<(bool, String)> {
@@ -42,27 +44,56 @@ impl TextRouter {
         self.pending.push_str(text);
         let mut result: Vec<(bool, String)> = Vec::new();
         while !self.pending.is_empty() {
-            if let Some(tag) = TAGS.iter().find(|tag| self.pending.starts_with(**tag)) {
-                self.mode = match *tag {
-                    "<think>" => 1,
-                    "<tool_call>" => 2,
-                    _ => 0,
-                };
-                self.pending.drain(..tag.len());
-                continue;
+            if !self.in_code_fence {
+                if let Some(tag) = TAGS.iter().find(|tag| self.pending.starts_with(**tag)) {
+                    self.mode = match *tag {
+                        "<think>" => 1,
+                        "<tool_call>" => 2,
+                        _ => 0,
+                    };
+                    self.pending.drain(..tag.len());
+                    self.backtick_run = 0;
+                    continue;
+                }
+                if TAGS.iter().any(|tag| tag.starts_with(&self.pending)) {
+                    break;
+                }
             }
-            if TAGS.iter().any(|tag| tag.starts_with(&self.pending)) {
-                break;
+
+            // Advance in chunks up to the next `<` or `` ` `` (avoiding O(N^2) single-char drain).
+            let next_special = self
+                .pending
+                .char_indices()
+                .skip(1)
+                .find(|&(_, ch)| ch == '<' || ch == '`')
+                .map(|(idx, _)| idx)
+                .unwrap_or(self.pending.len());
+            let first = self.pending.chars().next().unwrap();
+            let take_bytes = if first == '<' || first == '`' {
+                first.len_utf8()
+            } else {
+                next_special
+            };
+            let chunk: String = self.pending.drain(..take_bytes).collect();
+            if self.mode == 0 {
+                if chunk == "`" {
+                    self.backtick_run += 1;
+                    if self.backtick_run == 3 {
+                        self.in_code_fence = !self.in_code_fence;
+                        self.backtick_run = 0;
+                    }
+                } else {
+                    self.backtick_run = 0;
+                }
             }
-            let character = self.pending.remove(0);
             if self.mode == 2 {
                 continue;
             }
             let thinking = self.mode == 1;
             if let Some(last) = result.last_mut().filter(|last| last.0 == thinking) {
-                last.1.push(character);
+                last.1.push_str(&chunk);
             } else {
-                result.push((thinking, character.to_string()));
+                result.push((thinking, chunk));
             }
         }
         result

@@ -39,6 +39,26 @@ fn catalog() -> RuntimeCatalog {
     serde_json::from_str(include_str!("runtime-catalog.json")).expect("bundled runtime catalog")
 }
 
+pub fn system_ram_gb() -> u64 {
+    let mut system = sysinfo::System::new();
+    system.refresh_memory();
+    system.total_memory() / (1024 * 1024 * 1024)
+}
+
+/// Computes the context window to request from `llama-server` for a model.
+/// `configured == 0` picks an automatic RAM-aware window (8K on <16 GB, 16K on >=16 GB),
+/// always clamped to the model's supported `model_max` and a safe 2048 minimum.
+pub fn effective_context_size(model_max: u32, configured: u32, ram_gb: u64) -> u32 {
+    let desired = if configured > 0 {
+        configured.clamp(2048, 32768)
+    } else if ram_gb >= 16 {
+        16384
+    } else {
+        8192
+    };
+    desired.min(model_max.max(2048))
+}
+
 pub fn plan(data: &Path, explicit: Option<&str>) -> SetupPlan {
     let mut system = sysinfo::System::new();
     system.refresh_memory();
@@ -329,5 +349,14 @@ mod tests {
         } else {
             assert_eq!(setup.runtime_path.as_deref(), explicit.to_str());
         }
+    }
+
+    #[test]
+    fn effective_context_size_scales_with_ram_and_caps_to_model() {
+        assert_eq!(effective_context_size(16384, 0, 8), 8192);
+        assert_eq!(effective_context_size(16384, 0, 16), 16384);
+        assert_eq!(effective_context_size(8192, 0, 32), 8192);
+        assert_eq!(effective_context_size(32768, 32768, 8), 32768);
+        assert_eq!(effective_context_size(16384, 32768, 32), 16384);
     }
 }
