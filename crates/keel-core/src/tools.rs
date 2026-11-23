@@ -65,7 +65,9 @@ pub fn confine_path(root: &Path, rel: &str) -> Result<PathBuf> {
     for comp in rel_path.components() {
         match comp {
             Component::Normal(p) => {
-                if p.to_string_lossy().eq_ignore_ascii_case(".git") {
+                let name = p.to_string_lossy();
+                let normalized = name.trim_end_matches(['.', ' ']);
+                if normalized.eq_ignore_ascii_case(".git") {
                     bail!("Refusing to modify internal .git metadata");
                 }
                 clean.push(p);
@@ -310,6 +312,24 @@ fn search_dir(root: &Path, dir: &Path, re: &Regex, out: &mut Vec<String>) {
     }
 }
 
+fn ensure_not_mcp_config(rel: &str) -> Result<()> {
+    let parts: Vec<String> = Path::new(rel.trim())
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(s) => Some(
+                s.to_string_lossy()
+                    .trim_end_matches(['.', ' '])
+                    .to_ascii_lowercase(),
+            ),
+            _ => None,
+        })
+        .collect();
+    if parts.len() == 2 && parts[0] == ".keel" && parts[1] == "mcp.json" {
+        bail!("Refusing to modify .keel/mcp.json through AI tools. Edit MCP servers in Connectors instead.");
+    }
+    Ok(())
+}
+
 pub fn build_staged_edit(
     root: &Path,
     kind: StagedEditKind,
@@ -318,6 +338,10 @@ pub fn build_staged_edit(
     replacement: Option<&str>,
     new_path: Option<&str>,
 ) -> Result<StagedEdit> {
+    ensure_not_mcp_config(path)?;
+    if let Some(np) = new_path {
+        ensure_not_mcp_config(np)?;
+    }
     let resolved = confine_path(root, path)?;
     match kind {
         StagedEditKind::Edit => {
@@ -423,6 +447,10 @@ pub fn build_staged_edit(
 }
 
 pub fn apply_staged_edit(root: &Path, edit: &mut StagedEdit) -> Result<()> {
+    ensure_not_mcp_config(&edit.path)?;
+    if let Some(ref np) = edit.new_path {
+        ensure_not_mcp_config(np)?;
+    }
     let resolved = confine_path(root, &edit.path)?;
     match edit.kind {
         StagedEditKind::Edit | StagedEditKind::Create => {
@@ -780,6 +808,16 @@ mod tests {
         assert!(confine_path(&dir, ".git/config").is_err());
         assert!(confine_path(&dir, ".GIT/config").is_err());
         assert!(confine_path(&dir, ".Git/hooks/pre-commit").is_err());
+        assert!(confine_path(&dir, ".git./config").is_err());
+        assert!(build_staged_edit(
+            &dir,
+            StagedEditKind::Create,
+            ".keel/mcp.json",
+            None,
+            Some("{}"),
+            None,
+        )
+        .is_err());
 
         let mut edit = build_staged_edit(
             &dir,

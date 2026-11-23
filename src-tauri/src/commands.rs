@@ -310,11 +310,6 @@ pub async fn delete_session_cmd(
         .turn_lock
         .try_lock()
         .map_err(|_| "Wait for the current reply to finish before changing this thread")?;
-    if let Ok(session) = load_session(&state.data_dir, &id) {
-        if let Some(checkout) = session.code_checkout {
-            let _ = tokio::task::spawn_blocking(move || checkout.remove()).await;
-        }
-    }
     delete_session(&state.data_dir, &id).map_err(|e| e.to_string())?;
     Ok(list_sessions(&state.data_dir))
 }
@@ -903,7 +898,7 @@ pub async fn send_message(
 
     let ram_gb = keel_core::setup::system_ram_gb();
     let catalog = list_models(&state.data_dir, &cfg.custom_model_paths);
-    let context_size = catalog
+    let configured_ctx = catalog
         .iter()
         .find(|m| m.id == model_name)
         .map(|m| {
@@ -913,6 +908,15 @@ pub async fn send_message(
         .unwrap_or_else(|| {
             keel_core::setup::effective_context_size(8192, cfg.context_window, ram_gb) as usize
         });
+    // When running our managed llama-server, always budget against the actual -c window it booted with.
+    let context_size = if rt_status.state == "running" {
+        rt_status
+            .active_context_size
+            .map(|c| c as usize)
+            .unwrap_or(configured_ctx)
+    } else {
+        configured_ctx
+    };
 
     let ws_path = if session.app_preset == AppPreset::Chat {
         None
@@ -1390,11 +1394,15 @@ pub async fn save_mcp_server(
             };
             let ws_root = validate_workspace_root(Path::new(ws_str)).map_err(|e| e.to_string())?;
             let mut local = load_workspace_mcp_config(&ws_root);
+            let had_other_entries = local.mcp_servers.keys().any(|k| k != &name);
             local.mcp_servers.insert(name, server);
             save_workspace_mcp_config(&ws_root, &local).map_err(|e| e.to_string())?;
-            let mut cfg = state.config.lock().await;
-            cfg.set_mcp_workspace_trusted(&ws_root, true);
-            save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
+            // Only auto-trust when this file had no other pre-existing unreviewed servers.
+            if !had_other_entries {
+                let mut cfg = state.config.lock().await;
+                cfg.set_mcp_workspace_trusted(&ws_root, true);
+                save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
+            }
         }
         McpScope::Global => {
             let mut global = load_global_mcp_config(&state.config_dir);

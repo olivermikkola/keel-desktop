@@ -12,30 +12,54 @@ pub struct ParsedToolCall {
 }
 
 /// Extracts `<think>...</think>` blocks from model text so UI can show reasoning separately.
+/// Preserves literal `<think>` mentions that appear inside fenced code blocks (```).
 pub fn split_thinking(raw: &str) -> (String, String) {
     let mut thinking = String::new();
     let mut visible = String::new();
+    let mut in_think = false;
+    let mut in_fence = false;
     let mut rest = raw;
 
-    while let Some(start) = rest.find("<think>") {
-        visible.push_str(&rest[..start]);
-        let after_start = &rest[start + "<think>".len()..];
-        if let Some(end) = after_start.find("</think>") {
+    while !rest.is_empty() {
+        if !in_think {
+            let next_fence = rest.find("```");
+            let next_think = if in_fence { None } else { rest.find("<think>") };
+            match (next_fence, next_think) {
+                (Some(f), Some(t)) if f < t => {
+                    visible.push_str(&rest[..f + 3]);
+                    rest = &rest[f + 3..];
+                    in_fence = !in_fence;
+                }
+                (Some(f), None) => {
+                    visible.push_str(&rest[..f + 3]);
+                    rest = &rest[f + 3..];
+                    in_fence = !in_fence;
+                }
+                (_, Some(t)) => {
+                    visible.push_str(&rest[..t]);
+                    rest = &rest[t + "<think>".len()..];
+                    in_think = true;
+                }
+                (None, None) => {
+                    visible.push_str(rest);
+                    break;
+                }
+            }
+        } else if let Some(end) = rest.find("</think>") {
             if !thinking.is_empty() {
                 thinking.push('\n');
             }
-            thinking.push_str(after_start[..end].trim());
-            rest = &after_start[end + "</think>".len()..];
+            thinking.push_str(rest[..end].trim());
+            rest = &rest[end + "</think>".len()..];
+            in_think = false;
         } else {
             if !thinking.is_empty() {
                 thinking.push('\n');
             }
-            thinking.push_str(after_start.trim());
-            rest = "";
+            thinking.push_str(rest.trim());
             break;
         }
     }
-    visible.push_str(rest);
     (thinking.trim().to_string(), visible.trim().to_string())
 }
 

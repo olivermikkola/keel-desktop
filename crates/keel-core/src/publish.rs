@@ -124,6 +124,21 @@ pub fn publish_changes(
         bail!("There are no new changes to commit on `{branch}`.");
     }
 
+    let scoped: Vec<&str> = plan
+        .files
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if !scoped.is_empty()
+        && !status.dirty_files.is_empty()
+        && !scoped
+            .iter()
+            .any(|p| status.dirty_files.iter().any(|d| d == p))
+    {
+        bail!("None of the applied patch files have uncommitted changes to publish.");
+    }
+
     if status.branch != branch {
         let branch_exists = git(&root)
             .args([
@@ -141,16 +156,14 @@ pub fn publish_changes(
     }
 
     if !status.dirty_files.is_empty() {
-        let scoped: Vec<&str> = plan
-            .files
-            .iter()
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .collect();
         if scoped.is_empty() {
             run(&root, ["add", "--all", "--"])?;
         } else {
-            let mut add_args: Vec<&OsStr> = vec![OsStr::new("add"), OsStr::new("--")];
+            let mut add_args: Vec<&OsStr> = vec![
+                OsStr::new("--literal-pathspecs"),
+                OsStr::new("add"),
+                OsStr::new("--"),
+            ];
             for path in &scoped {
                 add_args.push(OsStr::new(path));
             }
@@ -196,7 +209,7 @@ pub fn publish_changes(
             if !output.status.success() {
                 bail!(
                     "Branch pushed, but `gh pr create` failed: {}",
-                    String::from_utf8_lossy(&output.stderr).trim()
+                    redact_credentials_in_text(String::from_utf8_lossy(&output.stderr).trim())
                 );
             }
             let url = String::from_utf8_lossy(&output.stdout).trim().to_owned();

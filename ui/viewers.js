@@ -72,13 +72,14 @@ const CODE_EXTENSIONS = new Set([
 function injectPrintBridge(html) {
   const bridge =
     `<script>window.addEventListener("message",function(e){if(e&&e.data&&e.data.keelPrint){window.print();}});</script>`;
-  if (/<\/body>/i.test(html)) {
-    return html.replace(/<\/body>/i, `${bridge}</body>`);
+  const idx = html.toLowerCase().lastIndexOf("</body>");
+  if (idx >= 0) {
+    return `${html.slice(0, idx)}${bridge}${html.slice(idx)}`;
   }
   return `${html}\n${bridge}`;
 }
 
-export function renderViewer(container, fileName, content) {
+export function renderViewer(container, fileName, content, { onExportHtml } = {}) {
   if (!fileName) {
     container.innerHTML = `<div class="viewer-empty">No previewable file found in this workspace yet. Ask Keel to create one, or pick a file from the dropdown above.</div>`;
     return;
@@ -95,7 +96,11 @@ export function renderViewer(container, fileName, content) {
     downloadBtn.className = "btn btn-ghost btn-sm";
     downloadBtn.type = "button";
     downloadBtn.textContent = "Export HTML";
-    downloadBtn.addEventListener("click", () => {
+    downloadBtn.addEventListener("click", async () => {
+      if (onExportHtml) {
+        await onExportHtml(fileName, content);
+        return;
+      }
       const blob = new Blob([content], { type: "text/html;charset=utf-8" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
