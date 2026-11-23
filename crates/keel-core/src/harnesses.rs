@@ -206,29 +206,83 @@ pub fn read_keel_session(path: &Path) -> Result<Vec<UiMessage>> {
         let kind = entry["kind"]
             .as_str()
             .context("File is not a Keel session log")?;
-        if !matches!(kind, "user" | "assistant") {
-            continue;
+        match kind {
+            "user" | "assistant" => {
+                let text = entry["data"]["text"]
+                    .as_str()
+                    .context("Invalid conversation message in Keel session log")?;
+                if text.trim().is_empty() {
+                    continue;
+                }
+                messages.push(UiMessage {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    role: kind.into(),
+                    content: text.into(),
+                    thinking: None,
+                    tool_calls: vec![],
+                    attachments: vec![],
+                    status: "complete".into(),
+                });
+            }
+            "tool" => {
+                let Some(log) = tool_log_from_journal_data(&entry["data"]) else {
+                    continue;
+                };
+                if let Some(message) = messages.iter_mut().rev().find(|m| m.role == "assistant") {
+                    message.tool_calls.push(log);
+                } else {
+                    messages.push(UiMessage {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        role: "assistant".into(),
+                        content: String::new(),
+                        thinking: None,
+                        tool_calls: vec![log],
+                        attachments: vec![],
+                        status: "complete".into(),
+                    });
+                }
+            }
+            _ => continue,
         }
-        let text = entry["data"]["text"]
-            .as_str()
-            .context("Invalid conversation message in Keel session log")?;
-        if text.trim().is_empty() {
-            continue;
-        }
-        messages.push(UiMessage {
-            id: uuid::Uuid::new_v4().to_string(),
-            role: kind.into(),
-            content: text.into(),
-            thinking: None,
-            tool_calls: vec![],
-            attachments: vec![],
-            status: "complete".into(),
-        });
     }
     if !messages.iter().any(|message| message.role == "user") {
         bail!("Keel session log has no conversation to open");
     }
     Ok(messages)
+}
+
+fn tool_log_from_journal_data(data: &Value) -> Option<crate::sessions::UiToolLog> {
+    let name = data
+        .get("name")
+        .or_else(|| data.get("tool"))
+        .and_then(Value::as_str)?
+        .to_string();
+    if name.trim().is_empty() {
+        return None;
+    }
+    let arguments = data
+        .get("arguments")
+        .or_else(|| data.get("args"))
+        .cloned()
+        .unwrap_or_else(|| Value::Object(Default::default()));
+    let result = data
+        .get("output")
+        .or_else(|| data.get("result"))
+        .and_then(|v| {
+            v.as_str()
+                .map(|s| s.to_string())
+                .or_else(|| Some(v.to_string()))
+        });
+    let is_error = result
+        .as_deref()
+        .is_some_and(|r| r.starts_with("error:") || r.starts_with("[Denied"));
+    Some(crate::sessions::UiToolLog {
+        name,
+        arguments,
+        result,
+        is_error,
+        edit_id: None,
+    })
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -239,6 +293,9 @@ enum KeelEvent {
         stop_protocol: Option<String>,
         #[serde(default)]
         sandbox: Option<String>,
+        /// Present on current Keel CLI builds; ignored for handshake.
+        #[serde(default)]
+        context_window: Option<u64>,
     },
     Text {
         content: String,
@@ -262,6 +319,13 @@ enum KeelEvent {
         tool: String,
         arguments: Value,
     },
+    SentinelVeto {
+        tool_name: String,
+        reason: String,
+    },
+    TurnSummary {
+        summary: Value,
+    },
     Done {
         status: String,
         answer: Option<String>,
@@ -269,6 +333,33 @@ enum KeelEvent {
     },
     #[serde(other)]
     Other,
+}
+
+fn turn_summary_note(summary: &Value) -> String {
+    let files = summary
+        .get("files")
+        .and_then(Value::as_u64)
+        .or_else(|| summary.get("files_touched").and_then(Value::as_u64));
+    let tools = summary.get("tools").and_then(Value::as_u64);
+    let tokens = summary
+        .get("tokens")
+        .and_then(Value::as_u64)
+        .or_else(|| summary.get("total_tokens").and_then(Value::as_u64));
+    let mut parts = Vec::new();
+    if let Some(n) = tools {
+        parts.push(format!("{n} tool call{}", if n == 1 { "" } else { "s" }));
+    }
+    if let Some(n) = files {
+        parts.push(format!("{n} file{}", if n == 1 { "" } else { "s" }));
+    }
+    if let Some(n) = tokens {
+        parts.push(format!("{n} tokens"));
+    }
+    if parts.is_empty() {
+        "Keel CLI turn finished.".into()
+    } else {
+        format!("Keel CLI turn: {}.", parts.join(", "))
+    }
 }
 
 fn parse_keel_event_line(line: &[u8]) -> Result<KeelEvent> {
@@ -281,6 +372,7 @@ fn keel_capabilities_ready(event: &KeelEvent) -> Result<bool> {
             approval_protocol,
             stop_protocol,
             sandbox,
+            context_window: _,
         } if approval_protocol == "stdio-line-v1"
             && stop_protocol.as_deref() == Some("sigint-shell-v1") =>
         {
@@ -463,6 +555,20 @@ where
                         edit_id: None,
                     });
                 }
+            }
+            KeelEvent::SentinelVeto { tool_name, reason } => {
+                tools.retain(|_, name| name != &tool_name);
+                emit(AgentEvent::ToolCallResult {
+                    name: tool_name,
+                    result: format!("Blocked by Keel security: {reason}"),
+                    is_error: true,
+                    edit_id: None,
+                });
+            }
+            KeelEvent::TurnSummary { summary } => {
+                emit(AgentEvent::Compacted {
+                    note: turn_summary_note(&summary),
+                });
             }
             KeelEvent::ApprovalRequest {
                 protocol,
@@ -727,5 +833,66 @@ mod tests {
             b"allow\n"
         );
         assert_eq!(approval_stdin_line(ApprovalDecision::Deny), b"deny\n");
+    }
+
+    #[test]
+    fn read_keel_session_projects_tool_observations_onto_assistant() {
+        let dir = std::env::temp_dir().join(format!("keel_journal_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+        std::fs::write(
+            &path,
+            r#"{"kind":"user","data":{"text":"list files"}}
+{"kind":"assistant","data":{"text":"Looking around."}}
+{"kind":"tool","data":{"name":"list_files","arguments":{"path":"."},"output":"src\n"}}
+{"kind":"assistant","data":{"text":"There is a src folder."}}
+"#,
+        )
+        .unwrap();
+        let messages = read_keel_session(&path).unwrap();
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[1].tool_calls.len(), 1);
+        assert_eq!(messages[1].tool_calls[0].name, "list_files");
+        assert_eq!(
+            messages[1].tool_calls[0].result.as_deref(),
+            Some("src\n")
+        );
+        assert_eq!(messages[2].content, "There is a src folder.");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_keel_session_requires_a_user_turn() {
+        let dir = std::env::temp_dir().join(format!("keel_journal_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("empty.jsonl");
+        std::fs::write(&path, r#"{"kind":"assistant","data":{"text":"hi"}}"#).unwrap();
+        let err = read_keel_session(&path).unwrap_err().to_string();
+        assert!(err.contains("no conversation"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn turn_summary_and_sentinel_events_parse() {
+        let summary = parse_keel_event_line(
+            br#"{"type":"turn_summary","summary":{"tools":2,"files":1,"tokens":40}}"#,
+        )
+        .unwrap();
+        match summary {
+            KeelEvent::TurnSummary { summary } => {
+                assert_eq!(turn_summary_note(&summary), "Keel CLI turn: 2 tool calls, 1 file, 40 tokens.");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        let veto = parse_keel_event_line(
+            br#"{"type":"sentinel_veto","tool_name":"shell","reason":"blocked"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            veto,
+            KeelEvent::SentinelVeto { tool_name, reason }
+                if tool_name == "shell" && reason == "blocked"
+        ));
     }
 }
