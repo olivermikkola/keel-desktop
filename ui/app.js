@@ -3003,20 +3003,16 @@ function openCustomizeModal() {
     });
     body.appendChild(appearanceCard);
 
-    const recommendedHarness = b.recommended_code_harness || "keel";
     const harnessOptions = b.harnesses
       .map((h) => {
-        const recommended = h.id === recommendedHarness && h.available ? " — recommended" : "";
+        const recommended = h.id === "keel" ? " — default" : "";
         const missing = h.available ? "" : " (not installed)";
         return `<option value="${escapeHtml(h.id)}" ${h.id === b.config.harness_mode ? "selected" : ""}>${escapeHtml(h.name)}${recommended}${missing}</option>`;
       })
       .join("");
-    const harnessHint =
-      recommendedHarness === "keel-cli" && b.config.harness_mode !== "keel-cli"
-        ? `<p class="muted">The Keel CLI is installed. Prefer it for Code so Desktop and the terminal share one session journal.</p>`
-        : recommendedHarness === "keel-cli"
-          ? `<p class="muted">Code uses the Keel CLI. Finish the current turn before resuming the same journal in a terminal.</p>`
-          : `<p class="muted">Install the Keel CLI on PATH to make it the recommended Code engine.</p>`;
+    const harnessHint = b.config.harness_mode === "keel-cli"
+      ? `<p class="muted">Code uses the Keel CLI. Finish the current turn before resuming the same journal in a terminal.</p>`
+      : `<p class="muted">Select Keel CLI to share Code journals with a current CLI installed on PATH.</p>`;
     const card = document.createElement("div");
     card.className = "card";
     card.innerHTML = `

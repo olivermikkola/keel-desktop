@@ -4,8 +4,8 @@ use keel_core::agent::{
 use keel_core::apps::{AppPreset, AppPresetInfo};
 use keel_core::audio::{self, AudioArtifact, AudioPackManifest};
 use keel_core::harnesses::{
-    code_execution_boundary, detect_harnesses, recommended_code_harness, run_external_harness,
-    run_keel_cli_turn, CodeExecutionBoundary, HarnessOption, KeelCliTurn,
+    code_execution_boundary, detect_harnesses, run_external_harness, run_keel_cli_turn,
+    validate_keel_session_log, CodeExecutionBoundary, HarnessOption, KeelCliTurn,
 };
 use keel_core::mcp::{
     inspect_mcp_servers_with_trust, load_global_mcp_config, load_mcp_configs_with_trust,
@@ -77,7 +77,6 @@ pub struct BootstrapState {
     pub projects: Vec<keel_core::projects::ProjectInfo>,
     pub presets: Vec<AppPresetInfo>,
     pub harnesses: Vec<HarnessOption>,
-    pub recommended_code_harness: String,
     pub code_execution: CodeExecutionBoundary,
     pub mcp_servers: Vec<McpServerStatus>,
     pub ocr_available: bool,
@@ -105,7 +104,6 @@ pub async fn get_bootstrap_state(
     let sessions = list_sessions(&state.data_dir);
     let presets = AppPreset::all().iter().map(|p| p.info()).collect();
     let harnesses = detect_harnesses();
-    let recommended_code = recommended_code_harness(&harnesses).to_string();
     let ws = workspace_path.as_deref().map(Path::new);
     let ws_trusted = ws.map(|p| cfg.is_mcp_workspace_trusted(p)).unwrap_or(false);
     let loaded_mcp = load_mcp_configs_with_trust(&state.config_dir, ws, ws_trusted);
@@ -134,7 +132,6 @@ pub async fn get_bootstrap_state(
         projects: keel_core::projects::project_info(&state.data_dir),
         presets,
         harnesses,
-        recommended_code_harness: recommended_code,
         code_execution: code_execution_boundary(),
         mcp_servers,
         ocr_available: keel_core::documents::ocr_available(),
