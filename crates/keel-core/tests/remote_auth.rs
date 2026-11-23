@@ -78,7 +78,7 @@ async fn chat_completions_sends_authorization_bearer_when_key_set() {
     assert_eq!(outcome.content, "ok");
     let header = server.await.unwrap();
     assert!(
-        header.contains("Authorization: Bearer sk-chat-fixture"),
+        header.to_ascii_lowercase().contains("authorization: bearer sk-chat-fixture"),
         "missing auth header in: {header}"
     );
     assert!(header.contains("POST /v1/chat/completions"));

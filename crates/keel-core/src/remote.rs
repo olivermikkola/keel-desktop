@@ -63,7 +63,8 @@ pub fn save_external_api_key(data_dir: &Path, key: Option<&str>) -> Result<()> {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+                    let _ =
+                        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
                 }
             }
             write_private_file(&path, value.as_bytes())
@@ -109,10 +110,8 @@ mod tests {
     use crate::sessions::{load_config, save_config, DesktopConfig};
 
     fn temp_dir(label: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "keel_remote_{label}_{}",
-            uuid::Uuid::new_v4()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("keel_remote_{label}_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&path).unwrap();
         path
     }

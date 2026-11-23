@@ -17,8 +17,7 @@ use keel_core::models::{
     list_models, models_dir, parse_huggingface_gguf_url, CatalogModel,
 };
 use keel_core::runtime::{
-    check_runner_starts, find_llama_server, ModelLaunch, RuntimeManager,
-    RuntimeStatus,
+    check_runner_starts, find_llama_server, ModelLaunch, RuntimeManager, RuntimeStatus,
 };
 use keel_core::sessions::{
     delete_session, list_sessions, load_session, save_config, save_session, ChatSession,
@@ -853,8 +852,9 @@ pub async fn set_external_endpoint(
 
     match api_key.as_deref().map(str::trim) {
         None => {}
-        Some("") => keel_core::remote::clear_external_api_key(&state.data_dir)
-            .map_err(|e| e.to_string())?,
+        Some("") => {
+            keel_core::remote::clear_external_api_key(&state.data_dir).map_err(|e| e.to_string())?
+        }
         Some(key) => keel_core::remote::save_external_api_key(&state.data_dir, Some(key))
             .map_err(|e| e.to_string())?,
     }
@@ -872,6 +872,7 @@ pub async fn set_external_endpoint(
 
 #[tauri::command]
 pub async fn clear_external_endpoint(state: State<'_, AppState>) -> Result<RuntimeStatus, String> {
+    let _ = keel_core::remote::clear_external_api_key(&state.data_dir);
     stop_runtime(state).await
 }
 

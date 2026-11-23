@@ -699,16 +699,14 @@ mod runner_check_tests {
             let _ = socket.write_all(response.as_bytes()).await;
             request
         });
-        let ids = probe_openai_models_with_auth(
-            &format!("http://{addr}/v1"),
-            Some("sk-fixture-key"),
-        )
-        .await
-        .unwrap();
+        let ids =
+            probe_openai_models_with_auth(&format!("http://{addr}/v1"), Some("sk-fixture-key"))
+                .await
+                .unwrap();
         assert_eq!(ids, vec!["remote-model".to_string()]);
         let request = server.await.unwrap();
         assert!(
-            request.contains("Authorization: Bearer sk-fixture-key"),
+            request.to_ascii_lowercase().contains("authorization: bearer sk-fixture-key"),
             "missing auth header in: {request}"
         );
         assert!(
