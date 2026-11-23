@@ -782,12 +782,19 @@ pub async fn check_current_model(
         .ok_or_else(|| {
             "Your AI isn't ready yet. Start it in Models, then try the check again.".to_string()
         })?;
-    let report = model_check::run_model_check(&status.base_url, &model_id)
-        .await
-        .map_err(|_| {
-            "This model didn't answer the check. Make sure your AI is running and try again."
-                .to_string()
-        })?;
+    // External endpoints may require the stored Bearer key; local keep-alive does not.
+    let api_key = if status.state == "external" {
+        keel_core::remote::load_external_api_key(&state.data_dir)
+    } else {
+        None
+    };
+    let report =
+        model_check::run_model_check_with_auth(&status.base_url, &model_id, api_key.as_deref())
+            .await
+            .map_err(|_| {
+                "This model didn't answer the check. Make sure your AI is running and try again."
+                    .to_string()
+            })?;
     if report
         .items
         .iter()
