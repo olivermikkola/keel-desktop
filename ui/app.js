@@ -2554,7 +2554,7 @@ function openCustomizeModal() {
     audioCard.className = "card";
     audioCard.innerHTML = `
       <strong>Speech packs</strong>
-      <p class="muted">Local speech-to-text and text-to-speech only. Mark a pack installed, register a local or Whisper.cpp runner, download a checksum-pinned fixture, or record a download URL stub. Whisper base stays unpinned until a real ggml URL + SHA-256 are published — no fake fetch.</p>
+      <p class="muted">Local speech-to-text and text-to-speech only. Mark a pack installed, register a local / Whisper.cpp / Piper runner, download a checksum-pinned fixture (Whisper tiny q5_1 or Piper en_US kusal q8), or record a download URL stub. Whisper base stays unpinned until a real ggml URL + SHA-256 are published — no fake fetch.</p>
       <div id="audio-packs-list"><p class="muted">Loading…</p></div>
       <strong style="display:block;margin-top:14px">Recent audio artifacts</strong>
       <p class="muted">Local STT transcripts and TTS wav copies written under the data directory after a successful run. Paths only — no cloud upload or fake player.</p>
@@ -2656,7 +2656,9 @@ function openCustomizeModal() {
                   ${
                     pack.capability === "stt"
                       ? `<button type="button" class="btn btn-sm btn-ghost" data-audio-whisper="${id}">Whisper.cpp…</button>`
-                      : ""
+                      : pack.capability === "tts"
+                        ? `<button type="button" class="btn btn-sm btn-ghost" data-audio-piper="${id}">Piper…</button>`
+                        : ""
                   }
                   <button type="button" class="btn btn-sm btn-ghost" data-audio-url="${id}">Download URL…</button>
                 </div>
@@ -2709,7 +2711,7 @@ function openCustomizeModal() {
           btn.addEventListener("click", async () => {
             const packId = btn.getAttribute("data-audio-runner");
             const command = window.prompt(
-              "Local binary or script for this pack (absolute path or PATH name).\nSTT: command <audio_path> → transcript on stdout.\nTTS: command --text <text> --output <path>.\nFor Whisper.cpp use the Whisper.cpp… button instead.",
+              "Local binary or script for this pack (absolute path or PATH name).\nSTT: command <audio_path> → transcript on stdout.\nTTS: command --text <text> --output <path>.\nFor Whisper.cpp / Piper use those dedicated buttons instead.",
               "",
             );
             if (command == null) return;
@@ -2760,6 +2762,44 @@ function openCustomizeModal() {
                 model: trimmedModel,
               });
               showToast("Whisper.cpp runner registered.");
+              await renderAudioPacks();
+            } catch (err) {
+              showToast(friendlyRuntimeError(err));
+              btn.disabled = false;
+            }
+          });
+        });
+        slot.querySelectorAll("[data-audio-piper]").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const packId = btn.getAttribute("data-audio-piper");
+            const command = window.prompt(
+              "Piper binary (absolute path or PATH name, e.g. piper).\nInvokes: command …args… --model <onnx> --output_file <path> with text on stdin.",
+              "piper",
+            );
+            if (command == null) return;
+            const trimmedCmd = command.trim();
+            if (!trimmedCmd) {
+              showToast("Provide a Piper binary.");
+              return;
+            }
+            const model = window.prompt(
+              "Path to an existing Piper ONNX voice on this machine.\nRequires a sibling <model>.onnx.json. Download the checksummed tts-piper-en-kusal-q8 pack or point at your own voice.",
+              "",
+            );
+            if (model == null) return;
+            const trimmedModel = model.trim();
+            if (!trimmedModel) {
+              showToast("Provide a Piper ONNX model path.");
+              return;
+            }
+            btn.disabled = true;
+            try {
+              await invoke("register_piper_runner", {
+                packId,
+                command: trimmedCmd,
+                model: trimmedModel,
+              });
+              showToast("Piper runner registered.");
               await renderAudioPacks();
             } catch (err) {
               showToast(friendlyRuntimeError(err));

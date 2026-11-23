@@ -1,10 +1,10 @@
 //! Speech-to-text and text-to-speech capability packs.
 //!
 //! Catalog entries ship as stubs. Users can mark a pack installed, register a
-//! local / Whisper.cpp runner, or download a **checksum-pinned** artifact when
-//! the catalog lists `download_url` + `sha256`. Whisper base stays on an unpinned
-//! placeholder until a real ggml URL is pinned. Remote text-provider auth is a
-//! separate pillar (not wired here).
+//! local / Whisper.cpp / Piper runner, or download a **checksum-pinned** artifact
+//! when the catalog lists `download_url` + `sha256`. Whisper base stays on an
+//! unpinned placeholder until a real ggml URL is pinned. Remote text-provider
+//! auth is a separate pillar (not wired here).
 //!
 //! ## Local runner contract (`adapter`: omitted / `"local"`)
 //!
@@ -31,22 +31,34 @@
 //! Transcript is read from stdout (trim). No timestamps flags are injected; pass
 //! extras via `args` (for example `["-nt"]`) if the binary needs them.
 //!
-//! ## TTS adapter (`adapter`: omitted / `"local"`)
+//! ## Piper TTS runner contract (`adapter`: `"piper"`)
 //!
-//! [`run_tts`] dispatches through [`TtsAdapter`]. Today only
-//! [`AudioTtsAdapterKind::Local`] exists — there is no second bundled TTS engine
-//! (no Piper binary download). A `whisper_cpp` adapter on a TTS pack is rejected
-//! with a clear error. Local argv contract:
-//! `command …args… --text <text> --output <path>`; the runner must create the
-//! output file.
+//! TTS only. Official [Piper](https://github.com/rhasspy/piper) CLI shape:
+//! ```json
+//! {
+//!   "adapter": "piper",
+//!   "command": "piper",
+//!   "args": [],
+//!   "model": "/path/to/voice.onnx"
+//! }
+//! ```
+//!
+//! TTS argv: `command …args… --model <model> --output_file <path>` with synthesis
+//! text on **stdin** (Piper's documented contract). Piper also expects
+//! `<model>.onnx.json` beside the ONNX file; the checksummed
+//! [`PIPER_EN_KUSAL_Q8_PACK_ID`] download fetches that sidecar after the weights.
+//! A `whisper_cpp` adapter on a TTS pack (or `piper` on STT) is rejected with a
+//! clear error. Local argv contract remains
+//! `command …args… --text <text> --output <path>`.
 //!
 //! Env (optional overrides):
 //! - `KEEL_AUDIO_STT_CMD` — PATH command used when no `runner.json` exists (local adapter)
 //! - `KEEL_AUDIO_TTS_CMD` — PATH command used when no `runner.json` exists (local TTS)
 //! - `KEEL_WHISPER_MODEL` — ggml model path when `runner.json` omits `model`
+//! - `KEEL_PIPER_MODEL` — Piper ONNX path when `runner.json` omits `model`
 //!
 //! Weights are **not** bundled. Missing model paths fail with a clear error; the
-//! catalog `download_url` for Whisper is an unpinned `keel-pack:unpinned/…`
+//! catalog `download_url` for Whisper base is an unpinned `keel-pack:unpinned/…`
 //! placeholder until a checksummed artifact is pinned.
 //!
 //! ## Audio artifacts
@@ -62,8 +74,9 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Capability ids exposed by the audio pack catalog.
@@ -91,6 +104,25 @@ pub const WHISPER_TINY_Q5_BYTES: u64 = 32_152_673;
 pub const WHISPER_TINY_Q5_DOWNLOAD_URL: &str =
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_1.bin";
 
+/// Checksum-pinned Piper English voice (Hugging Face `okasi/piper-english-kusal-onnx-q8`).
+///
+/// Quantized ONNX (~16.8 MiB) derived from `rhasspy/piper-voices` `en_US-kusal-medium`.
+/// HF LFS oid == SHA-256 of the ONNX bytes. Companion `.onnx.json` is fetched as a
+/// checksummed sidecar on download (Piper requires it beside the model).
+pub const PIPER_EN_KUSAL_Q8_PACK_ID: &str = "tts-piper-en-kusal-q8";
+pub const PIPER_EN_KUSAL_Q8_FILE: &str = "en_US-kusal-medium-q8.onnx";
+pub const PIPER_EN_KUSAL_Q8_SHA256: &str =
+    "e7efc0d0015643e28b7533cdb4d432a91aa6ea7887b99f54a8a3c10f803730ef";
+pub const PIPER_EN_KUSAL_Q8_BYTES: u64 = 16_762_569;
+pub const PIPER_EN_KUSAL_Q8_DOWNLOAD_URL: &str =
+    "https://huggingface.co/okasi/piper-english-kusal-onnx-q8/resolve/main/en_US-kusal-medium-q8.onnx";
+pub const PIPER_EN_KUSAL_Q8_JSON_FILE: &str = "en_US-kusal-medium-q8.onnx.json";
+pub const PIPER_EN_KUSAL_Q8_JSON_SHA256: &str =
+    "ddd3c4dfd8b4f568150c934fb94912dd788d44db87f4f0a328c469d7a6761f41";
+pub const PIPER_EN_KUSAL_Q8_JSON_BYTES: u64 = 4_884;
+pub const PIPER_EN_KUSAL_Q8_JSON_DOWNLOAD_URL: &str =
+    "https://huggingface.co/okasi/piper-english-kusal-onnx-q8/resolve/main/en_US-kusal-medium-q8.onnx.json";
+
 /// Tiny checksummed STT fixture used to exercise download / remove (not Whisper weights).
 pub const DEMO_STT_PACK_ID: &str = "stt-demo-fixture";
 pub const DEMO_STT_FILE: &str = "demo-stt.weights";
@@ -112,6 +144,9 @@ pub fn demo_stt_bytes() -> &'static [u8] {
 
 /// Env override for the Whisper.cpp ggml model path when `runner.json` omits `model`.
 pub const KEEL_WHISPER_MODEL_ENV: &str = "KEEL_WHISPER_MODEL";
+
+/// Env override for the Piper ONNX model path when `runner.json` omits `model`.
+pub const KEEL_PIPER_MODEL_ENV: &str = "KEEL_PIPER_MODEL";
 
 /// Which audio capability a pack provides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,7 +180,9 @@ pub enum AudioRunnerKind {
     AudioTts,
 }
 
-/// How [`run_stt`] interprets `runner.json`.
+/// How [`run_stt`] / shared `runner.json` interprets the `adapter` field.
+///
+/// Piper is stored here so TTS packs can reuse the same JSON shape; STT rejects it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AudioSttAdapterKind {
@@ -154,6 +191,8 @@ pub enum AudioSttAdapterKind {
     Local,
     /// Whisper.cpp CLI: `command …args… -m <model> -f <audio_path>` → stdout.
     WhisperCpp,
+    /// Piper TTS CLI (TTS packs only): stdin text + `--model` / `--output_file`.
+    Piper,
 }
 
 impl AudioSttAdapterKind {
@@ -161,6 +200,7 @@ impl AudioSttAdapterKind {
         match self {
             Self::Local => "local",
             Self::WhisperCpp => "whisper_cpp",
+            Self::Piper => "piper",
         }
     }
 
@@ -168,35 +208,37 @@ impl AudioSttAdapterKind {
         match raw.trim().to_ascii_lowercase().as_str() {
             "" | "local" | "command" | "generic" => Ok(Self::Local),
             "whisper_cpp" | "whisper-cpp" | "whisper" => Ok(Self::WhisperCpp),
-            other => bail!("Unknown STT adapter '{other}'. Use 'local' or 'whisper_cpp'."),
+            "piper" => Ok(Self::Piper),
+            other => bail!("Unknown runner adapter '{other}'. Use 'local', 'whisper_cpp', or 'piper'."),
         }
     }
 }
 
 /// How [`run_tts`] interprets `runner.json`.
-///
-/// Only [`Self::Local`] is implemented. A second engine is not invented here —
-/// wire a real argv contract before adding another variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AudioTtsAdapterKind {
     /// Generic: `command …args… --text <text> --output <path>` (must create the file).
     #[default]
     Local,
+    /// Piper CLI: text on stdin, `command …args… --model <model> --output_file <path>`.
+    Piper,
 }
 
 impl AudioTtsAdapterKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Local => "local",
+            Self::Piper => "piper",
         }
     }
 
     pub fn parse(raw: &str) -> Result<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "" | "local" | "command" | "generic" => Ok(Self::Local),
+            "piper" => Ok(Self::Piper),
             other => bail!(
-                "Unknown TTS adapter '{other}'. Use 'local' (command … --text <text> --output <path>)."
+                "Unknown TTS adapter '{other}'. Use 'local' (command … --text <text> --output <path>) or 'piper' (stdin text; --model / --output_file)."
             ),
         }
     }
@@ -204,12 +246,13 @@ impl AudioTtsAdapterKind {
     /// Map the shared `runner.json` `adapter` field into a TTS kind.
     ///
     /// `runner.json` reuses the same `adapter` key as STT ([`AudioSttAdapterKind`]).
-    /// TTS accepts only `local`; STT-only kinds such as `whisper_cpp` fail honestly.
+    /// TTS accepts `local` and `piper`; STT-only kinds such as `whisper_cpp` fail honestly.
     pub fn from_runner_adapter(kind: AudioSttAdapterKind) -> Result<Self> {
         match kind {
             AudioSttAdapterKind::Local => Ok(Self::Local),
+            AudioSttAdapterKind::Piper => Ok(Self::Piper),
             AudioSttAdapterKind::WhisperCpp => bail!(
-                "TTS runner adapter 'whisper_cpp' is not supported. Use 'local' (command … --text <text> --output <path>). No second TTS engine is bundled yet."
+                "TTS runner adapter 'whisper_cpp' is not supported. Use 'local' (command … --text <text> --output <path>) or 'piper' (stdin text; --model / --output_file)."
             ),
         }
     }
@@ -251,11 +294,12 @@ pub struct AudioRunnerConfig {
     pub args: Vec<String>,
     /// Shared `runner.json` adapter; omitted / default is local.
     ///
-    /// STT: [`AudioSttAdapterKind`]. TTS: only [`AudioTtsAdapterKind::Local`]
-    /// (see [`AudioTtsAdapterKind::from_runner_adapter`]).
+    /// STT: [`AudioSttAdapterKind`]. TTS: [`AudioTtsAdapterKind`] via
+    /// [`AudioTtsAdapterKind::from_runner_adapter`].
     #[serde(default, skip_serializing_if = "adapter_is_local")]
     pub adapter: AudioSttAdapterKind,
-    /// ggml model path for [`AudioSttAdapterKind::WhisperCpp`] (or set [`KEEL_WHISPER_MODEL_ENV`]).
+    /// Model path for [`AudioSttAdapterKind::WhisperCpp`] / [`AudioSttAdapterKind::Piper`]
+    /// (or set [`KEEL_WHISPER_MODEL_ENV`] / [`KEEL_PIPER_MODEL_ENV`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
 }
@@ -298,7 +342,8 @@ pub enum AudioInstallMeta {
     },
 }
 
-/// Catalog: demo fixture + pinned Whisper tiny q5_1 + unpinned Whisper base stub + TTS stub.
+/// Catalog: demo fixture + pinned Whisper tiny q5_1 + unpinned Whisper base stub
+/// + local TTS stub + pinned Piper English q8 voice.
 pub fn list_audio_packs() -> Vec<AudioPackManifest> {
     vec![
         AudioPackManifest {
@@ -350,6 +395,19 @@ pub fn list_audio_packs() -> Vec<AudioPackManifest> {
             sha256: None,
             file_name: None,
             bytes: 0,
+            installed: false,
+            runner_path: None,
+        },
+        AudioPackManifest {
+            id: PIPER_EN_KUSAL_Q8_PACK_ID.into(),
+            capability: AudioCapability::Tts,
+            display_name: "Text to speech · Piper en_US kusal q8".into(),
+            min_vram_mib: 256,
+            runner_kind: AudioRunnerKind::AudioTts,
+            download_url: Some(PIPER_EN_KUSAL_Q8_DOWNLOAD_URL.into()),
+            sha256: Some(PIPER_EN_KUSAL_Q8_SHA256.into()),
+            file_name: Some(PIPER_EN_KUSAL_Q8_FILE.into()),
+            bytes: PIPER_EN_KUSAL_Q8_BYTES,
             installed: false,
             runner_path: None,
         },
@@ -735,6 +793,76 @@ pub fn register_whisper_cpp_runner(
     )
 }
 
+/// Register a Piper TTS runner (`adapter: piper`) and mark installed.
+///
+/// `command` is the Piper binary (absolute or PATH name). `model` must be an
+/// existing `.onnx` voice file — Desktop does not bundle Piper; the catalog can
+/// download checksummed ONNX (+ sidecar JSON) for [`PIPER_EN_KUSAL_Q8_PACK_ID`].
+pub fn register_piper_runner(
+    data_dir: &Path,
+    pack_id: &str,
+    command: &str,
+    model: &str,
+    args: &[String],
+) -> Result<AudioPackManifest> {
+    let pack = ensure_catalog_pack(pack_id)?;
+    if pack.capability != AudioCapability::Tts {
+        bail!(
+            "Piper runner is only valid for text-to-speech packs; '{}' is {}.",
+            pack_id,
+            pack.capability.label()
+        );
+    }
+    let command = command.trim();
+    if command.is_empty() {
+        bail!("Provide a Piper binary path or PATH name (for example piper).");
+    }
+    let model = model.trim();
+    if model.is_empty() {
+        bail!(
+            "Provide an ONNX model path for the Piper adapter (or set {KEEL_PIPER_MODEL_ENV} later). No Piper voices are bundled."
+        );
+    }
+    let model_path = Path::new(model);
+    if !model_path.is_file() {
+        bail!(
+            "Piper model '{}' does not exist. Download the checksummed catalog voice or point at an ONNX file already on this machine.",
+            model
+        );
+    }
+    let json_sidecar = PathBuf::from(format!("{}.json", model_path.display()));
+    if !json_sidecar.is_file() {
+        bail!(
+            "Piper config '{}' is missing beside the ONNX model. Piper needs `<model>.onnx.json` next to the voice file.",
+            json_sidecar.display()
+        );
+    }
+    let cmd_path = Path::new(command);
+    let looks_like_path = cmd_path.is_absolute() || command.contains('/') || command.contains('\\');
+    if looks_like_path && !cmd_path.exists() {
+        bail!(
+            "Piper binary '{}' does not exist. Pick a binary on this machine.",
+            command
+        );
+    }
+
+    write_runner_and_mark(
+        data_dir,
+        pack_id,
+        &pack,
+        AudioRunnerConfig {
+            command: command.to_string(),
+            args: args.to_vec(),
+            adapter: AudioSttAdapterKind::Piper,
+            model: Some(model.to_string()),
+        },
+        "piper_runner\n",
+        AudioInstallMeta::LocalRunner {
+            command: command.to_string(),
+        },
+    )
+}
+
 fn write_runner_and_mark(
     data_dir: &Path,
     pack_id: &str,
@@ -862,6 +990,32 @@ where
 
     crate::models::download_gguf(url, &dest, Some(sha256), &pack.id, on_progress).await?;
 
+    // Piper needs `<voice>.onnx.json` beside the ONNX weights.
+    if pack.id == PIPER_EN_KUSAL_Q8_PACK_ID {
+        let json_dest = dir.join(PIPER_EN_KUSAL_Q8_JSON_FILE);
+        if json_dest.is_file() {
+            let _ = fs::remove_file(&json_dest);
+        }
+        crate::models::download_gguf(
+            PIPER_EN_KUSAL_Q8_JSON_DOWNLOAD_URL,
+            &json_dest,
+            Some(PIPER_EN_KUSAL_Q8_JSON_SHA256),
+            &format!("{}-json", pack.id),
+            |_| {},
+        )
+        .await
+        .context("download Piper voice config sidecar (.onnx.json)")?;
+        let got = fs::metadata(&json_dest)
+            .map(|m| m.len())
+            .unwrap_or(0);
+        if got != PIPER_EN_KUSAL_Q8_JSON_BYTES {
+            bail!(
+                "Piper sidecar '{}' has unexpected size {got} (expected {PIPER_EN_KUSAL_Q8_JSON_BYTES})",
+                json_dest.display()
+            );
+        }
+    }
+
     fs::write(dir.join(INSTALLED_MARKER), b"checksummed\n").context("write install marker")?;
     write_install_meta(
         &dir,
@@ -939,6 +1093,50 @@ fn run_local_command(config: &AudioRunnerConfig, extra_args: &[String]) -> Resul
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Run `command …args…` with `stdin_text` on stdin; return trimmed stdout.
+fn run_local_command_with_stdin(
+    config: &AudioRunnerConfig,
+    argv: &[String],
+    stdin_text: &str,
+) -> Result<String> {
+    let mut child = Command::new(&config.command)
+        .args(argv)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("failed to start audio runner '{}'", config.command))?;
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .context("audio runner stdin unavailable")?;
+        stdin
+            .write_all(stdin_text.as_bytes())
+            .context("write text to audio runner stdin")?;
+        // Piper reads until EOF; drop closes the pipe.
+    }
+    let output = child
+        .wait_with_output()
+        .with_context(|| format!("failed waiting for audio runner '{}'", config.command))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        bail!(
+            "Audio runner '{}' exited with {}. stderr: {} stdout: {}",
+            config.command,
+            output
+                .status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".into()),
+            stderr.trim(),
+            stdout.trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 /// Resolve the ggml model path for a Whisper.cpp runner.
 pub fn resolve_whisper_model(config: &AudioRunnerConfig) -> Result<String> {
     if let Some(model) = config
@@ -969,6 +1167,39 @@ pub fn whisper_cpp_argv(config: &AudioRunnerConfig, audio_path: &Path, model: &s
     argv.push(model.to_string());
     argv.push("-f".into());
     argv.push(audio_path.to_string_lossy().into_owned());
+    argv
+}
+
+/// Resolve the ONNX model path for a Piper runner.
+pub fn resolve_piper_model(config: &AudioRunnerConfig) -> Result<String> {
+    if let Some(model) = config
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return Ok(model.to_string());
+    }
+    if let Ok(from_env) = std::env::var(KEEL_PIPER_MODEL_ENV) {
+        let from_env = from_env.trim().to_string();
+        if !from_env.is_empty() {
+            return Ok(from_env);
+        }
+    }
+    bail!(
+        "Piper adapter needs an ONNX model path in runner.json (\"model\") or {KEEL_PIPER_MODEL_ENV}. No Piper voices are bundled."
+    );
+}
+
+/// Build Piper CLI args after `command` (does not include the binary name).
+///
+/// Contract: `…args… --model <model> --output_file <path>` with text on stdin.
+pub fn piper_argv(config: &AudioRunnerConfig, model: &str, output_path: &Path) -> Vec<String> {
+    let mut argv = config.args.clone();
+    argv.push("--model".into());
+    argv.push(model.to_string());
+    argv.push("--output_file".into());
+    argv.push(output_path.to_string_lossy().into_owned());
     argv
 }
 
@@ -1019,10 +1250,13 @@ impl SttAdapter for WhisperCppSttAdapter {
 }
 
 /// Pick an [`SttAdapter`] implementation from `runner.json`.
-pub fn stt_adapter_from_runner(config: AudioRunnerConfig) -> Box<dyn SttAdapter> {
+pub fn stt_adapter_from_runner(config: AudioRunnerConfig) -> Result<Box<dyn SttAdapter>> {
     match config.adapter {
-        AudioSttAdapterKind::Local => Box::new(LocalCommandSttAdapter { config }),
-        AudioSttAdapterKind::WhisperCpp => Box::new(WhisperCppSttAdapter { config }),
+        AudioSttAdapterKind::Local => Ok(Box::new(LocalCommandSttAdapter { config })),
+        AudioSttAdapterKind::WhisperCpp => Ok(Box::new(WhisperCppSttAdapter { config })),
+        AudioSttAdapterKind::Piper => bail!(
+            "STT runner adapter 'piper' is not supported. Use 'local' or 'whisper_cpp'. Piper is a TTS engine."
+        ),
     }
 }
 
@@ -1049,7 +1283,7 @@ pub fn run_stt(data_dir: &Path, audio_path: &Path) -> Result<String> {
         }
     }
     let command = runner.command.clone();
-    let transcript = stt_adapter_from_runner(runner).transcribe(audio_path)?;
+    let transcript = stt_adapter_from_runner(runner)?.transcribe(audio_path)?;
     if transcript.is_empty() {
         bail!(
             "Speech-to-text runner '{}' produced no transcript for {}.",
@@ -1100,18 +1334,49 @@ impl TtsAdapter for LocalCommandTtsAdapter {
     }
 }
 
+/// Piper TTS adapter: text on stdin, `command …args… --model <model> --output_file <path>`.
+///
+/// Fails honestly when the ONNX model (or sibling `.onnx.json`) is missing.
+pub struct PiperTtsAdapter {
+    pub config: AudioRunnerConfig,
+}
+
+impl TtsAdapter for PiperTtsAdapter {
+    fn synthesize(&self, text: &str, output_path: &Path) -> Result<()> {
+        let model = resolve_piper_model(&self.config)?;
+        let model_path = Path::new(&model);
+        if !model_path.is_file() {
+            bail!(
+                "Piper model '{}' is not a file. Download the checksummed catalog voice or update runner.json / {KEEL_PIPER_MODEL_ENV}.",
+                model
+            );
+        }
+        let json_sidecar = PathBuf::from(format!("{}.json", model_path.display()));
+        if !json_sidecar.is_file() {
+            bail!(
+                "Piper config '{}' is missing. Piper needs `<model>.onnx.json` beside the ONNX voice.",
+                json_sidecar.display()
+            );
+        }
+        let argv = piper_argv(&self.config, &model, output_path);
+        let _ = run_local_command_with_stdin(&self.config, &argv, text)?;
+        Ok(())
+    }
+}
+
 /// Pick a [`TtsAdapter`] from `runner.json`, rejecting STT-only adapter kinds.
 pub fn tts_adapter_from_runner(config: AudioRunnerConfig) -> Result<Box<dyn TtsAdapter>> {
     match AudioTtsAdapterKind::from_runner_adapter(config.adapter)? {
         AudioTtsAdapterKind::Local => Ok(Box::new(LocalCommandTtsAdapter { config })),
+        AudioTtsAdapterKind::Piper => Ok(Box::new(PiperTtsAdapter { config })),
     }
 }
 
 /// Text-to-speech entry point.
 ///
 /// Requires an installed pack and a registered (or env-overridden) runner.
-/// Dispatches to [`LocalCommandTtsAdapter`] from `runner.json`'s `adapter`
-/// field (default / only supported kind: local).
+/// Dispatches to [`LocalCommandTtsAdapter`] or [`PiperTtsAdapter`] from
+/// `runner.json`'s `adapter` field.
 pub fn run_tts(data_dir: &Path, text: &str, output_path: &Path) -> Result<()> {
     let pack = require_installed_audio_pack(data_dir, AudioCapability::Tts)?;
     // VRAM prepare / keep-alive unload runs in the Desktop shell via
@@ -1126,7 +1391,16 @@ pub fn run_tts(data_dir: &Path, text: &str, output_path: &Path) -> Result<()> {
                 .with_context(|| format!("create TTS output dir {}", parent.display()))?;
         }
     }
-    let runner = require_runner(data_dir, &pack)?;
+    let mut runner = require_runner(data_dir, &pack)?;
+    // Prefer checksummed pack weights when Piper has no explicit model path.
+    if runner.adapter == AudioSttAdapterKind::Piper && runner.model.is_none() {
+        if let Some(name) = pack.file_name.as_deref() {
+            let candidate = pack_dir(data_dir, &pack.id).join(name);
+            if candidate.is_file() {
+                runner.model = Some(candidate.to_string_lossy().into_owned());
+            }
+        }
+    }
     let command = runner.command.clone();
     tts_adapter_from_runner(runner)?.synthesize(text, output_path)?;
     if !output_path.exists() {
@@ -1148,7 +1422,7 @@ mod tests {
     #[test]
     fn catalog_lists_stt_and_tts_stubs_not_downloaded() {
         let packs = list_audio_packs();
-        assert_eq!(packs.len(), 4);
+        assert_eq!(packs.len(), 5);
         let demo = packs
             .iter()
             .find(|p| p.id == DEMO_STT_PACK_ID)
@@ -1163,8 +1437,12 @@ mod tests {
             .expect("whisper base stub");
         let tts = packs
             .iter()
-            .find(|p| p.capability == AudioCapability::Tts)
+            .find(|p| p.id == "tts-local-en")
             .expect("tts stub");
+        let piper = packs
+            .iter()
+            .find(|p| p.id == PIPER_EN_KUSAL_Q8_PACK_ID)
+            .expect("piper kusal q8");
         assert!(audio_pack_download_is_pinned(demo));
         assert_eq!(demo.sha256.as_deref(), Some(DEMO_STT_SHA256));
         assert_eq!(demo.bytes, DEMO_STT_BYTES);
@@ -1185,10 +1463,20 @@ mod tests {
             whisper_base.download_url.as_deref().unwrap()
         ));
         assert!(tts.download_url.is_none());
+        assert!(audio_pack_download_is_pinned(piper));
+        assert_eq!(piper.sha256.as_deref(), Some(PIPER_EN_KUSAL_Q8_SHA256));
+        assert_eq!(piper.bytes, PIPER_EN_KUSAL_Q8_BYTES);
+        assert_eq!(piper.file_name.as_deref(), Some(PIPER_EN_KUSAL_Q8_FILE));
+        assert_eq!(
+            piper.download_url.as_deref(),
+            Some(PIPER_EN_KUSAL_Q8_DOWNLOAD_URL)
+        );
         assert_eq!(tiny.runner_kind, AudioRunnerKind::AudioStt);
         assert_eq!(tts.runner_kind, AudioRunnerKind::AudioTts);
+        assert_eq!(piper.runner_kind, AudioRunnerKind::AudioTts);
         assert!(tiny.min_vram_mib > 0);
         assert!(tts.min_vram_mib > 0);
+        assert!(piper.min_vram_mib > 0);
     }
 
     #[cfg(unix)]
@@ -1511,7 +1799,7 @@ mod tests {
     }
 
     #[test]
-    fn tts_adapter_kind_parse_accepts_local_only() {
+    fn tts_adapter_kind_parse_accepts_local_and_piper() {
         assert_eq!(
             AudioTtsAdapterKind::parse("local").unwrap(),
             AudioTtsAdapterKind::Local
@@ -1520,8 +1808,193 @@ mod tests {
             AudioTtsAdapterKind::parse("").unwrap(),
             AudioTtsAdapterKind::Local
         );
-        let err = AudioTtsAdapterKind::parse("piper").unwrap_err().to_string();
+        assert_eq!(
+            AudioTtsAdapterKind::parse("piper").unwrap(),
+            AudioTtsAdapterKind::Piper
+        );
+        let err = AudioTtsAdapterKind::parse("whisper_cpp")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("Unknown TTS adapter"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn piper_argv_follows_documented_contract() {
+        let config = AudioRunnerConfig {
+            command: "piper".into(),
+            args: vec!["--quiet".into()],
+            adapter: AudioSttAdapterKind::Piper,
+            model: Some("/voices/en.onnx".into()),
+        };
+        let argv = piper_argv(&config, "/voices/en.onnx", Path::new("/tmp/out.wav"));
+        assert_eq!(
+            argv,
+            vec![
+                "--quiet".to_string(),
+                "--model".into(),
+                "/voices/en.onnx".into(),
+                "--output_file".into(),
+                "/tmp/out.wav".into(),
+            ]
+        );
+    }
+
+    #[test]
+    fn register_piper_rejects_missing_model_or_json() {
+        let dir = tempfile_dir("piper-reg");
+        let err = register_piper_runner(
+            &dir,
+            PIPER_EN_KUSAL_Q8_PACK_ID,
+            "piper",
+            dir.join("no-such.onnx").to_str().unwrap(),
+            &[],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("does not exist"), "unexpected: {err}");
+
+        let model = dir.join("voice.onnx");
+        fs::write(&model, b"fake-onnx").unwrap();
+        let err = register_piper_runner(
+            &dir,
+            PIPER_EN_KUSAL_Q8_PACK_ID,
+            "piper",
+            model.to_str().unwrap(),
+            &[],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("missing") && err.contains(".json"),
+            "unexpected: {err}"
+        );
+    }
+
+    #[test]
+    fn register_piper_rejects_stt_pack() {
+        let dir = tempfile_dir("piper-stt");
+        let model = dir.join("voice.onnx");
+        fs::write(&model, b"fake").unwrap();
+        fs::write(format!("{}.json", model.display()), b"{}").unwrap();
+        let err = register_piper_runner(
+            &dir,
+            "stt-whisper-base",
+            "piper",
+            model.to_str().unwrap(),
+            &[],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("text-to-speech") || err.contains("only valid"),
+            "unexpected: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn register_piper_runner_and_run_tts() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile_dir("piper-runner");
+        let model = dir.join("voice.onnx");
+        fs::write(&model, b"not-real-onnx").unwrap();
+        fs::write(format!("{}.json", model.display()), b"{\"audio\":{}}").unwrap();
+        let script = dir.join("fake-piper.sh");
+        // Read stdin, require --model / --output_file, write a tiny wav to output.
+        fs::write(
+            &script,
+            "#!/bin/sh\nmodel=\"\"\nout=\"\"\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"--model\" ]; then model=\"$2\"; shift 2; continue; fi\n  if [ \"$1\" = \"--output_file\" ]; then out=\"$2\"; shift 2; continue; fi\n  shift\ndone\n[ -n \"$model\" ] && [ -n \"$out\" ] || exit 2\ncat >/dev/null\nprintf 'RIFFPIPE' > \"$out\"\n",
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+
+        let pack = register_piper_runner(
+            &dir,
+            PIPER_EN_KUSAL_Q8_PACK_ID,
+            script.to_str().unwrap(),
+            model.to_str().unwrap(),
+            &[],
+        )
+        .unwrap();
+        assert!(pack.installed);
+        let raw =
+            fs::read_to_string(pack_dir(&dir, PIPER_EN_KUSAL_Q8_PACK_ID).join(RUNNER_FILE)).unwrap();
+        assert!(raw.contains("piper"));
+        assert!(raw.contains("voice.onnx"));
+
+        let out = dir.join("spoken.wav");
+        run_tts(&dir, "hello piper", &out).unwrap();
+        assert_eq!(fs::read(&out).unwrap(), b"RIFFPIPE");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn piper_uses_downloaded_pack_weights_when_model_omitted() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile_dir("piper-pack-weights");
+        let pack_path = pack_dir(&dir, PIPER_EN_KUSAL_Q8_PACK_ID);
+        let weights = pack_path.join(PIPER_EN_KUSAL_Q8_FILE);
+        fs::create_dir_all(&pack_path).unwrap();
+        fs::write(&weights, b"fake-onnx").unwrap();
+        fs::write(
+            pack_path.join(PIPER_EN_KUSAL_Q8_JSON_FILE),
+            b"{\"audio\":{}}",
+        )
+        .unwrap();
+        fs::write(pack_path.join(INSTALLED_MARKER), b"checksummed\n").unwrap();
+
+        let script = dir.join("fake-piper.sh");
+        fs::write(
+            &script,
+            "#!/bin/sh\n# print model path then write output\nmodel=\"\"\nout=\"\"\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"--model\" ]; then model=\"$2\"; shift 2; continue; fi\n  if [ \"$1\" = \"--output_file\" ]; then out=\"$2\"; shift 2; continue; fi\n  shift\ndone\ncat >/dev/null\nprintf '%s' \"$model\" > \"$out\"\n",
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+
+        let config = AudioRunnerConfig {
+            command: script.to_str().unwrap().into(),
+            args: Vec::new(),
+            adapter: AudioSttAdapterKind::Piper,
+            model: None,
+        };
+        fs::write(
+            pack_path.join(RUNNER_FILE),
+            serde_json::to_string_pretty(&config).unwrap(),
+        )
+        .unwrap();
+
+        let out = dir.join("out.wav");
+        run_tts(&dir, "hi", &out).unwrap();
+        let written = fs::read_to_string(&out).unwrap();
+        assert!(
+            written.contains(PIPER_EN_KUSAL_Q8_FILE),
+            "expected pack weights path, got {written}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stt_adapter_rejects_piper_kind() {
+        let config = AudioRunnerConfig {
+            command: "piper".into(),
+            args: Vec::new(),
+            adapter: AudioSttAdapterKind::Piper,
+            model: None,
+        };
+        let err = match stt_adapter_from_runner(config) {
+            Ok(_) => panic!("expected piper STT adapter to be rejected"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            err.contains("piper") && err.contains("not supported"),
+            "unexpected: {err}"
+        );
     }
 
     #[test]
