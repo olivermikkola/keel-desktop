@@ -1209,6 +1209,31 @@ mod tests {
     }
 
     #[test]
+    fn run_tts_rejects_whisper_cpp_runner_json() {
+        let dir = tempfile_dir("tts-whisper-adapter");
+        mark_audio_pack_installed(&dir, "tts-local-en").unwrap();
+        let pack_path = pack_dir(&dir, "tts-local-en");
+        let config = AudioRunnerConfig {
+            command: "tts.sh".into(),
+            args: Vec::new(),
+            adapter: AudioSttAdapterKind::WhisperCpp,
+            model: None,
+        };
+        fs::write(
+            pack_path.join(RUNNER_FILE),
+            serde_json::to_string_pretty(&config).unwrap(),
+        )
+        .unwrap();
+        let err = run_tts(&dir, "hello", &dir.join("out.wav"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("whisper_cpp") && err.contains("not supported"),
+            "unexpected: {err}"
+        );
+    }
+
+    #[test]
     fn tts_adapter_kind_parse_accepts_local_only() {
         assert_eq!(
             AudioTtsAdapterKind::parse("local").unwrap(),
