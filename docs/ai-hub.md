@@ -46,6 +46,6 @@ Images generation still needs a separately installed image server. System RAM an
 
 ## Verification
 
-`./scripts/check.sh` checks formatting, workspace Clippy, Rust tests, and UI unit tests. Rust integration tests use local HTTP fixtures to verify the actual text-tool loop and image API adapter without downloading models or contacting live systems. They cover Chat tool rejection, Work staging/approval, image saving, malformed responses, cancellation, and restart recovery.
+`./scripts/check.sh` checks formatting, workspace Clippy, Rust tests, UI unit tests, `scripts/test_publish_eval_targets.py` (fail-closed TBD scaffold), and `scripts/verify_v06_taggable.sh` (version/workflow gate). Full GitHub CI also runs browser smoke (`scripts/ui-smoke.py`) and a Linux native `--ui-smoke-test` path. Rust integration tests use local HTTP fixtures to verify the actual text-tool loop and image API adapter without downloading models or contacting live systems. They cover Chat tool rejection, Work staging/approval, image saving, malformed responses, cancellation, and restart recovery.
 
 For repeatable frontend checks, install Playwright (`pip install playwright==1.56.0` and `python -m playwright install chromium`) and run `python scripts/ui-smoke.py`. It serves the real frontend with a test-only mock of Tauri IPC, checks the mode and image flows, and writes screenshots to a temporary folder (or `KEEL_SMOKE_OUTPUT`). This verifies frontend behavior, not native file dialogs, GPU inference quality, or a production image-server installation.

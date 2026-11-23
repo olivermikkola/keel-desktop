@@ -3,7 +3,8 @@
 # Does not create tags, push, or touch signing secrets.
 set -euo pipefail
 
-root="$(cd "$(dirname "$0")/.." && pwd)"
+# Tests may set KEEL_TAGGABLE_ROOT to a fixture tree (see test_verify_v06_taggable.py).
+root="${KEEL_TAGGABLE_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 cd "$root"
 
 fail=0

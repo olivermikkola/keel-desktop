@@ -127,8 +127,29 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  case 'clear_audio_artifacts': window.__audioArtifacts=[]; result=null; break;
  case 'prepare_audio_pack_vram': result={status:'already_free',reason:'smoke',capability_id:'stt-whisper-base',usable_free_mib:0,runtime:{state:'stopped'}};break;
  case 'prepare_pack_vram': result={status:'already_free',reason:'smoke',capability_id:'demo.capability',usable_free_mib:0,runtime:{state:'stopped'}};break;
- case 'run_audio_stt': throw new Error('No speech-to-text pack is installed. Download or register an audio pack from Settings before using speech-to-text.');
- case 'run_audio_tts': throw new Error('No text-to-speech pack is installed. Download or register an audio pack from Settings before using text-to-speech.');
+ case 'pick_audio_file': result=window.__test?.cancelAudioPicker ? null : '/test/clip.wav'; break;
+ case 'register_piper_runner': {
+  const packs=window.__audioPacks || [];
+  const pack=packs.find(p=>p.id===args.packId); if(!pack) throw new Error('Unknown audio pack');
+  if(!args.model) throw new Error('Provide a Piper ONNX model path.');
+  pack.installed=true; pack.runner_path=args.command; result=structuredClone(pack); break;
+ }
+ case 'run_audio_stt': {
+  const packs=window.__audioPacks || [];
+  if(!packs.some(p=>p.capability==='stt'&&p.installed)) throw new Error('No speech-to-text pack is installed. Download or register an audio pack from Settings before using speech-to-text.');
+  const text='Hello from smoke STT.';
+  window.__audioArtifacts = window.__audioArtifacts || [];
+  window.__audioArtifacts.unshift({kind:'stt_transcript',path:'/test/data/audio-artifacts/smoke-stt.txt',created_at:Date.now()/1000,text_preview:text});
+  result=text; break;
+ }
+ case 'run_audio_tts': {
+  const packs=window.__audioPacks || [];
+  if(!packs.some(p=>p.capability==='tts'&&p.installed)) throw new Error('No text-to-speech pack is installed. Download or register an audio pack from Settings before using text-to-speech.');
+  const out='/test/data/audio-try/try-tts.wav';
+  window.__audioArtifacts = window.__audioArtifacts || [];
+  window.__audioArtifacts.unshift({kind:'tts_output',path:out,created_at:Date.now()/1000,text_preview:args.text||''});
+  result=out; break;
+ }
  default: throw new Error('Unexpected command '+cmd);
  }
  return structuredClone(result);
@@ -282,6 +303,21 @@ async def main(port):
         assert await page.evaluate("document.documentElement.dataset.tone === 'paper'")
         await page.locator('[data-tone-pick="ink"]').click()
         assert await page.evaluate("document.documentElement.dataset.tone === 'ink'")
+        # Audio packs: mark installed → Try STT/TTS happy path → artifacts list.
+        await page.locator('#audio-packs-list').get_by_text('Whisper tiny', exact=False).wait_for()
+        await page.locator('[data-audio-pack="stt-demo-fixture"] [data-audio-mark]').click()
+        await page.locator('[data-audio-pack="stt-demo-fixture"] .muted').filter(
+            has_text='Installed · no runner yet'
+        ).wait_for()
+        await page.locator('[data-audio-pack="tts-local-en"] [data-audio-mark]').click()
+        await page.locator('[data-audio-pack="tts-local-en"] .muted').filter(
+            has_text='Installed · no runner yet'
+        ).wait_for()
+        await page.locator('#audio-try-stt').click()
+        await page.locator('#audio-try-status').get_by_text('STT ok:', exact=False).wait_for()
+        await page.locator('#audio-try-tts').click()
+        await page.locator('#audio-try-status').get_by_text('TTS ok', exact=False).wait_for()
+        await page.locator('#audio-artifacts-list').get_by_text('smoke-stt.txt', exact=False).wait_for()
         await page.locator('#modal-close-btn').click()
         await page.locator('#prompt-input').fill('Hello Keel')
         await page.locator('#send-btn').click()
@@ -398,11 +434,12 @@ async def main(port):
         await page.locator('#ws-ext-url').evaluate('(el) => { el.closest("details").open = true; }')
         await page.locator('#ws-ext-url').fill('https://models.example.com/v1')
         await page.locator('#ws-ext-name').fill('shared-qwen')
+        await page.locator('#ws-ext-key').fill('sk-smoke-remote')
         await page.locator('#ws-ext-notice').get_by_text('Leaves this computer', exact=False).wait_for()
         await page.locator('#ws-ext-notice').get_by_text('may incur provider cost', exact=False).wait_for()
         await page.locator('#ws-ext-remote').check()
         await page.locator('#ws-ext-use').click()
-        await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='set_external_endpoint'&&c.args.confirmRemote===true)")
+        await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='set_external_endpoint'&&c.args.confirmRemote===true&&c.args.apiKey==='sk-smoke-remote')")
         await page.locator('#model-pill-label').get_by_text('shared-qwen · Leaves this computer · may incur provider cost', exact=True).wait_for()
         await page.locator('[data-view=chat]').click()
         await page.locator('#telemetry-left').get_by_text('Leaves this computer', exact=False).wait_for()

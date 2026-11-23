@@ -59,7 +59,7 @@ Built with **Tauri 2**, **Rust**, and **llama.cpp** (`llama-server`), carrying t
 ### Models & images
 
 - **Local models & `llama-server` lifecycle:** GGUF catalog (`Bonsai 2` 4B/9B/27B, `LFM3` 1.7B, `MiniCPM5` 2B) with RAM fit indicators, storage usage bar, configurable context window, and pinned revisions + SHA-256 verification for the 4B/9B/LFM3/MiniCPM entries; the 27B entry currently follows `main` without a checksum. Includes custom `.gguf` import/URL download, or connect to any OpenAI-compatible local server (`http://127.0.0.1:8080/v1`, Ollama, LM Studio). Guided setup notices the computer (RAM and graphics chip) before recommending a model. Settings can choose Automatic, Graphics chip, or Processor; that choice reaches the runner, and a later message reuses the process when the model, context, and choice are unchanged. **Check this model** runs three short questions; a model that fails is not offered as the one for this computer (it stays installed and can still be started by hand). The status line shows how long the last answer took.
-- **Optional Images:** Connect a local AUTOMATIC1111 / Forge server, choose its checkpoint, generate PNGs into your workspace, and use them in website/slide previews. Job history, failure states, and stop-waiting controls are included. Audio and video are marked as planned.
+- **Optional Images:** Connect a local AUTOMATIC1111 / Forge server, choose its checkpoint, generate PNGs into your workspace, and use them in website/slide previews. Job history, failure states, and stop-waiting controls are included. Audio STT/TTS packs ship in Settings (try-run + artifacts); video remains planned.
 
 See [everyday assistant validation](docs/everyday-readiness.md) for tested flows and real-model limitations.
 

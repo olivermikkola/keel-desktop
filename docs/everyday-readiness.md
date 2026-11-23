@@ -151,6 +151,9 @@ No-model CI gates (no live server, no invented latency):
 
 - Registry / graders: `cargo test -p keel-core --lib eval`
 - Publish script fail-closed + TBD scaffold: `python3 scripts/test_publish_eval_targets.py`
+- Taggable version gate: `./scripts/verify_v06_taggable.sh` (also via `./scripts/check.sh` and CI Format)
+- Fail-closed regression for that gate: `python3 scripts/test_verify_v06_taggable.py`
+- Full CI additionally runs `scripts/ui-smoke.py` (browser) and Linux native `--ui-smoke-test` (not part of `check.sh`)
 
 Real-model runs stay opt-in (no CI GPU requirement); do not invent TTFT/p50 cells in Published targets.
 
