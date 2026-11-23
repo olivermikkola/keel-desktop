@@ -282,6 +282,16 @@ pub struct AudioPackManifest {
     /// Declared artifact size in bytes (0 when unknown / unpinned).
     #[serde(default)]
     pub bytes: u64,
+    /// Optional companion artifact (e.g. Piper `<voice>.onnx.json`) fetched after weights.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidecar_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidecar_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidecar_file_name: Option<String>,
+    /// Declared sidecar size in bytes (0 when absent / unknown).
+    #[serde(default)]
+    pub sidecar_bytes: u64,
     pub installed: bool,
     /// Absolute or PATH-resolvable command registered for this pack, when set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -358,6 +368,10 @@ pub fn list_audio_packs() -> Vec<AudioPackManifest> {
             sha256: Some(DEMO_STT_SHA256.into()),
             file_name: Some(DEMO_STT_FILE.into()),
             bytes: DEMO_STT_BYTES,
+            sidecar_url: None,
+            sidecar_sha256: None,
+            sidecar_file_name: None,
+            sidecar_bytes: 0,
             installed: false,
             runner_path: None,
         },
@@ -371,6 +385,10 @@ pub fn list_audio_packs() -> Vec<AudioPackManifest> {
             sha256: Some(WHISPER_TINY_Q5_SHA256.into()),
             file_name: Some(WHISPER_TINY_Q5_FILE.into()),
             bytes: WHISPER_TINY_Q5_BYTES,
+            sidecar_url: None,
+            sidecar_sha256: None,
+            sidecar_file_name: None,
+            sidecar_bytes: 0,
             installed: false,
             runner_path: None,
         },
@@ -384,6 +402,10 @@ pub fn list_audio_packs() -> Vec<AudioPackManifest> {
             sha256: None,
             file_name: None,
             bytes: 0,
+            sidecar_url: None,
+            sidecar_sha256: None,
+            sidecar_file_name: None,
+            sidecar_bytes: 0,
             installed: false,
             runner_path: None,
         },
@@ -397,6 +419,10 @@ pub fn list_audio_packs() -> Vec<AudioPackManifest> {
             sha256: None,
             file_name: None,
             bytes: 0,
+            sidecar_url: None,
+            sidecar_sha256: None,
+            sidecar_file_name: None,
+            sidecar_bytes: 0,
             installed: false,
             runner_path: None,
         },
@@ -410,6 +436,10 @@ pub fn list_audio_packs() -> Vec<AudioPackManifest> {
             sha256: Some(PIPER_EN_KUSAL_Q8_SHA256.into()),
             file_name: Some(PIPER_EN_KUSAL_Q8_FILE.into()),
             bytes: PIPER_EN_KUSAL_Q8_BYTES,
+            sidecar_url: Some(PIPER_EN_KUSAL_Q8_JSON_DOWNLOAD_URL.into()),
+            sidecar_sha256: Some(PIPER_EN_KUSAL_Q8_JSON_SHA256.into()),
+            sidecar_file_name: Some(PIPER_EN_KUSAL_Q8_JSON_FILE.into()),
+            sidecar_bytes: PIPER_EN_KUSAL_Q8_JSON_BYTES,
             installed: false,
             runner_path: None,
         },
@@ -992,27 +1022,41 @@ where
 
     crate::models::download_gguf(url, &dest, Some(sha256), &pack.id, on_progress).await?;
 
-    // Piper needs `<voice>.onnx.json` beside the ONNX weights.
-    if pack.id == PIPER_EN_KUSAL_Q8_PACK_ID {
-        let json_dest = dir.join(PIPER_EN_KUSAL_Q8_JSON_FILE);
-        if json_dest.is_file() {
-            let _ = fs::remove_file(&json_dest);
+    // Optional companion artifact (Piper needs `<voice>.onnx.json` beside ONNX weights).
+    if let (Some(sidecar_url), Some(sidecar_sha), Some(sidecar_name)) = (
+        pack.sidecar_url.as_deref(),
+        pack.sidecar_sha256.as_deref(),
+        pack.sidecar_file_name.as_deref(),
+    ) {
+        if sidecar_name.contains('/')
+            || sidecar_name.contains('\\')
+            || sidecar_name == ".."
+            || sidecar_name == "."
+        {
+            bail!("Invalid audio pack sidecar_file_name '{sidecar_name}'");
+        }
+        let sidecar_dest = dir.join(sidecar_name);
+        if sidecar_dest.is_file() {
+            let _ = fs::remove_file(&sidecar_dest);
         }
         crate::models::download_gguf(
-            PIPER_EN_KUSAL_Q8_JSON_DOWNLOAD_URL,
-            &json_dest,
-            Some(PIPER_EN_KUSAL_Q8_JSON_SHA256),
-            &format!("{}-json", pack.id),
+            sidecar_url,
+            &sidecar_dest,
+            Some(sidecar_sha),
+            &format!("{}-sidecar", pack.id),
             |_| {},
         )
         .await
-        .context("download Piper voice config sidecar (.onnx.json)")?;
-        let got = fs::metadata(&json_dest).map(|m| m.len()).unwrap_or(0);
-        if got != PIPER_EN_KUSAL_Q8_JSON_BYTES {
-            bail!(
-                "Piper sidecar '{}' has unexpected size {got} (expected {PIPER_EN_KUSAL_Q8_JSON_BYTES})",
-                json_dest.display()
-            );
+        .context("download audio pack sidecar")?;
+        if pack.sidecar_bytes > 0 {
+            let got = fs::metadata(&sidecar_dest).map(|m| m.len()).unwrap_or(0);
+            if got != pack.sidecar_bytes {
+                bail!(
+                    "Audio pack sidecar '{}' has unexpected size {got} (expected {})",
+                    sidecar_dest.display(),
+                    pack.sidecar_bytes
+                );
+            }
         }
     }
 
@@ -1471,6 +1515,19 @@ mod tests {
             piper.download_url.as_deref(),
             Some(PIPER_EN_KUSAL_Q8_DOWNLOAD_URL)
         );
+        assert_eq!(
+            piper.sidecar_url.as_deref(),
+            Some(PIPER_EN_KUSAL_Q8_JSON_DOWNLOAD_URL)
+        );
+        assert_eq!(
+            piper.sidecar_sha256.as_deref(),
+            Some(PIPER_EN_KUSAL_Q8_JSON_SHA256)
+        );
+        assert_eq!(
+            piper.sidecar_file_name.as_deref(),
+            Some(PIPER_EN_KUSAL_Q8_JSON_FILE)
+        );
+        assert_eq!(piper.sidecar_bytes, PIPER_EN_KUSAL_Q8_JSON_BYTES);
         assert_eq!(tiny.runner_kind, AudioRunnerKind::AudioStt);
         assert_eq!(tts.runner_kind, AudioRunnerKind::AudioTts);
         assert_eq!(piper.runner_kind, AudioRunnerKind::AudioTts);
@@ -1599,6 +1656,82 @@ mod tests {
         assert_eq!(fs::read(&dest).unwrap(), demo_stt_bytes());
         remove_audio_pack(&data, DEMO_STT_PACK_ID).unwrap();
         assert!(!is_audio_pack_installed(&data, DEMO_STT_PACK_ID));
+        let _ = fs::remove_dir_all(&data);
+    }
+
+    /// Piper download must fetch both ONNX weights and the checksummed `.onnx.json` sidecar.
+    #[tokio::test]
+    async fn download_piper_pack_fetches_onnx_and_json_sidecar() {
+        use sha2::{Digest, Sha256};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let onnx_body = b"tiny-piper-onnx-fixture";
+        let json_body = br#"{"tiny":true}"#;
+        let onnx_sha = format!("{:x}", Sha256::digest(onnx_body));
+        let json_sha = format!("{:x}", Sha256::digest(json_body));
+        assert_eq!(
+            onnx_sha,
+            "eb2bdebed0bf49c5a3c9f45cccccdbee1d9d0211067ef81cef117cd529cf713b"
+        );
+        assert_eq!(
+            json_sha,
+            "bbf4bb70bc84d7bd89fe56c409ec95ebfb251dfbbf918517278361a17c0ca207"
+        );
+
+        let data = tempfile_dir("audio-dl-piper-sidecar");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = vec![0; 4096];
+                let n = socket.read(&mut request).await.unwrap();
+                let req = String::from_utf8_lossy(&request[..n]);
+                let body: &[u8] = if req.contains(PIPER_EN_KUSAL_Q8_JSON_FILE) {
+                    json_body
+                } else if req.contains(PIPER_EN_KUSAL_Q8_FILE) {
+                    onnx_body
+                } else {
+                    panic!("unexpected request path: {req}");
+                };
+                socket
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+                socket.write_all(body).await.unwrap();
+            }
+        });
+
+        let mut pack = find_audio_pack(PIPER_EN_KUSAL_Q8_PACK_ID).unwrap();
+        pack.download_url = Some(format!("http://{addr}/{}", PIPER_EN_KUSAL_Q8_FILE));
+        pack.sha256 = Some(onnx_sha);
+        pack.bytes = onnx_body.len() as u64;
+        pack.sidecar_url = Some(format!("http://{addr}/{}", PIPER_EN_KUSAL_Q8_JSON_FILE));
+        pack.sidecar_sha256 = Some(json_sha);
+        pack.sidecar_bytes = json_body.len() as u64;
+
+        let installed = download_audio_pack_entry(&data, &pack, |_| {})
+            .await
+            .unwrap();
+        server.await.unwrap();
+        assert!(installed.installed);
+        assert!(is_audio_pack_installed(&data, PIPER_EN_KUSAL_Q8_PACK_ID));
+        let pack_path = pack_dir(&data, PIPER_EN_KUSAL_Q8_PACK_ID);
+        assert_eq!(
+            fs::read(pack_path.join(PIPER_EN_KUSAL_Q8_FILE)).unwrap(),
+            onnx_body
+        );
+        assert_eq!(
+            fs::read(pack_path.join(PIPER_EN_KUSAL_Q8_JSON_FILE)).unwrap(),
+            json_body
+        );
+        remove_audio_pack(&data, PIPER_EN_KUSAL_Q8_PACK_ID).unwrap();
         let _ = fs::remove_dir_all(&data);
     }
 
