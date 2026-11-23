@@ -5,7 +5,7 @@ use keel_core::apps::{AppPreset, AppPresetInfo};
 use keel_core::audio::{self, AudioArtifact, AudioPackManifest};
 use keel_core::harnesses::{
     code_execution_boundary, detect_harnesses, run_external_harness, run_keel_cli_turn,
-    validate_keel_session_log, CodeExecutionBoundary, HarnessOption, KeelCliTurn,
+    CodeExecutionBoundary, HarnessOption, KeelCliTurn,
 };
 use keel_core::mcp::{
     inspect_mcp_servers_with_trust, load_global_mcp_config, load_mcp_configs_with_trust,
