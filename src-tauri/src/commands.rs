@@ -885,6 +885,58 @@ pub async fn prepare_pack_vram(
     })
 }
 
+/// List capability packs with on-disk install status under the data directory.
+#[tauri::command]
+pub async fn list_capability_packs(
+    state: State<'_, AppState>,
+) -> Result<Vec<keel_core::packs::CapabilityPack>, String> {
+    let data_dir = state.data_dir.clone();
+    tokio::task::spawn_blocking(move || keel_core::packs::list_capability_packs(&data_dir))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Download a checksummed catalog pack into `{data_dir}/packs/<id>/`.
+#[tauri::command]
+pub async fn download_capability_pack(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    capability_id: String,
+) -> Result<Vec<keel_core::packs::CapabilityPack>, String> {
+    let _download = state
+        .download_lock
+        .try_lock()
+        .map_err(|_| "Another download is running")?;
+    let data_dir = state.data_dir.clone();
+    let id = capability_id.trim().to_string();
+    keel_core::packs::download_capability_pack(&data_dir, &id, |prog| {
+        let _ = app.emit("keel://download-progress", prog);
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(keel_core::packs::list_capability_packs(&data_dir))
+}
+
+/// Remove an installed capability pack from disk.
+#[tauri::command]
+pub async fn remove_capability_pack(
+    state: State<'_, AppState>,
+    capability_id: String,
+) -> Result<Vec<keel_core::packs::CapabilityPack>, String> {
+    let _download = state
+        .download_lock
+        .try_lock()
+        .map_err(|_| "Wait for the current download to finish before removing a pack")?;
+    let data_dir = state.data_dir.clone();
+    let id = capability_id.trim().to_string();
+    tokio::task::spawn_blocking(move || {
+        keel_core::packs::remove_capability_pack(&data_dir, &id).map_err(|e| e.to_string())?;
+        Ok(keel_core::packs::list_capability_packs(&data_dir))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub async fn set_external_endpoint(
     state: State<'_, AppState>,
