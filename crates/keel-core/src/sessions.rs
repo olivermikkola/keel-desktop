@@ -175,6 +175,20 @@ pub fn default_config_dir() -> PathBuf {
         .join("keel-desktop")
 }
 
+pub fn config_file_exists(config_dir: &Path) -> bool {
+    config_dir.join("config.json").is_file()
+}
+
+/// First-run Code engine: prefer Keel CLI when the installer recommends it.
+/// Existing `config.json` values are never rewritten by this helper.
+pub fn first_run_harness_mode(recommended_code_harness: &str) -> &'static str {
+    if recommended_code_harness == "keel-cli" {
+        "keel-cli"
+    } else {
+        "keel"
+    }
+}
+
 pub fn load_config(config_dir: &Path) -> DesktopConfig {
     let path = config_dir.join("config.json");
     std::fs::read_to_string(path)
@@ -272,6 +286,13 @@ pub fn recover_interrupted(data: &Path) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_run_prefers_keel_cli_only_when_recommended() {
+        assert_eq!(first_run_harness_mode("keel-cli"), "keel-cli");
+        assert_eq!(first_run_harness_mode("keel"), "keel");
+        assert_eq!(first_run_harness_mode("opencode"), "keel");
+    }
 
     #[test]
     fn round_trips_config_and_sessions() {
