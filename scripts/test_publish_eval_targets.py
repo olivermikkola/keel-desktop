@@ -30,6 +30,18 @@ def write_report(path: Path, **overrides: object) -> Path:
         "model": "bonsai4b",
         "pack": "held_out",
         "runs": 5,
+        "case_filter": None,
+        "cases": [
+            {
+                "case": name,
+                "samples": [
+                    {"case": name, "run": run, "passed": run <= 4,
+                     "seconds": 18.2, "ttft_seconds": 1.4}
+                    for run in range(1, 6)
+                ],
+            }
+            for name in ("friendly_email", "document_facts")
+        ],
         "hardware": "cpu",
         "pack_success_rate": 0.8,
         "pack_p50_seconds": 18.2,
@@ -125,7 +137,7 @@ class PublishEvalTargetsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "incomplete.json"
             path.write_text(
-                json.dumps({"pack": "held_out", "runs": 5, "pack_success_rate": 1.0}),
+                json.dumps({"pack": "held_out", "runs": 5, "case_filter": None, "pack_success_rate": 1.0}),
                 encoding="utf-8",
             )
             proc = run_script(
@@ -174,6 +186,31 @@ class PublishEvalTargetsTests(unittest.TestCase):
             )
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn("disagrees", proc.stderr + proc.stdout)
+
+    def test_refuse_invalid_or_unattributed_evidence(self) -> None:
+        bad_reports = [
+            ({"pack_success_rate": 1.7}, "pack_success_rate"),
+            ({"pack_p50_seconds": -2}, "pack_p50_seconds"),
+            ({"peak_rss_mb": float("inf")}, "peak_rss_mb"),
+            ({"runs": 5.5}, "runs"),
+            ({"case_filter": "friendly_email"}, "KEEL_EVAL_CASE"),
+            ({"hardware": None}, "hardware"),
+            ({"hardware": "unknown"}, "hardware"),
+            ({"model": "different-fixture-model"}, "model"),
+            ({"pack_p50_seconds": 0.1}, "recorded samples"),
+            ({"cases": []}, "case samples"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            for overrides, error in bad_reports:
+                with self.subTest(overrides=overrides):
+                    report = write_report(Path(tmp) / "bad.json", **overrides)
+                    proc = run_script(
+                        "--report", str(report), "--model", "Bonsai 2 · 4B",
+                        "--hardware", "cpu", "--dry-run",
+                    )
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn(error, proc.stderr)
+                    self.assertEqual(proc.stdout, "")
 
     def test_valid_report_dry_run_prints_row_without_writing_doc(self) -> None:
         before = DOC.read_text(encoding="utf-8")

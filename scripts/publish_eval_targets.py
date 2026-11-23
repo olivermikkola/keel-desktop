@@ -13,10 +13,10 @@ Does not invent numbers. Two modes:
     python3 scripts/publish_eval_targets.py \\
       --report docs/eval-results/2026-11-23-bonsai4b-cpu.json \\
       --model "Bonsai 2 · 4B" --hardware cpu --dry-run
-    Requires pack=held_out, runs≥5, numeric pack_success_rate + pack_p50_seconds.
+    Requires matching model/hardware and at least five full held-out runs with samples.
     Fills only cells present in the report; leaves the rest untouched.
 
-Refuses to write the doc when --report is missing. Refuses CPU↔GPU mismatches.
+Refuses to write the doc when --report is missing. Requires the report model and hardware to match the requested row.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ import argparse
 import json
 import math
 import re
+import statistics
 import sys
 from pathlib import Path
 from typing import Any
@@ -33,13 +34,13 @@ from typing import Any
 DOC = Path("docs/everyday-readiness.md")
 
 # Rows in the Published targets table (Model column · Hardware column).
-PUBLISHED_MODELS = (
-    "LFM3 · 1.7B",
-    "MiniCPM5 · 2B",
-    "Bonsai 2 · 4B",
-    "Bonsai 2 · 9B",
-    "Bonsai 2 · 27B",
-)
+PUBLISHED_MODELS = {
+    "LFM3 · 1.7B": {"lfm3-1.7b"},
+    "MiniCPM5 · 2B": {"minicpm5-2b"},
+    "Bonsai 2 · 4B": {"bonsai-4b", "bonsai4b"},
+    "Bonsai 2 · 9B": {"bonsai-9b", "bonsai9b"},
+    "Bonsai 2 · 27B": {"bonsai-27b", "bonsai27b"},
+}
 PUBLISHED_HARDWARE = ("CPU", "GPU")
 
 METRIC_HEADERS = ("TTFT", "p50 latency", "Success rate", "Peak RSS")
@@ -63,40 +64,78 @@ def load_report(path: Path) -> dict[str, Any]:
             f"refusing to publish: pack is {data.get('pack')!r}; need held_out"
         )
     runs = data.get("runs")
-    try:
-        runs_n = int(runs)
-    except (TypeError, ValueError):
-        raise SystemExit(
-            f"refusing to publish: runs={runs!r}; need KEEL_EVAL_RUNS≥5 for targets"
-        ) from None
-    if runs_n < 5:
-        raise SystemExit(
-            f"refusing to publish: runs={runs_n}; need KEEL_EVAL_RUNS≥5 for targets"
-        )
+    if type(runs) is not int or runs < 5:
+        raise SystemExit(f"refusing to publish: runs={runs!r}; need at least 5 complete runs")
+    if "case_filter" not in data or data["case_filter"] is not None:
+        raise SystemExit("refusing to publish: rerun the complete held_out pack without KEEL_EVAL_CASE")
 
-    # Fail closed: measured pack aggregates must be real numbers, not missing/TBD.
-    require_finite_number(data, "pack_success_rate")
-    require_finite_number(data, "pack_p50_seconds")
-    if "pack_p50_ttft_seconds" in data:
-        require_finite_number(data, "pack_p50_ttft_seconds")
+    rate = require_metric(data, "pack_success_rate", maximum=1)
+    latency = require_metric(data, "pack_p50_seconds")
+    ttft = require_metric(data, "pack_p50_ttft_seconds") if "pack_p50_ttft_seconds" in data else None
     if "peak_rss_mb" in data:
-        require_finite_number(data, "peak_rss_mb")
+        require_metric(data, "peak_rss_mb")
+
+    samples = validated_samples(data.get("cases"), runs)
+    expected_rate = sum(sample["passed"] for sample in samples) / len(samples)
+    expected_latency = statistics.median(sample["seconds"] for sample in samples)
+    ttfts = [sample["ttft_seconds"] for sample in samples if "ttft_seconds" in sample]
+    expected_ttft = statistics.median(ttfts) if ttfts else None
+    for key, actual, expected in (
+        ("pack_success_rate", rate, expected_rate),
+        ("pack_p50_seconds", latency, expected_latency),
+        ("pack_p50_ttft_seconds", ttft, expected_ttft),
+    ):
+        if actual is None and expected is None:
+            continue
+        if actual is None or expected is None or not math.isclose(actual, expected, abs_tol=1e-9):
+            raise SystemExit(f"refusing to publish: {key} disagrees with the recorded samples")
     return data
 
 
-def require_finite_number(data: dict[str, Any], key: str) -> float:
+def validated_samples(cases: object, runs: int) -> list[dict[str, Any]]:
+    if not isinstance(cases, list) or len(cases) < 2:
+        raise SystemExit("refusing to publish: full held_out case samples are required")
+
+    names: set[str] = set()
+    samples: list[dict[str, Any]] = []
+    for case in cases:
+        name = case.get("case") if isinstance(case, dict) else None
+        if not isinstance(name, str) or not name or name in names:
+            raise SystemExit("refusing to publish: each case needs a unique name")
+        names.add(name)
+        case_samples = case.get("samples")
+        if not isinstance(case_samples, list) or len(case_samples) != runs:
+            raise SystemExit(f"refusing to publish: {name} needs exactly {runs} run samples")
+        seen: set[int] = set()
+        for sample in case_samples:
+            run = sample.get("run") if isinstance(sample, dict) else None
+            if (
+                type(run) is not int
+                or not 1 <= run <= runs
+                or run in seen
+                or type(sample.get("passed")) is not bool
+                or sample.get("case") != name
+            ):
+                raise SystemExit(f"refusing to publish: invalid or duplicate sample for {name}")
+            seen.add(run)
+            duration = require_metric(sample, "seconds")
+            if "ttft_seconds" in sample:
+                require_metric(sample, "ttft_seconds", maximum=duration)
+            samples.append(sample)
+    return samples
+
+
+def require_metric(data: dict[str, Any], key: str, *, maximum: float = math.inf) -> float:
     value = data.get(key)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise SystemExit(
-            f"refusing to publish: {key}={value!r}; need a finite number from "
-            "evaluate_local (do not invent or placeholder-fill metrics)"
-        )
-    number = float(value)
-    if not math.isfinite(number):
-        raise SystemExit(
-            f"refusing to publish: {key}={value!r}; need a finite number from "
-            "evaluate_local (do not invent or placeholder-fill metrics)"
-        )
+    number = math.nan
+    if type(value) in (float, int):
+        try:
+            number = float(value)
+        except OverflowError:
+            pass
+    if not math.isfinite(number) or not 0 <= number <= maximum:
+        limit = f" up to {maximum:g}" if math.isfinite(maximum) else ""
+        raise SystemExit(f"refusing to publish: {key} needs a finite nonnegative number{limit}")
     return number
 
 
@@ -190,17 +229,16 @@ def patch_row(doc: str, model: str, hardware: str, cells: dict[str, str]) -> str
     return pattern.sub(replacement, doc, count=1)
 
 
-def check_hardware_agreement(report_hw: str, args_hardware: str) -> None:
-    report_hw = (report_hw or "").lower()
-    if not report_hw:
-        return  # older reports may omit hardware
-    if report_hw == "cpu" and args_hardware != "cpu":
+def check_report_identity(report: dict[str, Any], model: str, hardware: str) -> None:
+    if report.get("hardware") != hardware:
         raise SystemExit(
-            f"report hardware={report_hw!r} disagrees with --hardware {args_hardware}"
+            f"refusing to publish: report hardware={report.get('hardware')!r} disagrees with --hardware {hardware}"
         )
-    if report_hw in ("gpu", "metal") and args_hardware == "cpu":
+    allowed_models = PUBLISHED_MODELS.get(model, set()) | {model}
+    report_model = report.get("model")
+    if not isinstance(report_model, str) or report_model not in allowed_models:
         raise SystemExit(
-            f"report hardware={report_hw!r} disagrees with --hardware {args_hardware}"
+            f"refusing to publish: report model={report_model!r} disagrees with --model {model!r}"
         )
 
 
@@ -270,7 +308,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     report = load_report(args.report)
-    check_hardware_agreement(str(report.get("hardware") or ""), args.hardware)
+    check_report_identity(report, args.model, args.hardware)
     hw_col = "GPU" if args.hardware in ("gpu", "metal") else "CPU"
 
     cells = {

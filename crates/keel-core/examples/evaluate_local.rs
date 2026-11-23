@@ -163,23 +163,19 @@ async fn main() -> Result<()> {
     }
 
     let aggregates = aggregate_samples(&samples);
-    let pack_passed: usize = aggregates.iter().map(|a| a.passed).sum();
-    let pack_runs: usize = aggregates.iter().map(|a| a.runs).sum();
-    let pack_latencies: Vec<f64> = aggregates.iter().map(|a| a.p50_seconds).collect();
-    let pack_ttfts: Vec<f64> = aggregates
+    let pack_passed = samples.iter().filter(|sample| sample.passed).count();
+    let pack_latencies: Vec<f64> = samples.iter().map(|sample| sample.seconds).collect();
+    let pack_ttfts: Vec<f64> = samples
         .iter()
-        .filter_map(|a| a.p50_ttft_seconds)
+        .filter_map(|sample| sample.ttft_seconds)
         .collect();
     let mut report = json!({
         "model": model,
         "pack": pack,
         "runs": runs,
+        "case_filter": selected_case,
         "cases": aggregates,
-        "pack_success_rate": if pack_runs == 0 {
-            0.0
-        } else {
-            pack_passed as f64 / pack_runs as f64
-        },
+        "pack_success_rate": keel_core::eval_cases::success_rate(pack_passed, samples.len()),
         "pack_p50_seconds": keel_core::eval_cases::p50_seconds(&pack_latencies),
         "note": "Small opt-in task checks, not a comparison with Claude or a broad quality benchmark. Read answers as well as pass flags."
     });

@@ -122,6 +122,7 @@ Stdout (and `KEEL_EVAL_OUT` when set) is pretty-printed JSON. Shape only — **t
   "model": "bonsai4b",
   "pack": "held_out",
   "runs": 5,
+  "case_filter": null,
   "hardware": "cpu",
   "pack_success_rate": null,
   "pack_p50_seconds": null,
@@ -144,7 +145,7 @@ python3 scripts/publish_eval_targets.py \
   --model "Bonsai 2 · 4B" --hardware cpu --dry-run
 ```
 
-The script refuses missing `--report` (except scaffold/dry-run), packs other than `held_out`, `KEEL_EVAL_RUNS` < 5, non-numeric pack aggregates, placeholder strings like `"TBD"`, and CPU/GPU mismatches. Update only measured cells; leave the rest TBD.
+The script requires at least five complete held-out runs with per-case samples. The report model and hardware must match the requested row. The script checks the success rate and pooled p50 values against the samples. Use `--hardware metal` for a Metal report. Leave unmeasured cells TBD.
 3. **Informal samples:** one-off development runs may stay under Observed real-model results below; they do not count as published targets.
 
 No-model CI gates (no live server, no invented latency):
