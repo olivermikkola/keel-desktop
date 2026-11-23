@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod apps;
+pub mod audio;
 pub mod compaction;
 pub mod guard;
 pub mod hardware;
