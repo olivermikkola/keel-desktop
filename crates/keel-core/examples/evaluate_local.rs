@@ -36,12 +36,7 @@ async fn main() -> Result<()> {
         if std::env::var("KEEL_EVAL_CASE").is_ok_and(|selected| selected != name) {
             continue;
         }
-        let mut history = vec![ChatTurnMessage {
-            role: "user".into(),
-            content: prompt.into(),
-            tool_call_id: None,
-            tool_calls: None,
-        }];
+        let mut history = vec![ChatTurnMessage::text("user", prompt)];
         if name == "document_facts" {
             let session = keel_core::sessions::ChatSession { id: "fixture".into(), title: "Brief".into(), app_preset: preset, workspace_path: None, keel_session_log: None, code_checkout: None, applied_code_patch: None, last_code_test: None, project_id: None, pinned: false, staged_edits: vec![], updated_at: 0, messages: vec![keel_core::sessions::UiMessage { id: "user".into(), role: "user".into(), content: prompt.into(), thinking: None, tool_calls: vec![], status: "complete".into(), attachments: vec![Document { id: "brief".into(), name: "harbor-brief.txt".into(), kind: "txt".into(), text: "Project Harbor. Approved budget: 4,800 euros. Launch date: 14 May 2027. The audience is local cafes.".into(), truncated: false, image_data_url: None }] }] };
             history = keel_core::context::history(&session, None, 8192);

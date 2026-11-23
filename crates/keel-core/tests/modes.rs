@@ -36,12 +36,7 @@ async fn chat_cannot_execute_hallucinated_tools_even_with_a_workspace() {
             workspace_root: Some(root.clone()),
             auto_apply_edits: true,
             enable_thinking: false,
-            history: vec![ChatTurnMessage {
-                role: "user".into(),
-                content: "Write a file".into(),
-                tool_call_id: None,
-                tool_calls: None,
-            }],
+            history: vec![ChatTurnMessage::text("user", "Write a file")],
             mcp_config: McpConfigFile::default(),
             mcp_tools: vec![],
             max_steps: 2,
@@ -49,13 +44,17 @@ async fn chat_cannot_execute_hallucinated_tools_even_with_a_workspace() {
         &mut HashSet::new(),
         |_| {},
         |_, _, _, _| async {
-            panic!("Chat must never ask for tool approval");
+            panic!("Chat must never ask for tool approval for unavailable tools");
         },
     )
     .await
     .unwrap();
     let requests = server.await.unwrap();
-    assert!(requests.iter().all(|r| r.get("tools").is_none()));
+    let tools = requests[0]["tools"]
+        .as_array()
+        .expect("Chat exposes web_search");
+    assert!(tools.iter().any(|t| t["function"]["name"] == "web_search"));
+    assert!(!tools.iter().any(|t| t["function"]["name"] == "create_file"));
     assert!(!requests[0]["messages"][0]["content"]
         .as_str()
         .unwrap()
@@ -69,6 +68,53 @@ async fn chat_cannot_execute_hallucinated_tools_even_with_a_workspace() {
         .unwrap()
         .contains("not available"));
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn chat_web_search_requires_approval_and_work_exposes_it() {
+    let (endpoint, server) = support::server(vec![
+        completion(json!({"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"Helsinki weather\"}"}}]})),
+        completion(json!({"content":"Denied search, answering from general knowledge."})),
+    ])
+    .await;
+    let mut approvals = 0u32;
+    let outcome = run_agent_turn(
+        TurnParams {
+            base_url: endpoint,
+            model_name: "test".into(),
+            context_size: 8192,
+            app_preset: AppPreset::Chat,
+            custom_instructions: String::new(),
+            workspace_root: None,
+            auto_apply_edits: false,
+            enable_thinking: false,
+            history: vec![ChatTurnMessage::text(
+                "user",
+                "What is the weather in Helsinki?",
+            )],
+            mcp_config: McpConfigFile::default(),
+            mcp_tools: vec![],
+            max_steps: 2,
+        },
+        &mut HashSet::new(),
+        |_| {},
+        |_, tool, _, _| {
+            approvals += 1;
+            assert_eq!(tool, "web_search");
+            async { ApprovalDecision::Deny }
+        },
+    )
+    .await
+    .unwrap();
+    let _ = server.await.unwrap();
+    assert_eq!(approvals, 1);
+    assert!(outcome.tool_logs[0].is_error);
+    assert!(outcome.tool_logs[0]
+        .result
+        .as_ref()
+        .unwrap()
+        .contains("denied"));
+    assert!(AppPreset::General.allowed_tools().contains(&"web_search"));
 }
 
 #[tokio::test]
@@ -103,6 +149,7 @@ async fn work_stages_real_edits_without_writing_and_has_no_shell() {
     let requests = server.await.unwrap();
     let tools = requests[0]["tools"].as_array().unwrap();
     assert!(tools.iter().any(|t| t["function"]["name"] == "create_file"));
+    assert!(tools.iter().any(|t| t["function"]["name"] == "web_search"));
     assert!(!tools.iter().any(|t| t["function"]["name"] == "run_shell"));
     assert_eq!(outcome.staged_edits.len(), 1);
     assert!(!outcome.tool_logs[0].is_error);
@@ -139,12 +186,10 @@ async fn repeated_sql_reminder_keeps_the_tool_result_and_a_single_initial_system
             workspace_root: Some(root.clone()),
             auto_apply_edits: false,
             enable_thinking: false,
-            history: vec![ChatTurnMessage {
-                role: "user".into(),
-                content: "What is the total of orders.csv?".into(),
-                tool_call_id: None,
-                tool_calls: None,
-            }],
+            history: vec![ChatTurnMessage::text(
+                "user",
+                "What is the total of orders.csv?",
+            )],
             mcp_config: McpConfigFile::default(),
             mcp_tools: vec![],
             max_steps: 4,
@@ -179,4 +224,5 @@ fn legacy_general_sessions_still_map_to_work_and_code_has_shell() {
     assert_eq!(preset.mode(), "work");
     assert!(AppPreset::Code.allowed_tools().contains(&"run_shell"));
     assert!(!AppPreset::Chat.allowed_tools().contains(&"read_file"));
+    assert!(AppPreset::Chat.allowed_tools().contains(&"web_search"));
 }

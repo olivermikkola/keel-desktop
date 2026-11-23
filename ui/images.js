@@ -2,7 +2,7 @@ import { escapeHtml } from "./markdown.js";
 
 // No media weights or runtimes are installed until a user chooses to configure them.
 export const CAPABILITIES = [
-  { id: "text", title: "Assistant", detail: "One text model for Chat, Work, and Code.", state: "available" },
+  { id: "text", title: "Assistant", detail: "One text model for Chat, Work, and Code. Chat and Work can search the web with your approval; Chat can send image pixels for vision-capable models.", state: "available" },
   { id: "images", title: "Images", detail: "Generate images with an optional local AUTOMATIC1111 or Forge server.", state: "available" },
   { id: "audio", title: "Audio", detail: "Speech and transcription backends are planned.", state: "planned" },
   { id: "video", title: "Video", detail: "Video generation backends are planned.", state: "planned" },

@@ -177,24 +177,51 @@ fn image_ocr_imports_and_reads_from_workspace() {
     let img_path = root.join("receipt.bmp");
     std::fs::write(&img_path, bmp).unwrap();
 
+    let doc = documents::import_document(&img_path).unwrap();
+    assert_eq!(doc.kind, "bmp");
+    assert!(doc
+        .image_data_url
+        .as_deref()
+        .is_some_and(|u| u.starts_with("data:image/bmp;base64,")));
     if documents::ocr_available() {
-        let doc = documents::import_document(&img_path).unwrap();
-        assert_eq!(doc.kind, "bmp");
         assert!(doc.text.contains("OK"), "OCR text was: {:?}", doc.text);
-        assert!(doc
-            .image_data_url
-            .as_deref()
-            .is_some_and(|u| u.starts_with("data:image/bmp;base64,")));
         let ws_text =
             keel_core::tools::read_workspace_file(&root, "receipt.bmp", None, None).unwrap();
         assert!(ws_text.contains("OK"), "workspace OCR was: {ws_text:?}");
     } else {
-        let err = documents::import_document(&img_path)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("Tesseract OCR"), "unexpected error: {err}");
+        assert!(
+            doc.text.contains("Image pixels attached"),
+            "expected vision fallback caption, got {:?}",
+            doc.text
+        );
     }
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn chat_history_attaches_image_pixels_for_vision() {
+    let mut session = empty_session();
+    let mut message = user("What is in this picture?");
+    message.attachments = vec![Document {
+        id: "shot".into(),
+        name: "shot.png".into(),
+        kind: "png".into(),
+        text: "(Image pixels attached for vision. No OCR text was extracted.)".into(),
+        truncated: false,
+        image_data_url: Some("data:image/png;base64,aaa".into()),
+    }];
+    session.messages.push(message);
+    let text_only = keel_core::context::history(&session, None, 8192);
+    assert!(text_only.last().unwrap().image_urls.is_empty());
+    let with_vision = keel_core::context::history_with_vision(&session, None, 8192, true);
+    let last = with_vision.last().unwrap();
+    assert_eq!(
+        last.image_urls,
+        vec!["data:image/png;base64,aaa".to_string()]
+    );
+    let api = last.to_api_value();
+    assert_eq!(api["content"][1]["type"], "image_url");
+    assert!(last.content.contains("Image pixels attached"));
 }
 
 #[test]
