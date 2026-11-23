@@ -2537,34 +2537,6 @@ function openCustomizeModal() {
     });
     body.appendChild(appearanceCard);
 
-    const audioCard = document.createElement("div");
-    audioCard.className = "card";
-    audioCard.innerHTML = `
-      <label><strong>Audio packs</strong></label>
-      <p class="muted" style="margin:4px 0 8px">Speech-to-text and text-to-speech stubs. Downloads and real runners are not available yet.</p>
-      <div id="audio-pack-list" class="muted">Loading…</div>
-    `;
-    body.appendChild(audioCard);
-    invoke("list_audio_packs")
-      .then((packs) => {
-        const list = audioCard.querySelector("#audio-pack-list");
-        if (!list) return;
-        if (!packs?.length) {
-          list.textContent = "No audio packs listed.";
-          return;
-        }
-        list.innerHTML = packs
-          .map(
-            (p) =>
-              `<div style="margin:6px 0"><strong>${escapeHtml(p.display_name || p.id)}</strong><br/><span class="muted">${p.installed ? "Installed" : "Not installed yet"} · ${escapeHtml(p.capability || "")}</span></div>`,
-          )
-          .join("");
-      })
-      .catch((err) => {
-        const list = audioCard.querySelector("#audio-pack-list");
-        if (list) list.textContent = String(err);
-      });
-
     const harnessOptions = b.harnesses
       .map(
         (h) =>
