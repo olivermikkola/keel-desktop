@@ -15,4 +15,7 @@ cargo test --workspace
 echo "==> ui unit tests"
 node --test ui/tests/*.test.mjs
 
+echo "==> publish_eval_targets fail-closed + TBD scaffold"
+python3 scripts/test_publish_eval_targets.py
+
 echo "All checks passed."
