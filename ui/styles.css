@@ -1785,6 +1785,20 @@ body {
   border-color: var(--accent);
 }
 
+.seg-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.check-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.check-list li {
+  margin: 4px 0;
+}
+
 /* First-run welcome and guided setup */
 .welcome-overlay {
   position: fixed;

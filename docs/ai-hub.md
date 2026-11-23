@@ -24,16 +24,18 @@ Successful images are written as new `assets/keel-<job-id>.png` files in the sel
 
 1. **Web search in Chat & Work:** `web_search` is an explicit tool (also available in Code). It requires the same user approval path as shell/MCP. Results leave the machine over the network; there is no silent cloud chat fallback.
 2. **Vision in Chat:** image attachments keep their pixels (`image_data_url`) and Chat sends OpenAI-compatible multimodal `image_url` parts to the local or connected model. OCR remains an optional caption/fallback when Tesseract is installed or when a text-only model rejects images.
+3. **Keep the model loaded:** the graphics-or-processor choice from Settings reaches the runner, and a later message reuses that process when the model, context, and that choice are unchanged.
+4. **Check this model:** Settings can run three short questions (a saved preference, a number in a note, and a question the note does not answer). A model that fails is not offered as the one for this computer; it stays installed and can still be started by hand.
 
 ## Next milestones
 
-1. **Reliable everyday use:** PDF/DOCX/text attachments, search/rename/pin/export, reusable projects, saved preferences, a file Library, durable partial replies, guided runtime/model setup, web search, and Chat vision are implemented. Next: broader real-model evaluations, native interaction tests, richer Code context, and better CPU/GPU latency.
+1. **Reliable everyday use:** PDF/DOCX/text attachments, search/rename/pin/export, reusable projects, saved preferences, a file Library, durable partial replies, guided runtime/model setup, web search, Chat vision, keep-alive, and model check are implemented. Next: broader real-model evaluations, native interaction tests, richer Code context, and better CPU/GPU latency.
 2. **Model packs:** capability-specific runtime adapters, verified manifests, resumable/cancellable downloads, removal, measured hardware requirements, and resource scheduling/unloading. Curate Lightweight / Balanced / Powerful choices where real measurements support them; parameter counts alone are insufficient.
 3. **Audio:** separate speech-to-text and text-to-speech adapters with optional packs and audio artifacts. Do not force music generation into a speech model's interface.
 4. **Video:** asynchronous generation with engine-specific requirements, progress, cancellation semantics, and playable artifacts after image/audio jobs are dependable.
 5. **Explicit remote providers:** opt-in endpoint/auth configuration, secure credential storage, clear processing-location/cost labels, and no silent cloud fallback. A model still has to run somewhere when a user skips a local download.
 
-Images generation still needs a separately installed image server. System RAM detection is implemented for model sizing. GPU/VRAM detection, audio/video backends, automatic media runtime installation, and hosted-provider authentication are not implemented by this milestone.
+Images generation still needs a separately installed image server. System RAM detection is implemented for model sizing. Keel notices the graphics chip and keeps the chosen model loaded between messages, using the graphics-or-processor choice from Settings. GPU/VRAM detection, audio/video backends, automatic media runtime installation, and hosted-provider authentication are not implemented by this milestone.
 
 ## Verification
 

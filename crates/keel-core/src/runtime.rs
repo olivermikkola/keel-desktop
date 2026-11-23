@@ -18,6 +18,36 @@ pub struct RuntimeStatus {
     pub error: Option<String>,
 }
 
+/// What was true the last time the managed runner was started.
+/// A later message reuses the process when this still matches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadedLaunch {
+    pub model_id: String,
+    pub model_path: String,
+    pub context_size: u32,
+    pub bin: String,
+    pub run_where: String,
+    pub graphics_share: String,
+    pub offload_args: Vec<String>,
+    /// The engine path from Settings, not the build that was actually launched.
+    pub settings_bin: Option<String>,
+}
+
+pub fn same_loaded_launch(live: bool, current: &LoadedLaunch, next: &LoadedLaunch) -> bool {
+    live && current == next
+}
+
+pub struct ModelLaunch<'a> {
+    pub model_id: &'a str,
+    pub model_path: &'a Path,
+    pub context_size: u32,
+    pub custom_bin: Option<&'a str>,
+    pub offload_args: &'a [String],
+    pub run_where: &'a str,
+    pub graphics_share: &'a str,
+    pub settings_bin: Option<&'a str>,
+}
+
 pub struct RuntimeManager {
     child: Option<Child>,
     pub base_url: String,
@@ -28,6 +58,7 @@ pub struct RuntimeManager {
     pub port: u16,
     log_path: Option<PathBuf>,
     last_error: Option<String>,
+    loaded: Option<LoadedLaunch>,
 }
 
 impl Default for RuntimeManager {
@@ -49,6 +80,7 @@ impl RuntimeManager {
             port,
             log_path: None,
             last_error: None,
+            loaded: None,
         }
     }
 
@@ -58,27 +90,69 @@ impl RuntimeManager {
         self.active_model_id = model_id.or_else(|| Some("default".to_string()));
         self.active_model_path = None;
         self.active_context_size = None;
+        self.loaded = None;
     }
 
     pub fn is_managed(&self) -> bool {
         self.child.is_some()
     }
 
-    pub async fn start_model(
+    /// True when the managed runner is already serving this model, context,
+    /// placement, and (when the person set one) engine path.
+    pub fn still_loaded(
         &mut self,
         model_id: &str,
-        model_path: &Path,
+        model_path: &str,
         context_size: u32,
-        custom_bin: Option<&str>,
-    ) -> Result<RuntimeStatus> {
-        if !model_path.is_file() {
+        run_where: &str,
+        graphics_share: &str,
+        settings_bin: Option<&str>,
+    ) -> bool {
+        if self.status().state != "running" {
+            return false;
+        }
+        let Some(loaded) = &self.loaded else {
+            return false;
+        };
+        let wanted_bin = settings_bin.filter(|bin| !bin.trim().is_empty());
+        loaded.model_id == model_id
+            && loaded.model_path == model_path
+            && loaded.context_size == context_size
+            && loaded.run_where == run_where
+            && loaded.graphics_share == graphics_share
+            && loaded.settings_bin.as_deref() == wanted_bin
+    }
+
+    pub async fn start_model(&mut self, launch: ModelLaunch<'_>) -> Result<RuntimeStatus> {
+        if !launch.model_path.is_file() {
             bail!("This model isn't downloaded yet. Download it in Models first.");
         }
-        let bin = find_llama_server(custom_bin).context(
+        let bin = find_llama_server(launch.custom_bin).context(
             "Keel's built-in AI engine isn't installed yet. Open Models and click Set it up for me.",
         )?;
+        let next = LoadedLaunch {
+            model_id: launch.model_id.to_string(),
+            model_path: launch.model_path.to_string_lossy().into_owned(),
+            context_size: launch.context_size,
+            bin: bin.to_string_lossy().into_owned(),
+            run_where: launch.run_where.to_string(),
+            graphics_share: launch.graphics_share.to_string(),
+            offload_args: launch.offload_args.to_vec(),
+            settings_bin: launch
+                .settings_bin
+                .filter(|bin| !bin.trim().is_empty())
+                .map(str::to_string),
+        };
+        let live = self.status().state == "running";
+        if live {
+            if let Some(current) = &self.loaded {
+                if same_loaded_launch(true, current, &next) {
+                    return Ok(self.status());
+                }
+            }
+        }
         self.stop().await;
-        self.llama_server_bin = Some(bin.to_string_lossy().to_string());
+        self.llama_server_bin = Some(next.bin.clone());
         // A leftover runner (or a second Keel window) can still hold the usual
         // port; take a free one instead of failing with "exit status 1".
         let reserved_port =
@@ -96,20 +170,23 @@ impl RuntimeManager {
         let mut command = Command::new(&bin);
         command
             .arg("-m")
-            .arg(model_path)
+            .arg(launch.model_path)
             .arg("--host")
             .arg("127.0.0.1")
             .arg("--port")
             .arg(self.port.to_string())
             .arg("-c")
-            .arg(context_size.to_string())
+            .arg(launch.context_size.to_string())
             .arg("--parallel")
             .arg("1")
             .arg("--alias")
-            .arg(model_id)
-            .arg("--jinja")
-            .stdout(Stdio::null())
-            .stderr(Stdio::from(log));
+            .arg(launch.model_id)
+            .arg("--jinja");
+        // Graphics-or-processor flags from hardware::advise. They stay out of the UI.
+        for arg in launch.offload_args {
+            command.arg(arg);
+        }
+        command.stdout(Stdio::null()).stderr(Stdio::from(log));
         // llama-server binds its own socket. Keep the reservation until the
         // command and its log are ready, then release it immediately before spawn.
         drop(reserved_port);
@@ -118,9 +195,10 @@ impl RuntimeManager {
             .context("Keel's built-in AI engine couldn't start.")?;
 
         self.child = Some(child);
-        self.active_model_id = Some(model_id.to_string());
-        self.active_model_path = Some(model_path.to_string_lossy().to_string());
-        self.active_context_size = Some(context_size);
+        self.active_model_id = Some(next.model_id.clone());
+        self.active_model_path = Some(next.model_path.clone());
+        self.active_context_size = Some(next.context_size);
+        self.loaded = Some(next);
 
         let health_url = format!("http://127.0.0.1:{}/health", self.port);
         let client = reqwest::Client::builder()
@@ -133,6 +211,8 @@ impl RuntimeManager {
                     self.child = None;
                     self.active_model_id = None;
                     self.active_model_path = None;
+                    self.active_context_size = None;
+                    self.loaded = None;
                     let details = std::fs::read_to_string(&log_path)
                         .unwrap_or_default()
                         .lines()
@@ -172,6 +252,7 @@ impl RuntimeManager {
         self.active_model_path = None;
         self.active_model_id = None;
         self.active_context_size = None;
+        self.loaded = None;
         self.last_error = None;
     }
 
@@ -183,6 +264,7 @@ impl RuntimeManager {
         self.active_model_path = None;
         self.active_model_id = None;
         self.active_context_size = None;
+        self.loaded = None;
         self.last_error = None;
     }
 
@@ -193,6 +275,7 @@ impl RuntimeManager {
                 self.active_model_id = None;
                 self.active_model_path = None;
                 self.active_context_size = None;
+                self.loaded = None;
                 let details = self
                     .log_path
                     .as_deref()
@@ -319,6 +402,26 @@ pub async fn probe_openai_models(base_url: &str) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_same_launch_stays_loaded_and_a_new_placement_does_not() {
+        let current = LoadedLaunch {
+            model_id: "bonsai-4b".into(),
+            model_path: "/models/bonsai.gguf".into(),
+            context_size: 8192,
+            bin: "/runtime/llama-server".into(),
+            run_where: "auto".into(),
+            graphics_share: "auto".into(),
+            offload_args: vec!["--gpu-layers".into(), "all".into()],
+            settings_bin: None,
+        };
+        assert!(same_loaded_launch(true, &current, &current.clone()));
+        assert!(!same_loaded_launch(false, &current, &current.clone()));
+        let mut processor = current.clone();
+        processor.run_where = "processor".into();
+        processor.offload_args = vec!["--gpu-layers".into(), "0".into()];
+        assert!(!same_loaded_launch(true, &current, &processor));
+    }
 
     #[tokio::test]
     async fn stopping_clears_identity_instead_of_turning_local_into_external() {

@@ -93,6 +93,8 @@ pub enum AgentEvent {
         prompt_tokens: u64,
         completion_tokens: u64,
         tokens_per_sec: f64,
+        #[serde(default)]
+        elapsed_secs: f64,
     },
 }
 
@@ -400,6 +402,7 @@ where
                     prompt_tokens: total_prompt_tokens,
                     completion_tokens: total_completion_tokens,
                     tokens_per_sec: tps,
+                    elapsed_secs: secs,
                 });
                 return Ok(TurnOutcome {
                     content: final_content,
@@ -427,6 +430,7 @@ where
         prompt_tokens: total_prompt_tokens,
         completion_tokens: total_completion_tokens,
         tokens_per_sec: tps,
+        elapsed_secs: secs,
     });
 
     Ok(TurnOutcome {

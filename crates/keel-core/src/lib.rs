@@ -5,6 +5,7 @@ pub mod guard;
 pub mod hardware;
 pub mod harnesses;
 pub mod mcp;
+pub mod model_check;
 pub mod models;
 pub mod runtime;
 pub mod sessions;
