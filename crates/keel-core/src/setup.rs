@@ -75,11 +75,18 @@ pub fn plan(data: &Path, explicit: Option<&str>) -> SetupPlan {
             None
         }
     });
-    let recommended = if memory >= 12 * 1024 * 1024 * 1024 {
-        "bonsai-9b"
-    } else {
-        "bonsai-4b"
-    };
+    let machine = crate::hardware::detect_machine();
+    let graphics_devices = installed_graphics_runtime(data)
+        .map(|bin| crate::hardware::probe_devices(&bin))
+        .filter(|devices| !devices.is_empty())
+        .or_else(|| {
+            explicit
+                .map(std::path::PathBuf::from)
+                .filter(|path| crate::hardware::graphics_library_present(path))
+                .map(|path| crate::hardware::probe_devices(&path))
+        })
+        .unwrap_or_default();
+    let recommended = crate::hardware::recommended_model_id(&machine, &graphics_devices);
     let find = |id: &str| {
         crate::models::default_catalog()
             .into_iter()
@@ -102,11 +109,7 @@ pub fn plan(data: &Path, explicit: Option<&str>) -> SetupPlan {
         runtime_asset,
         runtime_path: runtime_path.map(|p| p.to_string_lossy().into_owned()),
         recommended_model: find(recommended).unwrap(),
-        fast_model: if recommended == "bonsai-4b" {
-            None
-        } else {
-            find("bonsai-4b")
-        },
+        fast_model: crate::hardware::lighter_model_id(recommended).and_then(find),
         partial_runner,
         partial_model_ids,
         context_size: 8192,
@@ -129,6 +132,21 @@ pub fn resolve_model(plan: &SetupPlan, requested: Option<&str>) -> Result<Catalo
 
 pub fn installed_runtime(data: &Path) -> Option<PathBuf> {
     locate_server(&data.join("runtime").join(catalog().version), 4)
+}
+
+/// Graphics build from the same pinned release, kept beside the CPU package.
+/// Absent on platforms that do not have a checksummed graphics package yet.
+pub fn graphics_runtime_asset() -> Option<RuntimeAsset> {
+    let key = format!("{}-{}-vulkan", std::env::consts::OS, std::env::consts::ARCH);
+    catalog().assets.get(&key).cloned()
+}
+
+pub fn installed_graphics_runtime(data: &Path) -> Option<PathBuf> {
+    let root = data
+        .join("runtime")
+        .join(format!("{}-vulkan", catalog().version));
+    let bin = locate_server(&root, 4)?;
+    crate::hardware::graphics_library_present(&bin).then_some(bin)
 }
 
 fn locate_server(root: &Path, depth: usize) -> Option<PathBuf> {
@@ -163,7 +181,7 @@ where
 pub async fn install_runtime_with_pause<F>(
     data: &Path,
     pause: Option<&mut watch::Receiver<bool>>,
-    mut progress: F,
+    progress: F,
 ) -> Result<PathBuf>
 where
     F: FnMut(DownloadProgress),
@@ -173,7 +191,60 @@ where
     }
     let catalog = catalog();
     let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
-    let asset = catalog.assets.get(&platform).context("Automatic setup is not available for this platform yet. You can still connect Ollama or LM Studio in Models.")?;
+    let asset = catalog
+        .assets
+        .get(&platform)
+        .context("Automatic setup is not available for this platform yet. You can still connect Ollama or LM Studio in Models.")?
+        .clone();
+    install_asset(data, &asset, &catalog.version, pause, progress).await?;
+    installed_runtime(data).context("Could not locate Keel's AI engine after setup. Try again.")
+}
+
+/// Installs the checksummed graphics build beside the CPU package.
+/// The CPU package has no graphics library, so it cannot place a model in
+/// graphics memory. This uses the project's pinned runtime catalog only.
+pub async fn install_graphics_runtime<F>(data: &Path, progress: F) -> Result<PathBuf>
+where
+    F: FnMut(DownloadProgress),
+{
+    install_graphics_runtime_with_pause(data, None, progress).await
+}
+
+pub async fn install_graphics_runtime_with_pause<F>(
+    data: &Path,
+    pause: Option<&mut watch::Receiver<bool>>,
+    progress: F,
+) -> Result<PathBuf>
+where
+    F: FnMut(DownloadProgress),
+{
+    if let Some(path) =
+        installed_graphics_runtime(data).filter(|path| check_runner_starts(path).is_ok())
+    {
+        return Ok(path);
+    }
+    let asset = graphics_runtime_asset()
+        .context("The graphics chip can't be used on this computer yet.")?;
+    let folder = format!("{}-vulkan", catalog().version);
+    install_asset(data, &asset, &folder, pause, progress).await?;
+    let path = installed_graphics_runtime(data)
+        .context("The graphics chip can't be used on this computer yet.")?;
+    if !crate::hardware::graphics_library_present(&path) {
+        bail!("The graphics chip can't be used on this computer yet.");
+    }
+    Ok(path)
+}
+
+async fn install_asset<F>(
+    data: &Path,
+    asset: &RuntimeAsset,
+    folder: &str,
+    pause: Option<&mut watch::Receiver<bool>>,
+    mut progress: F,
+) -> Result<()>
+where
+    F: FnMut(DownloadProgress),
+{
     let runtime_root = data.join("runtime");
     std::fs::create_dir_all(&runtime_root)?;
     let archive = runtime_root.join(&asset.name);
@@ -198,13 +269,13 @@ where
         let _ = std::fs::remove_dir_all(&temporary);
         return Err(error);
     }
-    let destination = runtime_root.join(catalog.version);
+    let destination = runtime_root.join(folder);
     if destination.exists() {
         std::fs::remove_dir_all(&destination)?;
     }
     std::fs::rename(&temporary, &destination)?;
     let _ = std::fs::remove_file(archive);
-    installed_runtime(data).context("Could not locate Keel's AI engine after setup. Try again.")
+    Ok(())
 }
 
 /// Check the destination volume, accounting for bytes retained by a pause.
@@ -332,11 +403,34 @@ mod tests {
     }
 
     #[test]
-    fn real_plan_matches_this_computers_memory() {
+    fn real_plan_follows_this_computers_hardware() {
         let dir = std::env::temp_dir().join(format!("keel-plan-{}", uuid::Uuid::new_v4()));
         let plan = plan(&dir, None);
-        let offered_fast = plan.fast_model.is_some();
-        assert_eq!(offered_fast, plan.recommended_model.id != "bonsai-4b");
+        let machine = crate::hardware::detect_machine();
+        assert_eq!(
+            plan.recommended_model.id,
+            crate::hardware::recommended_model_id(&machine, &[])
+        );
+        if machine.physical_cores <= 4 && machine.logical_cpus <= 8 {
+            assert_ne!(plan.recommended_model.id, "bonsai-9b");
+        }
+        if let Some(fast) = &plan.fast_model {
+            assert!(fast.bytes < plan.recommended_model.bytes);
+        }
+    }
+
+    #[test]
+    fn pinned_linux_graphics_package_is_a_different_build_from_the_cpu_one() {
+        let catalog = catalog();
+        let cpu = &catalog.assets["linux-x86_64"];
+        let graphics = &catalog.assets["linux-x86_64-vulkan"];
+        assert!(graphics.url.contains("b12428") && graphics.url.contains("vulkan-x64"));
+        assert_ne!(graphics.sha256, cpu.sha256);
+        assert_eq!(graphics.bytes, 36_387_242);
+        assert_eq!(
+            graphics.sha256,
+            "7694190faaaef1d66c692c21f43fd4305374d7a8156274e6a1a7ee7637d3efdc"
+        );
     }
 
     #[test]

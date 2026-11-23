@@ -74,8 +74,7 @@ pub fn default_catalog() -> Vec<CatalogModel> {
             quantization: "Q2_0".to_string(),
             context_size: 32_768,
             tier: "balanced".to_string(),
-            detail: "Recommended. Smarter everyday helper; best with 12 GB of memory or more."
-                .to_string(),
+            detail: "Smarter everyday helper for a computer that can keep up.".to_string(),
             local_path: None,
             installed: false,
             damaged: false,
