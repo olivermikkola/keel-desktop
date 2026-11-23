@@ -2,7 +2,7 @@ use keel_core::agent::{
     run_agent_turn, AgentEvent, ApprovalDecision, EndpointUnreachable, TurnParams,
 };
 use keel_core::apps::{AppPreset, AppPresetInfo};
-use keel_core::audio::{self, AudioPackManifest};
+use keel_core::audio::{self, AudioArtifact, AudioPackManifest};
 use keel_core::harnesses::{
     code_execution_boundary, detect_harnesses, recommended_code_harness, run_external_harness,
     run_keel_cli_turn, validate_keel_session_log, CodeExecutionBoundary, HarnessOption,
@@ -2282,6 +2282,25 @@ pub async fn list_audio_packs(
     state: State<'_, AppState>,
 ) -> Result<Vec<AudioPackManifest>, String> {
     Ok(audio::list_audio_packs_resolved(&state.data_dir))
+}
+
+/// List recent STT transcripts / TTS wav copies under `{data_dir}/audio-artifacts/`.
+#[tauri::command]
+pub async fn list_audio_artifacts(
+    state: State<'_, AppState>,
+) -> Result<Vec<AudioArtifact>, String> {
+    Ok(audio::list_audio_artifacts(&state.data_dir))
+}
+
+/// Remove all files under `{data_dir}/audio-artifacts/`.
+#[tauri::command]
+pub async fn clear_audio_artifacts(state: State<'_, AppState>) -> Result<(), String> {
+    let data_dir = state.data_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        audio::clear_audio_artifacts(&data_dir).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Mark a catalog pack installed without a runner (Settings → Mark installed).
