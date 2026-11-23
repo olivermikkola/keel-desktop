@@ -40,6 +40,7 @@ const COMPACTION_CODEWORD: &str = "MAPLE";
 
 /// Token budget used by the long-session fixture contract test (mirrors a
 /// tight agent step budget so `compact_messages` is forced to run).
+#[cfg(test)]
 const LONG_SESSION_COMPACTION_BUDGET: usize = 1024;
 
 /// How the example CLI prepares history / workspace for a case.
