@@ -1970,7 +1970,7 @@ mod tests {
             Some(workspace.to_string_lossy().as_ref())
         );
         assert_eq!(
-            session.keel_session_log.as_ref().map(|p| p.as_path()),
+            session.keel_session_log.as_deref(),
             Some(journal.canonicalize().unwrap().as_path())
         );
         assert_eq!(session.messages.len(), 2);
