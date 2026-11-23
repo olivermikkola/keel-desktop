@@ -346,6 +346,62 @@ const MAX_EVENT_BYTES: u64 = 1024 * 1024;
 const TURN_TIMEOUT: Duration = Duration::from_secs(300);
 const EXIT_GRACE: Duration = Duration::from_secs(5);
 
+/// Build a Code-mode Desktop session from a Keel CLI journal under
+/// `~/.keel/sessions` (or any validated JSONL path). Used by the import picker
+/// after the user selects a file; kept dialog-free so tests can cover the
+/// Code preset, title truncation, workspace binding, and journal path retention.
+pub fn chat_session_from_keel_journal(
+    journal: &Path,
+    workspace_root: &Path,
+) -> Result<crate::sessions::ChatSession> {
+    use crate::apps::AppPreset;
+    use crate::sessions::ChatSession;
+
+    let path = journal
+        .canonicalize()
+        .with_context(|| format!("Cannot find Keel session journal at {}", journal.display()))?;
+    let messages = read_keel_session(&path)?;
+    let title = messages
+        .iter()
+        .find(|message| message.role == "user")
+        .map(|message| message.content.chars().take(48).collect())
+        .unwrap_or_else(|| "Keel CLI session".to_string());
+    let updated_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Ok(ChatSession {
+        id: uuid::Uuid::new_v4().to_string(),
+        title,
+        project_id: None,
+        pinned: false,
+        app_preset: AppPreset::Code,
+        workspace_path: Some(workspace_root.to_string_lossy().into_owned()),
+        keel_session_log: Some(path),
+        code_checkout: None,
+        applied_code_patch: None,
+        last_code_test: None,
+        messages,
+        staged_edits: Vec::new(),
+        updated_at,
+    })
+}
+
+/// Confirm a Code session has a reveal/exportable Keel CLI journal.
+pub fn require_code_session_journal(session: &crate::sessions::ChatSession) -> Result<PathBuf> {
+    use crate::apps::AppPreset;
+
+    if session.app_preset != AppPreset::Code {
+        bail!("Journal handoff is only available for Code sessions.");
+    }
+    let Some(log) = session.keel_session_log.as_ref() else {
+        bail!(
+            "This Code thread has no Keel CLI journal yet. Start a turn with Engine for Code mode set to Keel CLI, or use Open CLI session to import one."
+        );
+    };
+    validate_keel_session_log(log)
+}
+
 /// Project completed text messages from a user-selected Keel journal for display.
 /// The CLI continues the original journal, including tool observations.
 pub fn read_keel_session(path: &Path) -> Result<Vec<UiMessage>> {
@@ -1812,6 +1868,99 @@ mod tests {
             Some(&Value::String("pwd".into()))
         );
         assert_eq!(messages[1].tool_calls[0].result.as_deref(), Some("/tmp\n"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn chat_session_from_keel_journal_sets_code_preset_title_and_log() {
+        use crate::apps::AppPreset;
+
+        let dir = std::env::temp_dir().join(format!("keel_import_{}", uuid::Uuid::new_v4()));
+        let sessions = dir.join(".keel").join("sessions");
+        let workspace = dir.join("workspace");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        let long = "a".repeat(60);
+        let journal = sessions.join("imported.jsonl");
+        std::fs::write(
+            &journal,
+            format!(
+                r#"{{"kind":"user","data":{{"text":"{long}"}}}}
+{{"kind":"assistant","data":{{"text":"ok"}}}}
+"#
+            ),
+        )
+        .unwrap();
+
+        let session = chat_session_from_keel_journal(&journal, &workspace)
+            .expect("import from ~/.keel/sessions-shaped path");
+        assert_eq!(session.app_preset, AppPreset::Code);
+        assert_eq!(session.title.len(), 48);
+        assert_eq!(session.title, "a".repeat(48));
+        assert_eq!(
+            session.workspace_path.as_deref(),
+            Some(workspace.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            session.keel_session_log.as_ref().map(|p| p.as_path()),
+            Some(journal.canonicalize().unwrap().as_path())
+        );
+        assert_eq!(session.messages.len(), 2);
+        assert_eq!(session.messages[0].role, "user");
+        assert!(session.staged_edits.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn require_code_session_journal_gates_reveal_and_export_handoff() {
+        use crate::apps::AppPreset;
+        use crate::sessions::ChatSession;
+
+        let dir = std::env::temp_dir().join(format!("keel_handoff_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let journal = dir.join("thread.jsonl");
+        std::fs::write(
+            &journal,
+            r#"{"kind":"user","data":{"text":"hi"}}
+"#,
+        )
+        .unwrap();
+        let canonical = journal.canonicalize().unwrap();
+
+        let mut code = ChatSession {
+            id: "s1".into(),
+            title: "Code".into(),
+            project_id: None,
+            pinned: false,
+            app_preset: AppPreset::Code,
+            workspace_path: Some(dir.to_string_lossy().into_owned()),
+            keel_session_log: Some(journal.clone()),
+            code_checkout: None,
+            applied_code_patch: None,
+            last_code_test: None,
+            messages: Vec::new(),
+            staged_edits: Vec::new(),
+            updated_at: 1,
+        };
+        assert_eq!(
+            require_code_session_journal(&code).expect("code+journal"),
+            canonical
+        );
+
+        code.keel_session_log = None;
+        let missing = require_code_session_journal(&code).unwrap_err().to_string();
+        assert!(
+            missing.contains("no Keel CLI journal"),
+            "unexpected: {missing}"
+        );
+
+        code.app_preset = AppPreset::Chat;
+        code.keel_session_log = Some(journal);
+        let wrong_preset = require_code_session_journal(&code).unwrap_err().to_string();
+        assert!(
+            wrong_preset.contains("only available for Code"),
+            "unexpected: {wrong_preset}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
