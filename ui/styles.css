@@ -1785,6 +1785,11 @@ body {
   border-color: var(--accent);
 }
 
+.seg-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 /* First-run welcome and guided setup */
 .welcome-overlay {
   position: fixed;

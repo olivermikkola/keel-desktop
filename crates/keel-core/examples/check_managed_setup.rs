@@ -13,6 +13,7 @@ async fn main() -> Result<()> {
             std::path::Path::new(&model),
             4096,
             runner.to_str(),
+            &[],
         )
         .await?;
     anyhow::ensure!(status.state == "running", "Expected a live managed runtime");

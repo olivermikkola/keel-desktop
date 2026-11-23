@@ -1,6 +1,6 @@
 import { createEveryday } from "./everyday.js";
 import { createImageWorkspace } from "./images.js";
-import { assistantStatus, friendlyRuntimeError, friendlySetupError, isFirstRun, modelLocation, modelTierLabel, modelToWake, serverDataNotice } from "./onboarding.js";
+import { assistantStatus, friendlyRuntimeError, friendlySetupError, isFirstRun, modelLocation, modelTierLabel, modelToWake, serverDataNotice, speedSettingsCopy } from "./onboarding.js";
 import { MODES, modeForPreset, isRuntimeLive, promptBlockReason } from "./modes.js";
 import { escapeHtml, renderMarkdown } from "./markdown.js";
 import {
@@ -952,7 +952,7 @@ function renderModelSwitcher() {
     html += `<div class="switcher-section-label">ON THIS COMPUTER</div>`;
     for (const m of healthy) {
       const isActive = rt.state === "running" && rt.active_model_id === m.id;
-      const tier = modelTierLabel(m);
+      const tier = modelTierLabel(m, b.computer?.recommended_model_id);
       html += `
         <button type="button" class="switcher-item ${isActive ? "active" : ""}" data-switch-model="${escapeHtml(m.id)}" role="menuitem" ${busy ? "disabled" : ""}>
           <span class="switcher-item-main">
@@ -1618,7 +1618,7 @@ function renderModelsWorkspace() {
       const isRunning = rt.active_model_id === m.id && rt.state === "running";
       const isSelected = inspected?.id === m.id;
       const isThisBusy = appState.busyModelId === m.id;
-      const tier = modelTierLabel(m);
+      const tier = modelTierLabel(m, b.computer?.recommended_model_id);
       const badgeClass = m.damaged ? "model-badge warn" : isRunning ? "model-badge live" : "model-badge";
       const badgeText = m.damaged ? "Needs repair" : isRunning ? "In use" : tier;
       const fit = !m.damaged ? modelFitLabel(m.bytes, b.system_ram_gb) : "";
@@ -2321,6 +2321,52 @@ function openDiffsModal() {
 function openCustomizeModal() {
   const b = appState.bootstrap;
   openModal("Settings", (body) => {
+    const speedCopy = speedSettingsCopy();
+    let runWhere = b.config.run_where || "auto";
+    let graphicsShare = b.config.graphics_share || "auto";
+    const speedCard = document.createElement("div");
+    speedCard.className = "card";
+    const segButtons = (options, current, attr) =>
+      options
+        .map(
+          ([id, label]) =>
+            `<button type="button" class="seg-btn ${current === id ? "active" : ""}" data-${attr}="${id}">${label}</button>`,
+        )
+        .join("");
+    speedCard.innerHTML = `
+      <strong>${speedCopy.where}</strong>
+      <div class="seg-group">${segButtons(speedCopy.whereOptions, runWhere, "run-where")}</div>
+      <strong>${speedCopy.share}</strong>
+      <div class="seg-group">${segButtons(speedCopy.shareOptions, graphicsShare, "graphics-share")}</div>
+      <p class="muted" id="speed-summary">${escapeHtml(b.computer?.summary || "Automatic chooses the faster place to run the model on this computer.")}</p>
+      <p class="muted">${speedCopy.later}</p>
+    `;
+    const paintSpeed = () => {
+      speedCard.querySelectorAll("[data-run-where]").forEach((btn) => {
+        btn.classList.toggle("active", btn.getAttribute("data-run-where") === runWhere);
+      });
+      const onProcessor = runWhere === "processor";
+      speedCard.querySelectorAll("[data-graphics-share]").forEach((btn) => {
+        btn.disabled = onProcessor;
+        btn.classList.toggle("active", !onProcessor && btn.getAttribute("data-graphics-share") === graphicsShare);
+      });
+    };
+    speedCard.querySelectorAll("[data-run-where]").forEach((btn) => {
+      btn.onclick = () => {
+        runWhere = btn.getAttribute("data-run-where");
+        paintSpeed();
+      };
+    });
+    speedCard.querySelectorAll("[data-graphics-share]").forEach((btn) => {
+      btn.onclick = () => {
+        if (runWhere === "processor") return;
+        graphicsShare = btn.getAttribute("data-graphics-share");
+        paintSpeed();
+      };
+    });
+    paintSpeed();
+    body.appendChild(speedCard);
+
     const ap = appState.appearance;
     const appearanceCard = document.createElement("div");
     appearanceCard.className = "card";
@@ -2459,6 +2505,8 @@ function openCustomizeModal() {
     card.querySelector("#cust-save").onclick = async () => {
       const prevCtx = b.config.context_window || 0;
       const nextCtx = Number(card.querySelector("#cust-ctx")?.value || 0);
+      const prevWhere = b.config.run_where || "auto";
+      const prevShare = b.config.graphics_share || "auto";
       try {
         await invoke("save_customize_settings", {
           update: {
@@ -2467,15 +2515,21 @@ function openCustomizeModal() {
             harness_mode: card.querySelector("#cust-harness").value,
             llama_server_path: card.querySelector("#cust-llama").value || null,
             context_window: nextCtx,
+            run_where: runWhere,
+            graphics_share: graphicsShare,
           },
         });
         await refreshBootstrap();
         renderHeader();
         closeModal();
-        const restartNeeded = prevCtx !== nextCtx && appState.bootstrap?.runtime?.state === "running";
+        const running = appState.bootstrap?.runtime?.state === "running";
+        const speedChanged = prevWhere !== runWhere || prevShare !== graphicsShare;
+        const restartNeeded = running && (prevCtx !== nextCtx || speedChanged);
         showToast(
           restartNeeded
-            ? "Settings saved. Restart the model in Models to apply the new context window."
+            ? speedChanged
+              ? "Settings saved. Start your AI again for this to take effect."
+              : "Settings saved. Restart the model in Models to apply the new context window."
             : "Settings saved.",
         );
       } catch (err) {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assistantStatus, createProgressTracker, formatEta, formatSpeed, friendlyRuntimeError, friendlySetupError, isFirstRun, modelLocation, modelTierLabel, modelToWake, serverDataNotice, stepStates } from "../onboarding.js";
+import { assistantStatus, createProgressTracker, formatEta, formatSpeed, friendlyRuntimeError, friendlySetupError, isFirstRun, modelLocation, modelTierLabel, modelToWake, serverDataNotice, speedSettingsCopy, stepStates } from "../onboarding.js";
 
 const MB = 1024 * 1024;
 
@@ -141,7 +141,16 @@ test("modelToWake skips damaged models and recovers from error state", () => {
     null,
   );
   assert.equal(modelTierLabel({ tier: "fast" }), "Fast");
-  assert.equal(modelTierLabel({ tier: "balanced" }), "Recommended");
+  assert.equal(modelTierLabel({ tier: "balanced" }), "Smarter");
+  assert.equal(modelTierLabel({ id: "lfm3-1.7b", tier: "fast" }, "lfm3-1.7b"), "Good fit");
   assert.equal(modelTierLabel({ tier: "desktop" }), "Most capable");
   assert.equal(modelTierLabel({ tier: "balanced", damaged: true }), "Needs repair");
+});
+
+test("speed settings speak in everyday words", () => {
+  const copy = speedSettingsCopy();
+  const text = JSON.stringify(copy);
+  assert.match(text, /Graphics chip/);
+  assert.match(text, /All of it/);
+  assert.doesNotMatch(text, /llama|gguf|backend|vulkan|api key|UHD/i);
 });

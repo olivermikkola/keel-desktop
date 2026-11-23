@@ -123,15 +123,35 @@ export function friendlyRuntimeError(raw) {
 }
 
 /** Plain-language tier label for a model card; never exposes quant names or file formats. */
-export function modelTierLabel(model) {
+export function modelTierLabel(model, suggestedId) {
   if (model?.damaged) return "Needs repair";
+  if (suggestedId && model?.id === suggestedId) return "Good fit";
   switch (model?.tier) {
     case "fast": return "Fast";
-    case "balanced": return "Recommended";
+    case "balanced": return "Smarter";
     case "desktop": return "Most capable";
     case "custom": return "Your file";
     default: return "";
   }
+}
+
+/** Everyday labels for where the model runs. No engine or chip names. */
+export function speedSettingsCopy() {
+  return {
+    where: "Where should the model run?",
+    whereOptions: [
+      ["auto", "Automatic"],
+      ["graphics", "Graphics chip"],
+      ["processor", "Processor"],
+    ],
+    share: "How much of the model sits on the graphics chip?",
+    shareOptions: [
+      ["auto", "Automatic"],
+      ["full", "All of it"],
+      ["partial", "Some of it"],
+    ],
+    later: "Applies the next time your AI starts.",
+  };
 }
 
 /** Which installed model to start automatically when the app opens, or null. */
