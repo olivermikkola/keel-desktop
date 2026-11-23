@@ -1643,7 +1643,9 @@ function renderModelsWorkspace() {
       const tier = tierLabel(m);
       const badgeClass = m.damaged ? "model-badge warn" : isRunning ? "model-badge live" : "model-badge";
       const badgeText = m.damaged ? "Needs repair" : isRunning ? "In use" : tier;
-      const fit = !m.damaged ? modelFitLabel(m.bytes, b.system_ram_gb) : "";
+      const fit = !m.damaged
+        ? modelFitLabel(m.bytes, b.system_ram_gb, b.computer?.vram_total_mib || 0)
+        : "";
       const subText = m.damaged
         ? m.damage_reason || "This download looks incomplete or damaged."
         : `${m.detail} · ${formatBytes(m.bytes)}${fit ? ` · ${fit}` : ""}`;
