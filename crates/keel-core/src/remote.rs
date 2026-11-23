@@ -147,9 +147,11 @@ mod tests {
         std::fs::create_dir_all(&config_dir).unwrap();
         std::fs::create_dir_all(&data_dir).unwrap();
 
-        let mut cfg = DesktopConfig::default();
-        cfg.external_base_url = Some("https://models.example.com/v1".into());
-        cfg.external_model_name = Some("remote-model".into());
+        let cfg = DesktopConfig {
+            external_base_url: Some("https://models.example.com/v1".into()),
+            external_model_name: Some("remote-model".into()),
+            ..Default::default()
+        };
         save_config(&config_dir, &cfg).unwrap();
         save_external_api_key(&data_dir, Some("sk-secret-should-not-leak")).unwrap();
 

@@ -706,7 +706,9 @@ mod runner_check_tests {
         assert_eq!(ids, vec!["remote-model".to_string()]);
         let request = server.await.unwrap();
         assert!(
-            request.to_ascii_lowercase().contains("authorization: bearer sk-fixture-key"),
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer sk-fixture-key"),
             "missing auth header in: {request}"
         );
         assert!(

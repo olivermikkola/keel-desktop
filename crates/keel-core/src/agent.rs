@@ -711,6 +711,7 @@ fn api_messages(messages: &[ChatTurnMessage], include_images: bool) -> Vec<Value
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn stream_completion<E>(
     client: &reqwest::Client,
     endpoint: &str,
