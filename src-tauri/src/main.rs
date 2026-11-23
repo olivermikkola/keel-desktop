@@ -101,6 +101,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::get_bootstrap_state,
             productivity::pick_documents,
+            productivity::import_document_from_bytes,
+            productivity::open_models_folder,
             productivity::save_project,
             productivity::get_project,
             productivity::list_library,

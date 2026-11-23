@@ -112,6 +112,9 @@ fn documents_extract_text_docx_and_pdf_without_external_programs() {
     assert!(documents::is_image_extension("PNG"));
     assert!(documents::is_image_extension("jpeg"));
     assert!(!documents::is_image_extension("pdf"));
+    let from_bytes = documents::import_document_bytes("pasted.md", b"# Notes\nReady").unwrap();
+    assert_eq!(from_bytes.name, "pasted.md");
+    assert_eq!(from_bytes.text, "# Notes\nReady");
     std::fs::remove_dir_all(root).unwrap();
 }
 

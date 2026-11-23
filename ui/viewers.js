@@ -26,23 +26,41 @@ export function renderCodeView(container, fileName, content) {
   container.innerHTML = `<div class="viewer-scroll code-viewer">${linesHtml}</div>`;
 }
 
-export function renderDiffView(container, edit) {
+export function renderDiffView(container, edit, { edits = [], onSelect, onApprove, onReject } = {}) {
   if (!edit) {
     container.innerHTML = `<div class="viewer-empty">No staged edits in this session yet. Ask Keel to modify a file to review diffs here.</div>`;
     return;
   }
+  const switcher =
+    edits.length > 1
+      ? `<select class="select-field" id="diff-pane-select" style="max-width:220px">${edits
+          .map(
+            (e) =>
+              `<option value="${escapeHtml(e.id)}" ${e.id === edit.id ? "selected" : ""}>${escapeHtml(e.path)} (${escapeHtml(e.status)})</option>`,
+          )
+          .join("")}</select>`
+      : "";
+  const pendingActions =
+    edit.status === "pending" && onApprove && onReject
+      ? `<div class="row" style="margin-top:8px"><button id="diff-pane-reject" type="button" class="btn btn-ghost btn-sm">Reject</button><button id="diff-pane-approve" type="button" class="btn btn-primary btn-sm">Approve</button></div>`
+      : "";
   container.innerHTML = `
     <div class="viewer-scroll diff-pane-wrap">
       <div class="diff-pane-head">
-        <span class="mono">${escapeHtml(edit.summary)}</span>
+        <span class="mono grow">${escapeHtml(edit.summary)}</span>
+        ${switcher}
         <span class="inline-edit-counts">
           ${edit.added_lines ? `<span class="diff-plus">+${edit.added_lines}</span>` : ""}
           ${edit.removed_lines ? `<span class="diff-minus">-${edit.removed_lines}</span>` : ""}
         </span>
       </div>
+      ${pendingActions}
       ${renderDiffHtml(edit.diff)}
     </div>
   `;
+  container.querySelector("#diff-pane-select")?.addEventListener("change", (ev) => onSelect?.(ev.target.value));
+  container.querySelector("#diff-pane-approve")?.addEventListener("click", (ev) => onApprove?.(edit.id, ev.target));
+  container.querySelector("#diff-pane-reject")?.addEventListener("click", (ev) => onReject?.(edit.id, ev.target));
 }
 
 const CODE_EXTENSIONS = new Set([
@@ -122,13 +140,38 @@ export function renderViewer(container, fileName, content) {
     const headers = rows[0];
     const body = rows.slice(1);
     const ths = headers.map((h) => `<th>${escapeHtml(h)}</th>`).join("");
-    const trs = body
-      .map(
-        (row) =>
-          `<tr>${headers.map((_, i) => `<td>${escapeHtml(row[i] ?? "")}</td>`).join("")}</tr>`,
-      )
-      .join("");
-    container.innerHTML = `<div class="viewer-scroll"><table class="csv-table"><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table></div>`;
+    container.innerHTML = "";
+    const toolbar = document.createElement("div");
+    toolbar.className = "sheets-toolbar";
+    const countSpan = document.createElement("span");
+    const filterInput = document.createElement("input");
+    filterInput.className = "input";
+    filterInput.placeholder = "Filter rows…";
+    filterInput.setAttribute("aria-label", "Filter CSV rows");
+    toolbar.appendChild(countSpan);
+    toolbar.appendChild(filterInput);
+    const scrollWrap = document.createElement("div");
+    scrollWrap.className = "viewer-scroll";
+    const drawTable = (q = "") => {
+      const needle = q.trim().toLowerCase();
+      const visible = needle
+        ? body.filter((row) => row.some((cell) => String(cell ?? "").toLowerCase().includes(needle)))
+        : body;
+      countSpan.textContent = needle
+        ? `${visible.length} of ${body.length} rows · ${headers.length} columns`
+        : `${body.length} rows · ${headers.length} columns`;
+      const trs = visible
+        .map(
+          (row) =>
+            `<tr>${headers.map((_, i) => `<td>${escapeHtml(row[i] ?? "")}</td>`).join("")}</tr>`,
+        )
+        .join("");
+      scrollWrap.innerHTML = `<table class="csv-table"><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table>`;
+    };
+    filterInput.addEventListener("input", () => drawTable(filterInput.value));
+    drawTable();
+    container.appendChild(toolbar);
+    container.appendChild(scrollWrap);
     return;
   }
 
@@ -137,9 +180,35 @@ export function renderViewer(container, fileName, content) {
     container.innerHTML = "";
     const wrap = document.createElement("div");
     wrap.className = "viewer-scroll study-deck";
+    const quizCards = deck.cards.filter((c) => c.choices.length > 0);
+    const results = new Map();
+    const headRow = document.createElement("div");
+    headRow.className = "study-header-row";
     const heading = document.createElement("h2");
     heading.textContent = deck.title;
-    wrap.appendChild(heading);
+    heading.style.margin = "0";
+    headRow.appendChild(heading);
+    const scoreEl = document.createElement("span");
+    scoreEl.className = "muted mono";
+    const updateScore = () => {
+      if (!quizCards.length) return;
+      const correctCount = [...results.values()].filter(Boolean).length;
+      scoreEl.textContent = `Score: ${correctCount} / ${quizCards.length}`;
+    };
+    if (quizCards.length) {
+      updateScore();
+      const resetBtn = document.createElement("button");
+      resetBtn.type = "button";
+      resetBtn.className = "btn btn-ghost btn-sm";
+      resetBtn.textContent = "Reset quiz";
+      resetBtn.addEventListener("click", () => renderViewer(container, fileName, content));
+      const right = document.createElement("div");
+      right.className = "row";
+      right.appendChild(scoreEl);
+      right.appendChild(resetBtn);
+      headRow.appendChild(right);
+    }
+    wrap.appendChild(headRow);
 
     deck.cards.forEach((card, idx) => {
       const el = document.createElement("div");
@@ -160,10 +229,14 @@ export function renderViewer(container, fileName, content) {
           btn.textContent = choice;
           btn.addEventListener("click", () => {
             const correct = choice.toLowerCase() === card.answer.toLowerCase();
+            list.querySelectorAll(".study-choice").forEach((b) => b.classList.remove("selected-ok", "selected-warn"));
+            btn.classList.add(correct ? "selected-ok" : "selected-warn");
             feedback.textContent = correct
               ? `Correct: ${card.answer}`
               : `Answer: ${card.answer}`;
             feedback.dataset.state = correct ? "ok" : "warn";
+            results.set(idx, correct);
+            updateScore();
           });
           list.appendChild(btn);
         });

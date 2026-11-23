@@ -400,6 +400,29 @@ pub async fn restore_thread(state: State<'_, AppState>, id: String) -> Result<Ch
 }
 
 #[tauri::command]
+pub async fn import_document_from_bytes(
+    name: String,
+    base64_data: String,
+) -> Result<Document, String> {
+    tokio::task::spawn_blocking(move || {
+        keel_core::documents::import_document_base64(&name, &base64_data)
+            .map_err(|e| format!("{name}: {e}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn open_models_folder(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = keel_core::models::models_dir(&state.data_dir);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    app.opener()
+        .open_path(dir.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn open_external_link(app: AppHandle, url: String) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
     if !(url.starts_with("https://") || url.starts_with("http://")) {

@@ -14,6 +14,7 @@ import {
   filterModels,
   formatBytes,
   formatRelativeTime,
+  modelFitLabel,
   normalizeAppearance,
   shortPath,
 } from "./state.js";
@@ -25,6 +26,7 @@ const events = window.__TAURI__?.event;
 
 const APPEARANCE_STORAGE_KEY = "keel_appearance_v2";
 const WELCOME_STORAGE_KEY = "keel_welcome_done";
+const THINKING_STORAGE_KEY = "keel_thinking_v1";
 
 const appState = {
   bootstrap: null,
@@ -124,7 +126,7 @@ const everyday = createEveryday({
     if (searchInput) searchInput.value = "";
     const project = appState.bootstrap.projects?.find((p) => p.id === id);
     if (project?.workspace_path) appState.workspacePath = project.workspace_path;
-    await createNewSession("chat");
+    await createNewSession(project?.workspace_path ? "general" : "chat");
   },
   openArtifact: async (item) => {
     const preset = item.kind === "html" ? "websites" : item.kind === "csv" ? "sheets" : item.kind === "md" ? "docs" : "general";
@@ -373,10 +375,18 @@ function renderToolOrEditHtml(tool) {
 
 async function setActiveView(view) {
   if (appState.streaming || appState.choosingWorkspace) return;
-  if (MODES[view] && modeForPreset(appState.session?.app_preset) !== view) {
-    const recent = appState.bootstrap.sessions.find((s) => modeForPreset(s.app_preset) === view && (s.project_id || null) === appState.activeProjectId);
-    if (recent) await loadSession(recent.id);
-    else await createNewSession(MODES[view].preset);
+  if (MODES[view]) {
+    const currentPreset = appState.session?.app_preset;
+    const returningFromWorkSubApp = view === "work" && appState.activeView === "work" && currentPreset && currentPreset !== "general";
+    if (modeForPreset(currentPreset) !== view || returningFromWorkSubApp) {
+      const recent = appState.bootstrap.sessions.find((s) =>
+        returningFromWorkSubApp
+          ? s.app_preset === "general" && (s.project_id || null) === appState.activeProjectId
+          : modeForPreset(s.app_preset) === view && (s.project_id || null) === appState.activeProjectId,
+      );
+      if (recent) await loadSession(recent.id);
+      else await createNewSession(MODES[view].preset);
+    }
   }
   appState.activeView = view;
   if (view === "models") {
@@ -655,7 +665,7 @@ function renderSidebar() {
     else {
       const project = b.projects?.find((p) => p.id === appState.activeProjectId);
       if (project?.workspace_path) appState.workspacePath = project.workspace_path;
-      await createNewSession("chat");
+      await createNewSession(project?.workspace_path ? "general" : "chat");
     }
   }; });
   projectsList.querySelectorAll("[data-edit-project]").forEach((button) => { button.onclick = () => everyday.editProject(button.dataset.editProject); });
@@ -709,9 +719,15 @@ function renderSidebar() {
       : rt.state === "running" ? activeModel?.name || "Local model" : status.key === "setup" ? "Setting up your AI" : "No model loaded";
   const isLive = isRuntimeLive(rt);
   const fill = status.key === "setup" ? ` style="width:${Math.round(setup.fraction * 100)}%"` : "";
+  const newThreadLabel = els.newAgentBtn?.querySelector("span");
+  if (newThreadLabel) {
+    newThreadLabel.textContent =
+      appState.activeView === "code" ? "New code" : appState.activeView === "work" ? "New work" : "New chat";
+  }
   const canOpenSetup = status.key === "setup" || status.key === "paused";
-  els.sidebarRuntimeBox.classList.toggle("clickable", canOpenSetup);
-  els.sidebarRuntimeBox.onclick = canOpenSetup ? () => welcome.show() : null;
+  els.sidebarRuntimeBox.classList.add("clickable");
+  els.sidebarRuntimeBox.title = canOpenSetup ? "Open guided setup" : "Open Models";
+  els.sidebarRuntimeBox.onclick = () => (canOpenSetup ? welcome.show() : setActiveView("models"));
   els.sidebarRuntimeBox.innerHTML = `
     <span class="status-dot ${status.key === "setup" || status.key === "waking" ? "starting" : rt.state}"></span>
     <div class="sidebar-runtime-meta">
@@ -744,7 +760,16 @@ function renderHeader() {
   renderModelSwitcher();
 
   const shortWs = shortPath(appState.workspacePath);
-  els.workspacePillLabel.textContent = appState.workspacePath ? shortWs : "Open folder";
+  const activeProj = b.projects?.find((p) => p.id === appState.activeProjectId);
+  els.workspacePillLabel.textContent = appState.workspacePath
+    ? activeProj ? `${activeProj.name} · ${shortWs}` : shortWs
+    : activeProj ? activeProj.name : "Open folder";
+  const attachBtn = document.getElementById("attach-docs-btn");
+  if (attachBtn) {
+    attachBtn.title = b.ocr_available
+      ? "Attach or drop/paste PDF, DOCX, text, CSV, code, or image (offline OCR ready)"
+      : "Attach or drop/paste PDF, DOCX, text, CSV, or code (install Tesseract for image OCR)";
+  }
 
   const harness = b.harnesses.find((h) => h.id === b.config.harness_mode);
   const boundaryLimited = b.code_execution && !b.code_execution.can_run_commands;
@@ -1320,6 +1345,38 @@ function renderViewerOptions() {
     .join("");
 }
 
+function diffViewCallbacks() {
+  const edits = appState.session?.staged_edits || [];
+  return {
+    edits,
+    onSelect: (editId) => {
+      appState.selectedEditId = editId;
+      loadViewerContent();
+    },
+    onApprove: async (editId, btn) => {
+      if (btn) btn.disabled = true;
+      try {
+        appState.session = await invoke("apply_staged_edit_cmd", { sessionId: appState.session.id, editId });
+        await refreshWorkspaceFiles();
+        renderAll();
+      } catch (err) {
+        showToast(friendlyRuntimeError(err));
+        if (btn) btn.disabled = false;
+      }
+    },
+    onReject: async (editId, btn) => {
+      if (btn) btn.disabled = true;
+      try {
+        appState.session = await invoke("discard_staged_edit_cmd", { sessionId: appState.session.id, editId });
+        renderAll();
+      } catch (err) {
+        showToast(friendlyRuntimeError(err));
+        if (btn) btn.disabled = false;
+      }
+    },
+  };
+}
+
 async function loadViewerContent() {
   if (appState.viewerTab === "diff") {
     const edits = appState.session?.staged_edits || [];
@@ -1332,7 +1389,7 @@ async function loadViewerContent() {
       await renderCodeWorktreePane(els.viewerContent, activeEdit);
       return;
     }
-    renderDiffView(els.viewerContent, activeEdit);
+    renderDiffView(els.viewerContent, activeEdit, diffViewCallbacks());
     return;
   }
 
@@ -1451,6 +1508,12 @@ async function renderCodeWorktreePane(container, activeEdit) {
       </div>
       ${patch?.diff ? `<div class="worktree-diff-wrap">${renderDiffHtml(patch.diff)}</div>` : ""}
     `;
+    card.querySelector("#code-test-cmd")?.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        card.querySelector("#code-test-run")?.click();
+      }
+    });
     card.querySelector("#code-test-run").onclick = async () => {
       const cmd = card.querySelector("#code-test-cmd").value.trim();
       if (!cmd) return;
@@ -1512,7 +1575,7 @@ async function renderCodeWorktreePane(container, activeEdit) {
   wrap.appendChild(card);
   if (activeEdit) {
     const stagedWrap = document.createElement("div");
-    renderDiffView(stagedWrap, activeEdit);
+    renderDiffView(stagedWrap, activeEdit, diffViewCallbacks());
     wrap.appendChild(stagedWrap);
   }
   container.innerHTML = "";
@@ -1539,9 +1602,10 @@ function renderModelsWorkspace() {
       const tier = modelTierLabel(m);
       const badgeClass = m.damaged ? "model-badge warn" : isRunning ? "model-badge live" : "model-badge";
       const badgeText = m.damaged ? "Needs repair" : isRunning ? "In use" : tier;
+      const fit = !m.damaged ? modelFitLabel(m.bytes, b.system_ram_gb) : "";
       const subText = m.damaged
         ? m.damage_reason || "This download looks incomplete or damaged."
-        : `${m.detail} · ${formatBytes(m.bytes)}`;
+        : `${m.detail} · ${formatBytes(m.bytes)}${fit ? ` · ${fit}` : ""}`;
       const isDownloading = isThisBusy && ["downloading", "repairing"].includes(appState.busyModelAction);
       let actionHtml = "";
       if (m.damaged) {
@@ -1600,9 +1664,23 @@ function renderModelsWorkspace() {
         ? `${formatBytes(inspected.bytes)} · on this computer`
         : `${formatBytes(inspected.bytes)} download`;
 
+  const totalDownloadedBytes = b.models
+    .filter((m) => m.installed)
+    .reduce((acc, m) => acc + (m.bytes || 0), 0);
+  const storageText = [
+    b.system_ram_gb ? `${b.system_ram_gb} GB RAM detected` : null,
+    totalDownloadedBytes > 0 ? `${formatBytes(totalDownloadedBytes)} on disk` : "No models downloaded yet",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
   els.viewModels.innerHTML = `
     <div class="models-main-col">
       <div class="model-setup-row"><div><strong>Not sure which one?</strong><p class="muted">Keel picks the right model for this computer and sets everything up automatically.</p></div><button id="models-setup-btn" class="btn ${isRunningLocal || isRunningExternal ? "" : "btn-primary "}btn-sm">Set it up for me</button></div>
+      <div class="models-storage-bar">
+        <span>${escapeHtml(storageText)}</span>
+        <button id="models-open-folder" type="button" class="btn btn-ghost btn-sm">Open folder</button>
+      </div>
       <div class="models-search-bar">
         <input id="models-search-in" class="input grow" value="${escapeHtml(appState.modelSearchQuery)}" placeholder="Search models" />
         <div class="models-filter-pills">
@@ -1682,6 +1760,10 @@ function renderModelsWorkspace() {
 
   const modelsSetupBtn = document.getElementById("models-setup-btn");
   if (modelsSetupBtn) modelsSetupBtn.onclick = () => welcome.show();
+  document.getElementById("models-open-folder")?.addEventListener("click", async () => {
+    try { await invoke("open_models_folder"); }
+    catch (err) { showToast(friendlyRuntimeError(err)); }
+  });
   const searchIn = document.getElementById("models-search-in");
   searchIn.oninput = () => {
     const start = searchIn.selectionStart ?? searchIn.value.length;
@@ -2119,9 +2201,24 @@ function openDiffsModal() {
     top.className = "row";
     top.innerHTML = `
       <span class="grow" style="color:var(--muted)">Review proposed edits before writing them to disk.</span>
+      <button id="reject-all-btn" class="btn btn-ghost btn-sm" ${pendingCount === 0 ? "disabled" : ""}>Reject all</button>
       <button id="apply-all-btn" class="btn btn-primary btn-sm" ${pendingCount === 0 ? "disabled" : ""}>Approve all${pendingCount ? ` (${pendingCount})` : ""}</button>
     `;
     body.appendChild(top);
+    top.querySelector("#reject-all-btn").onclick = async (ev) => {
+      ev.target.disabled = true;
+      try {
+        const pendingIds = (appState.session?.staged_edits || []).filter((e) => e.status === "pending").map((e) => e.id);
+        for (const editId of pendingIds) {
+          appState.session = await invoke("discard_staged_edit_cmd", { sessionId: appState.session.id, editId });
+        }
+        renderAll();
+        openDiffsModal();
+      } catch (err) {
+        showToast(friendlyRuntimeError(err));
+        ev.target.disabled = false;
+      }
+    };
     top.querySelector("#apply-all-btn").onclick = async (ev) => {
       ev.target.disabled = true;
       try {
@@ -2230,7 +2327,7 @@ function openCustomizeModal() {
       <strong>Accent</strong>
       <div class="seg-group">${accentButtons}</div>
       <strong>Tone</strong>
-      <div class="seg-group cols-2">${toneButtons}</div>
+      <div class="seg-group">${toneButtons}</div>
       <strong>Density</strong>
       <div class="seg-group cols-2">${densityButtons}</div>
       <strong>Sidebar</strong>
@@ -2301,10 +2398,28 @@ function openCustomizeModal() {
       <details class="advanced-drawer">
         <summary class="import-gguf-toggle">Developer options</summary>
         <div class="advanced-drawer-body">
+          <label><strong>Context window</strong></label>
+          <select id="cust-ctx" class="select-field">
+            <option value="0" ${!b.config.context_window ? "selected" : ""}>Auto (${b.system_ram_gb >= 16 ? "16K" : "8K"} for this computer)</option>
+            <option value="8192" ${b.config.context_window === 8192 ? "selected" : ""}>8,192 tokens (lighter RAM)</option>
+            <option value="16384" ${b.config.context_window === 16384 ? "selected" : ""}>16,384 tokens (longer docs)</option>
+            <option value="32768" ${b.config.context_window === 32768 ? "selected" : ""}>32,768 tokens (high RAM)</option>
+          </select>
           <label><strong>Engine for Code mode</strong></label>
           <select id="cust-harness" class="select-field">${harnessOptions}</select>
           <label><strong>Custom local engine path</strong></label>
           <input id="cust-llama" class="input mono" value="${escapeHtml(b.config.llama_server_path || "")}" placeholder="Leave blank to use Keel's built-in engine" />
+        </div>
+      </details>
+      <details class="advanced-drawer">
+        <summary class="import-gguf-toggle">Keyboard shortcuts</summary>
+        <div class="shortcuts-grid">
+          <kbd>Ctrl/Cmd + N</kbd><span>New conversation</span>
+          <kbd>Ctrl/Cmd + K</kbd><span>Search conversations</span>
+          <kbd>Ctrl/Cmd + B</kbd><span>Toggle sidebar</span>
+          <kbd>Ctrl/Cmd + 1 / 2 / 3</kbd><span>Switch Chat / Work / Code</span>
+          <kbd>Ctrl/Cmd + ,</kbd><span>Open Settings</span>
+          <kbd>Esc</kbd><span>Stop streaming or close dialog</span>
         </div>
       </details>
       <div class="row">
@@ -2323,17 +2438,23 @@ function openCustomizeModal() {
       welcome.show();
     };
     card.querySelector("#cust-save").onclick = async () => {
-      await invoke("save_customize_settings", {
-        update: {
-          custom_instructions: card.querySelector("#cust-inst").value,
-          auto_apply_edits: card.querySelector("#cust-auto").checked,
-          harness_mode: card.querySelector("#cust-harness").value,
-          llama_server_path: card.querySelector("#cust-llama").value || null,
-        },
-      });
-      await refreshBootstrap();
-      renderHeader();
-      closeModal();
+      try {
+        await invoke("save_customize_settings", {
+          update: {
+            custom_instructions: card.querySelector("#cust-inst").value,
+            auto_apply_edits: card.querySelector("#cust-auto").checked,
+            harness_mode: card.querySelector("#cust-harness").value,
+            llama_server_path: card.querySelector("#cust-llama").value || null,
+            context_window: Number(card.querySelector("#cust-ctx")?.value || 0),
+          },
+        });
+        await refreshBootstrap();
+        renderHeader();
+        closeModal();
+        showToast("Settings saved.");
+      } catch (err) {
+        showToast(friendlyRuntimeError(err));
+      }
     };
     body.appendChild(card);
   });
@@ -2363,7 +2484,50 @@ function autoSizePromptInput() {
   els.promptInput.style.height = `${Math.min(els.promptInput.scrollHeight, 140)}px`;
 }
 
+async function importBrowserFiles(fileList) {
+  if (appState.streaming || !fileList?.length) return;
+  const files = [...fileList];
+  if (appState.pendingDocuments.length + files.length > 8) {
+    showToast("Attach up to 8 documents per message.");
+    return;
+  }
+  const readBase64 = (file) =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const res = String(reader.result || "");
+        const comma = res.indexOf(",");
+        resolve(comma >= 0 ? res.slice(comma + 1) : res);
+      };
+      reader.onerror = () => reject(new Error(`Could not read ${file.name}`));
+      reader.readAsDataURL(file);
+    });
+  for (const file of files) {
+    try {
+      const base64Data = await readBase64(file);
+      const name = file.name || `pasted-${Date.now()}.${(file.type || "image/png").split("/")[1] || "png"}`;
+      const doc = await invoke("import_document_from_bytes", { name, base64Data });
+      appState.pendingDocuments.push(doc);
+    } catch (err) {
+      showToast(friendlyRuntimeError(err));
+    }
+  }
+  saveDraft();
+  renderAttachmentChips();
+}
+
 function wireUi() {
+  try {
+    const savedThink = localStorage.getItem(THINKING_STORAGE_KEY);
+    if (savedThink !== null) els.thinkingToggle.checked = savedThink === "1";
+  } catch {
+    // Ignore storage errors.
+  }
+  els.thinkingToggle.addEventListener("change", () => {
+    try { localStorage.setItem(THINKING_STORAGE_KEY, els.thinkingToggle.checked ? "1" : "0"); }
+    catch { /* Ignore storage errors. */ }
+  });
+
   els.toggleSidebarBtn.onclick = () => {
     applyAppearance({ ...appState.appearance, sidebar: !appState.appearance.sidebar });
   };
@@ -2376,10 +2540,44 @@ function wireUi() {
   document.getElementById("thread-search").oninput = (event) => { clearTimeout(searchTimer); searchTimer = setTimeout(() => everyday.search(event.target.value), 200); };
   document.getElementById("attach-docs-btn").onclick = async () => {
     if (appState.streaming) return;
-    const documents = await invoke("pick_documents");
-    if (appState.pendingDocuments.length + documents.length > 8) { showToast("Attach up to 8 documents per message."); return; }
-    appState.pendingDocuments.push(...documents); saveDraft(); renderAttachmentChips();
+    try {
+      const documents = await invoke("pick_documents");
+      if (appState.pendingDocuments.length + documents.length > 8) { showToast("Attach up to 8 documents per message."); return; }
+      appState.pendingDocuments.push(...documents); saveDraft(); renderAttachmentChips();
+    } catch (err) {
+      showToast(friendlyRuntimeError(err));
+    }
   };
+  const chatCol = document.querySelector(".chat-column");
+  if (chatCol) {
+    let dragDepth = 0;
+    chatCol.addEventListener("dragenter", (e) => {
+      if (!e.dataTransfer?.types?.includes("Files")) return;
+      e.preventDefault();
+      dragDepth += 1;
+      chatCol.classList.add("drop-active");
+    });
+    chatCol.addEventListener("dragover", (e) => {
+      if (!e.dataTransfer?.types?.includes("Files")) return;
+      e.preventDefault();
+    });
+    chatCol.addEventListener("dragleave", () => {
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth === 0) chatCol.classList.remove("drop-active");
+    });
+    chatCol.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      dragDepth = 0;
+      chatCol.classList.remove("drop-active");
+      if (e.dataTransfer?.files?.length) await importBrowserFiles(e.dataTransfer.files);
+    });
+  }
+  els.promptInput.addEventListener("paste", async (e) => {
+    const files = [...(e.clipboardData?.files || [])];
+    if (!files.length) return;
+    e.preventDefault();
+    await importBrowserFiles(files);
+  });
   document.addEventListener("click", (event) => {
     if (appState.modelSwitcherOpen && !event.target.closest(".model-pill-wrap")) {
       closeModelSwitcher();
@@ -2388,12 +2586,46 @@ function wireUi() {
     if (link) { event.preventDefault(); invoke("open_external_link", { url: link.dataset.externalLink }).catch((error) => showToast(String(error))); }
   });
   document.addEventListener("keydown", (event) => {
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); document.getElementById("thread-search").focus(); }
-    if (event.key === "Escape") {
-      closeModelSwitcher();
-      closeModal();
+    const mod = event.ctrlKey || event.metaKey;
+    const key = event.key.toLowerCase();
+    const modalOpen = !els.modalBackdrop.classList.contains("hidden");
+    if (mod && key === "k") {
+      event.preventDefault();
+      if (!appState.appearance.sidebar) {
+        applyAppearance({ ...appState.appearance, sidebar: true });
+      }
+      document.getElementById("thread-search")?.focus();
+      return;
     }
-    if (event.key === "Tab" && !els.modalBackdrop.classList.contains("hidden")) {
+    if (mod && key === "b") {
+      event.preventDefault();
+      applyAppearance({ ...appState.appearance, sidebar: !appState.appearance.sidebar });
+      return;
+    }
+    if (mod && key === "n" && !modalOpen && !welcome.isOpen()) {
+      event.preventDefault();
+      createNewSession(MODES[appState.activeView]?.preset || "chat");
+      return;
+    }
+    if (mod && event.key === ",") {
+      event.preventDefault();
+      openCustomizeModal();
+      return;
+    }
+    if (mod && !event.shiftKey && ["1", "2", "3"].includes(event.key) && !modalOpen && !welcome.isOpen()) {
+      event.preventDefault();
+      setActiveView(event.key === "1" ? "chat" : event.key === "2" ? "work" : "code");
+      return;
+    }
+    if (event.key === "Escape") {
+      if (appState.modelSwitcherOpen) { closeModelSwitcher(); return; }
+      if (modalOpen) { closeModal(); return; }
+      if (welcome.isOpen()) return;
+      if (appState.streaming) {
+        els.stopBtn.click();
+      }
+    }
+    if (event.key === "Tab" && modalOpen) {
       const focusable = [...els.modalBackdrop.querySelectorAll("button, input, textarea, select, a[href]")].filter((el) => !el.disabled && el.getClientRects().length);
       const first = focusable[0], last = focusable[focusable.length - 1];
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
