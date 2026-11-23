@@ -79,6 +79,9 @@ pub struct CaseSample {
     pub run: usize,
     pub passed: bool,
     pub seconds: f64,
+    /// Seconds until the first visible answer `ContentDelta`, when observed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ttft_seconds: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub answer: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -93,6 +96,9 @@ pub struct CaseAggregate {
     pub passed: usize,
     pub success_rate: f64,
     pub p50_seconds: f64,
+    /// Median TTFT across samples that recorded one; omitted when none did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub p50_ttft_seconds: Option<f64>,
     pub samples: Vec<CaseSample>,
 }
 
@@ -501,12 +507,21 @@ pub fn aggregate_samples(samples: &[CaseSample]) -> Vec<CaseAggregate> {
             let runs = case_samples.len();
             let passed = case_samples.iter().filter(|s| s.passed).count();
             let seconds: Vec<f64> = case_samples.iter().map(|s| s.seconds).collect();
+            let ttfts: Vec<f64> = case_samples
+                .iter()
+                .filter_map(|s| s.ttft_seconds)
+                .collect();
             CaseAggregate {
                 case,
                 runs,
                 passed,
                 success_rate: success_rate(passed, runs),
                 p50_seconds: p50_seconds(&seconds),
+                p50_ttft_seconds: if ttfts.is_empty() {
+                    None
+                } else {
+                    Some(p50_seconds(&ttfts))
+                },
                 samples: case_samples,
             }
         })
@@ -669,6 +684,7 @@ mod tests {
                 run: 1,
                 passed: true,
                 seconds: 10.0,
+                ttft_seconds: Some(1.0),
                 answer: None,
                 error: None,
             },
@@ -677,6 +693,7 @@ mod tests {
                 run: 2,
                 passed: false,
                 seconds: 20.0,
+                ttft_seconds: Some(3.0),
                 answer: None,
                 error: None,
             },
@@ -685,6 +702,7 @@ mod tests {
                 run: 3,
                 passed: true,
                 seconds: 30.0,
+                ttft_seconds: Some(5.0),
                 answer: None,
                 error: None,
             },
@@ -693,6 +711,7 @@ mod tests {
                 run: 1,
                 passed: true,
                 seconds: 5.0,
+                ttft_seconds: None,
                 answer: None,
                 error: None,
             },
@@ -704,8 +723,10 @@ mod tests {
         assert_eq!(agg[0].runs, 3);
         assert!((agg[0].success_rate - 2.0 / 3.0).abs() < 1e-9);
         assert!((agg[0].p50_seconds - 20.0).abs() < 1e-9);
+        assert!((agg[0].p50_ttft_seconds.unwrap() - 3.0).abs() < 1e-9);
         assert_eq!(agg[1].case, "csv_total");
         assert!((agg[1].success_rate - 1.0).abs() < 1e-9);
+        assert!(agg[1].p50_ttft_seconds.is_none());
     }
 
     #[test]

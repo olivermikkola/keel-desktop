@@ -8,12 +8,15 @@
 //! - `KEEL_EVAL_CASE` — run only this case name
 //! - `KEEL_EVAL_PACK` — pack tag filter (`smoke` default, or `held_out`)
 //! - `KEEL_EVAL_RUNS` — repeat each case N times and aggregate (default `1`)
+//! - `KEEL_EVAL_OUT` — optional path; write the same JSON report there (for `scripts/publish_eval_targets.py`)
+//! - `KEEL_EVAL_HARDWARE` — optional label (`cpu` / `gpu` / `metal`) recorded in the report
+//! - `KEEL_EVAL_PEAK_RSS_MB` — optional peak RSS of the model server (MiB), recorded in the report
 //!
-//! Stdout is a JSON report with per-case `success_rate` and `p50_seconds`.
+//! Stdout is a JSON report with per-case `success_rate`, `p50_seconds`, and `p50_ttft_seconds` when available.
 //! See `docs/everyday-readiness.md` § Continuous evidence for where to archive it.
 use anyhow::{Context, Result};
 use keel_core::{
-    agent::{run_agent_turn, ApprovalDecision, TurnParams},
+    agent::{run_agent_turn, AgentEvent, ApprovalDecision, TurnParams},
     apps::AppPreset,
     eval_cases::{
         aggregate_samples, case_by_name, cases_for_pack, grade, write_workspace_fixtures,
@@ -37,6 +40,13 @@ async fn main() -> Result<()> {
         .unwrap_or(1)
         .max(1);
     let selected_case = std::env::var("KEEL_EVAL_CASE").ok();
+    let out_path = std::env::var("KEEL_EVAL_OUT").ok();
+    let hardware = std::env::var("KEEL_EVAL_HARDWARE").ok();
+    let peak_rss_mb = std::env::var("KEEL_EVAL_PEAK_RSS_MB")
+        .ok()
+        .map(|v| v.parse::<f64>())
+        .transpose()
+        .context("KEEL_EVAL_PEAK_RSS_MB must be a number")?;
 
     let cases: Vec<_> = if let Some(name) = selected_case.as_deref() {
         vec![case_by_name(name).with_context(|| format!("unknown KEEL_EVAL_CASE: {name}"))?]
@@ -58,6 +68,7 @@ async fn main() -> Result<()> {
             }
             let (history, custom_instructions) = keel_core::eval_cases::prepare_turn(case);
             let start = Instant::now();
+            let mut first_content_at: Option<f64> = None;
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(240),
                 run_agent_turn(
@@ -80,7 +91,15 @@ async fn main() -> Result<()> {
                         max_steps: 6,
                     },
                     &mut HashSet::new(),
-                    |_| {},
+                    |event| {
+                        if first_content_at.is_none() {
+                            if let AgentEvent::ContentDelta { text } = &event {
+                                if !text.is_empty() {
+                                    first_content_at = Some(start.elapsed().as_secs_f64());
+                                }
+                            }
+                        }
+                    },
                     |_, _, _, _| async { ApprovalDecision::Deny },
                 ),
             )
@@ -103,6 +122,7 @@ async fn main() -> Result<()> {
                         run,
                         passed,
                         seconds,
+                        ttft_seconds: first_content_at,
                         answer: Some(outcome.content),
                         error: None,
                     }
@@ -112,6 +132,7 @@ async fn main() -> Result<()> {
                     run,
                     passed: false,
                     seconds,
+                    ttft_seconds: first_content_at,
                     answer: None,
                     error: Some(error.to_string()),
                 },
@@ -120,30 +141,67 @@ async fn main() -> Result<()> {
                     run,
                     passed: false,
                     seconds,
+                    ttft_seconds: first_content_at,
                     answer: None,
                     error: Some("Timed out after 240 seconds".into()),
                 },
             };
             eprintln!(
-                "{} run {}: {} ({:.1}s)",
+                "{} run {}: {} ({:.1}s{})",
                 sample.case,
                 run,
                 if sample.passed { "PASS" } else { "FAIL" },
-                seconds
+                seconds,
+                sample
+                    .ttft_seconds
+                    .map(|t| format!(", ttft {t:.2}s"))
+                    .unwrap_or_default()
             );
             samples.push(sample);
         }
     }
 
     let aggregates = aggregate_samples(&samples);
-    let report = json!({
+    let pack_passed: usize = aggregates.iter().map(|a| a.passed).sum();
+    let pack_runs: usize = aggregates.iter().map(|a| a.runs).sum();
+    let pack_latencies: Vec<f64> = aggregates.iter().map(|a| a.p50_seconds).collect();
+    let pack_ttfts: Vec<f64> = aggregates
+        .iter()
+        .filter_map(|a| a.p50_ttft_seconds)
+        .collect();
+    let mut report = json!({
         "model": model,
         "pack": pack,
         "runs": runs,
         "cases": aggregates,
+        "pack_success_rate": if pack_runs == 0 {
+            0.0
+        } else {
+            pack_passed as f64 / pack_runs as f64
+        },
+        "pack_p50_seconds": keel_core::eval_cases::p50_seconds(&pack_latencies),
         "note": "Small opt-in task checks, not a comparison with Claude or a broad quality benchmark. Read answers as well as pass flags."
     });
-    println!("{}", serde_json::to_string_pretty(&report)?);
+    if let Some(hw) = &hardware {
+        report["hardware"] = json!(hw);
+    }
+    if let Some(rss) = peak_rss_mb {
+        report["peak_rss_mb"] = json!(rss);
+    }
+    if !pack_ttfts.is_empty() {
+        report["pack_p50_ttft_seconds"] =
+            json!(keel_core::eval_cases::p50_seconds(&pack_ttfts));
+    }
+    let pretty = serde_json::to_string_pretty(&report)?;
+    println!("{pretty}");
+    if let Some(path) = out_path {
+        if let Some(parent) = std::path::Path::new(&path).parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, &pretty)
+            .with_context(|| format!("write KEEL_EVAL_OUT={path}"))?;
+        eprintln!("wrote {path}");
+    }
     let _ = std::fs::remove_dir_all(root);
     Ok(())
 }

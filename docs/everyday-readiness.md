@@ -30,10 +30,10 @@ Formal targets for recommended model × hardware combinations. Fill a cell only 
 
 | Column | Meaning |
 | --- | --- |
-| TTFT | Time to first visible answer token (not yet emitted by `evaluate_local`; leave TBD until instrumented) |
-| p50 latency | Median wall-clock seconds per case from the JSON report (`p50_seconds`), then summarize across the pack as agreed when publishing |
-| Success rate | Pack-level fraction of passed case samples (`passed / runs` aggregated across cases) |
-| Peak RSS | Peak resident set size of the model server during the run (measure with OS tools; not in the JSON report yet) |
+| TTFT | Time to first visible answer token (`ContentDelta`); pack median as `pack_p50_ttft_seconds` in the JSON report |
+| p50 latency | Pack median of per-case `p50_seconds` (`pack_p50_seconds` in the JSON report) |
+| Success rate | Pack-level fraction of passed case samples (`pack_success_rate`) |
+| Peak RSS | Peak resident set size of the model server (pass `KEEL_EVAL_PEAK_RSS_MB` when known; else measure with OS tools) |
 
 **Every cell below is TBD** until measured on the intended hardware. Do not treat the informal CPU samples in the next section as these targets. **GPU/Metal is unmeasured** — do not invent or infer GPU numbers from CPU runs.
 
@@ -62,16 +62,22 @@ KEEL_EVAL_URL=http://127.0.0.1:19181/v1 KEEL_EVAL_MODEL=bonsai4b \
 # Held-out pack with repeats (use for published-target measurements)
 KEEL_EVAL_URL=http://127.0.0.1:19181/v1 KEEL_EVAL_MODEL=bonsai4b \
   KEEL_EVAL_PACK=held_out KEEL_EVAL_RUNS=5 \
-  cargo run -p keel-core --example evaluate_local | tee eval-held-out.json
+  KEEL_EVAL_HARDWARE=cpu \
+  KEEL_EVAL_OUT=docs/eval-results/$(date -u +%Y-%m-%d)-bonsai4b-cpu.json \
+  cargo run -p keel-core --example evaluate_local
 ```
 
-Stdout is pretty-printed JSON shaped like:
+Stdout (and `KEEL_EVAL_OUT` when set) is pretty-printed JSON shaped like:
 
 ```json
 {
   "model": "bonsai4b",
   "pack": "held_out",
   "runs": 5,
+  "hardware": "cpu",
+  "pack_success_rate": 0.8,
+  "pack_p50_seconds": 18.2,
+  "pack_p50_ttft_seconds": 1.4,
   "cases": [
     {
       "case": "friendly_email",
@@ -79,6 +85,7 @@ Stdout is pretty-printed JSON shaped like:
       "passed": 5,
       "success_rate": 1.0,
       "p50_seconds": 12.4,
+      "p50_ttft_seconds": 0.9,
       "samples": []
     }
   ],
@@ -88,8 +95,16 @@ Stdout is pretty-printed JSON shaped like:
 
 Where results should land:
 
-1. **Machine-readable:** keep the JSON next to the measurement notes (for example `docs/eval-results/<date>-<model>-<cpu|gpu>.json` locally or in a PR). Do not commit secrets or host-private paths.
-2. **Human summary:** when a cell in Published targets is filled, cite the JSON (date, model id, runner build, `run_where`, pack, `KEEL_EVAL_RUNS`) in the PR or release notes. Update only measured cells; leave the rest TBD.
+1. **Machine-readable:** keep the JSON under `docs/eval-results/<date>-<model>-<cpu|gpu>.json` (or locally). Do not commit secrets or host-private paths.
+2. **Human summary:** fill Published targets only via measured reports — dry-run then apply:
+
+```bash
+python3 scripts/publish_eval_targets.py \
+  --report docs/eval-results/2026-11-23-bonsai4b-cpu.json \
+  --model "Bonsai 2 · 4B" --hardware cpu --dry-run
+```
+
+The script refuses packs other than `held_out`, `KEEL_EVAL_RUNS` < 5, and CPU/GPU mismatches. Update only measured cells; leave the rest TBD.
 3. **Informal samples:** one-off development runs may stay under Observed real-model results below; they do not count as published targets.
 
 Unit tests for graders and aggregation: `cargo test -p keel-core --lib eval`. Real-model runs stay opt-in (no CI GPU requirement).
@@ -113,7 +128,7 @@ One additional email experiment showed why the reasoning switch needed a backend
 
 ## Remaining bar for recommending a switch
 
-1. Measure the held-out pack (`KEEL_EVAL_PACK=held_out`, `KEEL_EVAL_RUNS`≥5) on intended user hardware, then expand remaining TODOs (long-session compaction, native mid-turn recovery) and stronger project-document / multi-file coverage.
-2. Fill Published targets (TTFT, p50 latency, success rate, peak RSS) per recommended model/hardware combination from those runs. Do not infer GPU results from CPU tests.
+1. Measure the held-out pack (`KEEL_EVAL_PACK=held_out`, `KEEL_EVAL_RUNS`≥5) on intended user hardware (TTFT is recorded automatically), then expand remaining TODOs (long-session compaction, native mid-turn recovery) and stronger project-document / multi-file coverage.
+2. Fill Published targets (TTFT, p50 latency, success rate, peak RSS) per recommended model/hardware combination from those runs with `scripts/publish_eval_targets.py`. Do not infer GPU results from CPU tests.
 3. Test with people doing the recurring tasks they currently use Claude for, and compare completed work, correction effort, and time—not just UI appearance or a few successful prompts.
 4. Address the failures those evaluations find. Hosted provider authentication and automatic audio/video packs remain separate unimplemented capabilities.
