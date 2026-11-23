@@ -37,6 +37,30 @@ pub fn same_loaded_launch(live: bool, current: &LoadedLaunch, next: &LoadedLaunc
     live && current == next
 }
 
+/// True when the loaded launch is using graphics offload (not `--device none`).
+pub fn launch_uses_graphics(loaded: &LoadedLaunch) -> bool {
+    !loaded
+        .offload_args
+        .windows(2)
+        .any(|pair| pair[0] == "--device" && pair[1] == "none")
+        && loaded
+            .offload_args
+            .iter()
+            .any(|arg| arg == "--device" || arg == "--gpu-layers")
+}
+
+/// Whether keep-alive should stop so a pack can claim free VRAM.
+pub fn should_stop_keep_alive_for_pack(
+    inventory: &crate::hardware::VramInventory,
+    pack: &crate::packs::PackManifest,
+    loaded: Option<&LoadedLaunch>,
+) -> bool {
+    let Some(loaded) = loaded else {
+        return false;
+    };
+    crate::packs::should_unload_for_pack(inventory, pack, launch_uses_graphics(loaded))
+}
+
 pub struct ModelLaunch<'a> {
     pub model_id: &'a str,
     pub model_path: &'a Path,
@@ -412,15 +436,67 @@ mod tests {
             bin: "/runtime/llama-server".into(),
             run_where: "auto".into(),
             graphics_share: "auto".into(),
-            offload_args: vec!["--gpu-layers".into(), "all".into()],
+            offload_args: vec![
+                "--device".into(),
+                "CUDA0".into(),
+                "--gpu-layers".into(),
+                "all".into(),
+            ],
             settings_bin: None,
         };
         assert!(same_loaded_launch(true, &current, &current.clone()));
         assert!(!same_loaded_launch(false, &current, &current.clone()));
+        assert!(launch_uses_graphics(&current));
         let mut processor = current.clone();
         processor.run_where = "processor".into();
-        processor.offload_args = vec!["--gpu-layers".into(), "0".into()];
+        processor.offload_args = vec![
+            "--device".into(),
+            "none".into(),
+            "--gpu-layers".into(),
+            "0".into(),
+        ];
         assert!(!same_loaded_launch(true, &current, &processor));
+        assert!(!launch_uses_graphics(&processor));
+    }
+
+    #[test]
+    fn keep_alive_releases_graphics_when_a_pack_needs_more_free_vram() {
+        use crate::hardware::{DeviceKind, GraphicsDevice, InventorySource, VramInventory};
+        use crate::packs::{PackManifest, RunnerKind};
+
+        let device = GraphicsDevice {
+            id: "CUDA0".into(),
+            name: "NVIDIA".into(),
+            total_mib: 8192,
+            free_mib: 600,
+            kind: DeviceKind::Discrete,
+        };
+        let inv = VramInventory {
+            usable_free_mib: 600,
+            total_mib: 8192,
+            kind: "discrete".into(),
+            source: InventorySource::ListDevices,
+            preferred: Some(device.clone()),
+            devices: vec![device],
+        };
+        let loaded = LoadedLaunch {
+            model_id: "bonsai-4b".into(),
+            model_path: "/models/bonsai.gguf".into(),
+            context_size: 8192,
+            bin: "/runtime/llama-server".into(),
+            run_where: "auto".into(),
+            graphics_share: "auto".into(),
+            offload_args: vec![
+                "--device".into(),
+                "CUDA0".into(),
+                "--gpu-layers".into(),
+                "all".into(),
+            ],
+            settings_bin: None,
+        };
+        let pack = PackManifest::new("audio.stt", 2048, RunnerKind::AudioStt);
+        assert!(should_stop_keep_alive_for_pack(&inv, &pack, Some(&loaded)));
+        assert!(!should_stop_keep_alive_for_pack(&inv, &pack, None));
     }
 
     #[tokio::test]

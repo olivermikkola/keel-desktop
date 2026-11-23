@@ -7,6 +7,7 @@ pub mod harnesses;
 pub mod mcp;
 pub mod model_check;
 pub mod models;
+pub mod packs;
 pub mod runtime;
 pub mod sessions;
 pub mod sql_sandbox;

@@ -441,8 +441,9 @@ async fn cached_advice(state: &AppState, model_bytes: u64) -> keel_core::hardwar
     let devices = keel_core::setup::installed_graphics_runtime(&state.data_dir)
         .map(|bin| keel_core::hardware::probe_devices(&bin))
         .unwrap_or_default();
+    let machine = keel_core::hardware::detect_machine();
     let advice = keel_core::hardware::advise(
-        &keel_core::hardware::detect_machine(),
+        &machine,
         &cfg.run_where,
         &cfg.graphics_share,
         model_bytes,
@@ -539,6 +540,8 @@ fn launch_for<'a>(
 
 /// Keeps the managed runner when the model and the graphics-or-processor choice
 /// have not changed. The next message does not pay for another load.
+/// Future pack unload UI should call `keel_core::runtime::should_stop_keep_alive_for_pack`
+/// with a fresh `hardware::inventory` before relying on this keep-alive path.
 async fn loaded_model_can_stay(state: &AppState) -> Option<RuntimeStatus> {
     let cfg = state.config.lock().await.clone();
     if cfg.external_base_url.is_some() {
