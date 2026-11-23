@@ -357,6 +357,17 @@ mod tests {
         assert!(err.to_string().contains("empty"));
     }
 
+    #[tokio::test]
+    #[ignore = "hits the live DuckDuckGo network; run with --ignored when online"]
+    async fn live_web_search_returns_bounded_text() {
+        let out = web_search("Helsinki")
+            .await
+            .expect("live search should succeed");
+        assert!(out.contains("Helsinki") || out.contains("helsinki"));
+        assert!(out.chars().count() <= MAX_RESULT_CHARS + 40);
+        assert!(!out.trim().is_empty());
+    }
+
     fn futures_executor_block_on<F: std::future::Future>(fut: F) -> F::Output {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
