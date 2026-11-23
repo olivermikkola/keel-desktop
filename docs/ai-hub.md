@@ -29,7 +29,7 @@ Successful images are written as new `assets/keel-<job-id>.png` files in the sel
 
 ## 0.6.0 direction
 
-1. **One coding engine:** Code mode prefers the Keel CLI when installed (streaming events, GUI approvals, shared JSONL journals). The built-in `keel-core` harness remains available and is still the default until the CLI is on PATH. Chat, Work, and Images stay Desktop-owned.
+1. **One coding engine:** Code mode can use the Keel CLI (streaming events, GUI approvals, shared JSONL journals). The built-in `keel-core` harness is the default. Select a compatible Keel CLI in Settings. Chat, Work, and Images stay Desktop-owned.
 2. **Model packs & scheduling:** VRAM-aware detection, verified capability packs, and unload/scheduling on top of keep-alive. Curate Lightweight / Balanced / Powerful from measurements.
 3. **Reliability evidence:** expand Check this model / `evaluate_local` into a held-out suite with published latency and success targets per recommended model (including GPU/Metal numbers).
 4. **Hub expansion:** optional audio STT/TTS packs; explicit opt-in remote providers with secure credentials and location/cost labels — never a silent cloud fallback. Video waits until image/audio jobs are dependable.

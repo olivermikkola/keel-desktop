@@ -34,15 +34,6 @@ fn main() {
         .map(|p| p.join("data"))
         .unwrap_or_else(default_data_dir);
     let mut cfg = load_config(&config_dir);
-    // New installs only: prefer Keel CLI for Code when it is on PATH. Never rewrite
-    // an existing config.json (users who chose the built-in harness keep it).
-    if !keel_core::sessions::config_file_exists(&config_dir) {
-        let recommended = keel_core::harnesses::recommended_code_harness(
-            &keel_core::harnesses::detect_harnesses(),
-        );
-        cfg.harness_mode = keel_core::sessions::first_run_harness_mode(recommended).to_string();
-        let _ = keel_core::sessions::save_config(&config_dir, &cfg);
-    }
     if cfg
         .external_base_url
         .as_deref()
