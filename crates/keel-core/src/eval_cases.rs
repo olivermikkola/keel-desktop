@@ -507,10 +507,7 @@ pub fn aggregate_samples(samples: &[CaseSample]) -> Vec<CaseAggregate> {
             let runs = case_samples.len();
             let passed = case_samples.iter().filter(|s| s.passed).count();
             let seconds: Vec<f64> = case_samples.iter().map(|s| s.seconds).collect();
-            let ttfts: Vec<f64> = case_samples
-                .iter()
-                .filter_map(|s| s.ttft_seconds)
-                .collect();
+            let ttfts: Vec<f64> = case_samples.iter().filter_map(|s| s.ttft_seconds).collect();
             CaseAggregate {
                 case,
                 runs,

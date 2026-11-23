@@ -189,8 +189,7 @@ async fn main() -> Result<()> {
         report["peak_rss_mb"] = json!(rss);
     }
     if !pack_ttfts.is_empty() {
-        report["pack_p50_ttft_seconds"] =
-            json!(keel_core::eval_cases::p50_seconds(&pack_ttfts));
+        report["pack_p50_ttft_seconds"] = json!(keel_core::eval_cases::p50_seconds(&pack_ttfts));
     }
     let pretty = serde_json::to_string_pretty(&report)?;
     println!("{pretty}");
@@ -198,8 +197,7 @@ async fn main() -> Result<()> {
         if let Some(parent) = std::path::Path::new(&path).parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&path, &pretty)
-            .with_context(|| format!("write KEEL_EVAL_OUT={path}"))?;
+        std::fs::write(&path, &pretty).with_context(|| format!("write KEEL_EVAL_OUT={path}"))?;
         eprintln!("wrote {path}");
     }
     let _ = std::fs::remove_dir_all(root);
