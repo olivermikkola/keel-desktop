@@ -11,6 +11,8 @@ pub struct RuntimeStatus {
     pub base_url: String,
     pub active_model_id: Option<String>,
     pub active_model_path: Option<String>,
+    #[serde(default)]
+    pub active_context_size: Option<u32>,
     pub llama_server_bin: Option<String>,
     pub managed_pid: Option<u32>,
     pub error: Option<String>,
@@ -21,6 +23,7 @@ pub struct RuntimeManager {
     pub base_url: String,
     pub active_model_id: Option<String>,
     pub active_model_path: Option<String>,
+    pub active_context_size: Option<u32>,
     pub llama_server_bin: Option<String>,
     pub port: u16,
     log_path: Option<PathBuf>,
@@ -41,6 +44,7 @@ impl RuntimeManager {
             base_url: format!("http://127.0.0.1:{port}/v1"),
             active_model_id: None,
             active_model_path: None,
+            active_context_size: None,
             llama_server_bin,
             port,
             log_path: None,
@@ -53,6 +57,7 @@ impl RuntimeManager {
         self.base_url = url.trim_end_matches('/').to_string();
         self.active_model_id = model_id.or_else(|| Some("default".to_string()));
         self.active_model_path = None;
+        self.active_context_size = None;
     }
 
     pub fn is_managed(&self) -> bool {
@@ -115,6 +120,7 @@ impl RuntimeManager {
         self.child = Some(child);
         self.active_model_id = Some(model_id.to_string());
         self.active_model_path = Some(model_path.to_string_lossy().to_string());
+        self.active_context_size = Some(context_size);
 
         let health_url = format!("http://127.0.0.1:{}/health", self.port);
         let client = reqwest::Client::builder()
@@ -165,6 +171,7 @@ impl RuntimeManager {
         }
         self.active_model_path = None;
         self.active_model_id = None;
+        self.active_context_size = None;
         self.last_error = None;
     }
 
@@ -175,6 +182,7 @@ impl RuntimeManager {
         }
         self.active_model_path = None;
         self.active_model_id = None;
+        self.active_context_size = None;
         self.last_error = None;
     }
 
@@ -184,6 +192,7 @@ impl RuntimeManager {
                 self.child = None;
                 self.active_model_id = None;
                 self.active_model_path = None;
+                self.active_context_size = None;
                 let details = self
                     .log_path
                     .as_deref()
@@ -222,6 +231,7 @@ impl RuntimeManager {
             base_url: self.base_url.clone(),
             active_model_id: self.active_model_id.clone(),
             active_model_path: self.active_model_path.clone(),
+            active_context_size: self.active_context_size,
             llama_server_bin: self.llama_server_bin.clone(),
             managed_pid: self.child.as_ref().and_then(|c| c.id()),
             error: self.last_error.clone(),

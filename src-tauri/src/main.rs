@@ -113,6 +113,7 @@ fn main() {
             productivity::restore_thread,
             productivity::save_personal_context,
             productivity::export_thread,
+            productivity::export_html_file,
             productivity::open_external_link,
             productivity::get_setup_plan,
             productivity::setup_local_ai,

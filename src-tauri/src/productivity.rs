@@ -391,12 +391,48 @@ pub async fn list_library(state: State<'_, AppState>) -> Result<Vec<LibraryItem>
 pub async fn restore_thread(state: State<'_, AppState>, id: String) -> Result<ChatSession, String> {
     projects::valid_id(&id).map_err(|e| e.to_string())?;
     let path = state.data_dir.join("trash").join(format!("{id}.json"));
-    let session: ChatSession =
+    let mut session: ChatSession =
         serde_json::from_slice(&std::fs::read(&path).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
+    if let Some(ref checkout) = session.code_checkout {
+        if !checkout.isolated.is_dir() {
+            session.code_checkout = None;
+            session.applied_code_patch = None;
+            session.last_code_test = None;
+        }
+    }
     sessions::save_session(&state.data_dir, &session).map_err(|e| e.to_string())?;
     std::fs::remove_file(path).map_err(|e| e.to_string())?;
     Ok(session)
+}
+
+#[tauri::command]
+pub async fn export_html_file(
+    app: AppHandle,
+    file_name: String,
+    html: String,
+) -> Result<Option<String>, String> {
+    let clean_name = std::path::Path::new(&file_name)
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "preview.html".to_string());
+    tokio::task::spawn_blocking(move || {
+        let Some(path) = app
+            .dialog()
+            .file()
+            .set_file_name(&clean_name)
+            .add_filter("HTML", &["html", "htm"])
+            .blocking_save_file()
+        else {
+            return Ok(None);
+        };
+        let path = path.into_path().map_err(|e| e.to_string())?;
+        std::fs::write(&path, html).map_err(|e| e.to_string())?;
+        Ok(Some(path.to_string_lossy().into_owned()))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

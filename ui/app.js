@@ -392,6 +392,15 @@ async function setActiveView(view) {
   if (view === "models") {
     await refreshBootstrap();
   }
+  if (view === "connectors" && appState.bootstrap) {
+    try {
+      appState.bootstrap.mcp_servers = await invoke("refresh_mcp_servers", {
+        workspacePath: appState.workspacePath,
+      });
+    } catch {
+      // Keep existing list if probe fails transiently.
+    }
+  }
   if (view === "code") {
     appState.viewerOpen = hasViewerContent();
     appState.viewerTab = (appState.session?.staged_edits?.length || 0) > 0 || appState.session?.code_checkout ? "diff" : "code";
@@ -1297,7 +1306,7 @@ async function sendCurrentPrompt() {
   } catch (err) {
     els.promptInput.value = prompt;
     appState.pendingDocuments = documents;
-    saveDraft(); renderAttachmentChips();
+    saveDraft(); renderAttachmentChips(); autoSizePromptInput();
     appState.session.messages.push({
       id: `err-${Date.now()}`,
       role: "assistant",
@@ -1419,7 +1428,16 @@ async function loadViewerContent() {
         content = await inlineWorkspaceImages(content, appState.viewerFile, (relPath) =>
           invoke("read_workspace_png", { workspacePath: ws, relPath }));
       }
-      renderViewer(els.viewerContent, appState.viewerFile, content);
+      renderViewer(els.viewerContent, appState.viewerFile, content, {
+        onExportHtml: async (name, html) => {
+          try {
+            const saved = await invoke("export_html_file", { fileName: name, html });
+            if (saved) showToast(`Saved to ${saved}`);
+          } catch (err) {
+            showToast(friendlyRuntimeError(err));
+          }
+        },
+      });
     }
   } catch (err) {
     els.viewerContent.innerHTML = `<div class="viewer-empty">${escapeHtml(String(err))}</div>`;
@@ -1452,6 +1470,7 @@ async function renderCodeWorktreePane(container, activeEdit) {
       try {
         appState.session = await invoke("create_code_worktree", { sessionId: session.id });
         showToast("Isolated checkout ready.");
+        await refreshWorkspaceFiles();
         await loadViewerContent();
       } catch (err) {
         showNotice(String(err));
@@ -2438,6 +2457,8 @@ function openCustomizeModal() {
       welcome.show();
     };
     card.querySelector("#cust-save").onclick = async () => {
+      const prevCtx = b.config.context_window || 0;
+      const nextCtx = Number(card.querySelector("#cust-ctx")?.value || 0);
       try {
         await invoke("save_customize_settings", {
           update: {
@@ -2445,13 +2466,18 @@ function openCustomizeModal() {
             auto_apply_edits: card.querySelector("#cust-auto").checked,
             harness_mode: card.querySelector("#cust-harness").value,
             llama_server_path: card.querySelector("#cust-llama").value || null,
-            context_window: Number(card.querySelector("#cust-ctx")?.value || 0),
+            context_window: nextCtx,
           },
         });
         await refreshBootstrap();
         renderHeader();
         closeModal();
-        showToast("Settings saved.");
+        const restartNeeded = prevCtx !== nextCtx && appState.bootstrap?.runtime?.state === "running";
+        showToast(
+          restartNeeded
+            ? "Settings saved. Restart the model in Models to apply the new context window."
+            : "Settings saved.",
+        );
       } catch (err) {
         showToast(friendlyRuntimeError(err));
       }
@@ -2502,7 +2528,12 @@ async function importBrowserFiles(fileList) {
       reader.onerror = () => reject(new Error(`Could not read ${file.name}`));
       reader.readAsDataURL(file);
     });
+  const MAX_DROP_BYTES = 20 * 1024 * 1024;
   for (const file of files) {
+    if (file.size > MAX_DROP_BYTES) {
+      showToast(`${file.name || "File"} is larger than the 20 MB attachment limit.`);
+      continue;
+    }
     try {
       const base64Data = await readBase64(file);
       const name = file.name || `pasted-${Date.now()}.${(file.type || "image/png").split("/")[1] || "png"}`;
@@ -2586,10 +2617,11 @@ function wireUi() {
     if (link) { event.preventDefault(); invoke("open_external_link", { url: link.dataset.externalLink }).catch((error) => showToast(String(error))); }
   });
   document.addEventListener("keydown", (event) => {
-    const mod = event.ctrlKey || event.metaKey;
+    const mod = (event.ctrlKey || event.metaKey) && !event.altKey;
     const key = event.key.toLowerCase();
     const modalOpen = !els.modalBackdrop.classList.contains("hidden");
-    if (mod && key === "k") {
+    const overlayOpen = modalOpen || welcome.isOpen();
+    if (mod && key === "k" && !overlayOpen) {
       event.preventDefault();
       if (!appState.appearance.sidebar) {
         applyAppearance({ ...appState.appearance, sidebar: true });
@@ -2597,22 +2629,22 @@ function wireUi() {
       document.getElementById("thread-search")?.focus();
       return;
     }
-    if (mod && key === "b") {
+    if (mod && key === "b" && !overlayOpen) {
       event.preventDefault();
       applyAppearance({ ...appState.appearance, sidebar: !appState.appearance.sidebar });
       return;
     }
-    if (mod && key === "n" && !modalOpen && !welcome.isOpen()) {
+    if (mod && key === "n" && !overlayOpen) {
       event.preventDefault();
       createNewSession(MODES[appState.activeView]?.preset || "chat");
       return;
     }
-    if (mod && event.key === ",") {
+    if (mod && event.key === "," && !overlayOpen) {
       event.preventDefault();
       openCustomizeModal();
       return;
     }
-    if (mod && !event.shiftKey && ["1", "2", "3"].includes(event.key) && !modalOpen && !welcome.isOpen()) {
+    if (mod && !event.shiftKey && ["1", "2", "3"].includes(event.key) && !overlayOpen) {
       event.preventDefault();
       setActiveView(event.key === "1" ? "chat" : event.key === "2" ? "work" : "code");
       return;
@@ -2702,6 +2734,19 @@ function wireUi() {
     }
     const retryUnsent = e.target.closest("[data-retry-unsent]");
     if (retryUnsent && !appState.streaming) {
+      if (!els.promptInput.value.trim()) {
+        const unsentUser = [...(appState.session?.messages || [])]
+          .reverse()
+          .find((m) => m.role === "user" && m.unsent);
+        if (unsentUser) {
+          els.promptInput.value = unsentUser.content || "";
+          if (!appState.pendingDocuments.length && unsentUser.attachments?.length) {
+            appState.pendingDocuments = unsentUser.attachments;
+            renderAttachmentChips();
+          }
+          autoSizePromptInput();
+        }
+      }
       await sendCurrentPrompt();
       return;
     }

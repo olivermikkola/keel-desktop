@@ -98,6 +98,20 @@ impl Drop for TempFileGuard {
     }
 }
 
+fn write_private_temp(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut file = opts.open(path)?;
+    file.write_all(bytes)?;
+    Ok(())
+}
+
 pub fn import_document_base64(name: &str, base64_data: &str) -> Result<Document> {
     if base64_data.len() > 28 * 1024 * 1024 {
         bail!("{name} is larger than the 20 MB attachment limit");
@@ -132,7 +146,7 @@ pub fn import_document_bytes(name: &str, bytes: &[u8]) -> Result<Document> {
                 image_data_url = Some(format!("data:{};base64,{encoded}", image_mime(ext)));
             }
             let tmp = std::env::temp_dir().join(format!("keel_ocr_{}.{ext}", uuid::Uuid::new_v4()));
-            std::fs::write(&tmp, bytes)?;
+            write_private_temp(&tmp, bytes)?;
             let _guard = TempFileGuard(tmp.clone());
             extract_image_ocr(&tmp)?
         }

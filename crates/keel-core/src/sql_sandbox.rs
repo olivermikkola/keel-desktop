@@ -287,12 +287,12 @@ fn infer_column_types(col_count: usize, records: &[Vec<String>]) -> Vec<ColType>
             if types[i] == ColType::Text {
                 continue;
             }
-            // Keep strings with leading zeros (like ZIP codes "00123") as TEXT.
+            // Keep strings with leading zeros (like ZIP codes "00123") or leading '+' (like phone numbers "+358...") as TEXT.
             let leading_zero_code = trimmed.len() > 1
                 && trimmed.starts_with('0')
                 && !trimmed.starts_with("0.")
                 && !trimmed.starts_with("-0.");
-            if leading_zero_code {
+            if leading_zero_code || trimmed.starts_with('+') {
                 types[i] = ColType::Text;
                 continue;
             }
