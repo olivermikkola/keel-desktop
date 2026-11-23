@@ -854,10 +854,7 @@ mod tests {
         assert_eq!(messages[0].role, "user");
         assert_eq!(messages[1].tool_calls.len(), 1);
         assert_eq!(messages[1].tool_calls[0].name, "list_files");
-        assert_eq!(
-            messages[1].tool_calls[0].result.as_deref(),
-            Some("src\n")
-        );
+        assert_eq!(messages[1].tool_calls[0].result.as_deref(), Some("src\n"));
         assert_eq!(messages[2].content, "There is a src folder.");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -881,7 +878,10 @@ mod tests {
         .unwrap();
         match summary {
             KeelEvent::TurnSummary { summary } => {
-                assert_eq!(turn_summary_note(&summary), "Keel CLI turn: 2 tool calls, 1 file, 40 tokens.");
+                assert_eq!(
+                    turn_summary_note(&summary),
+                    "Keel CLI turn: 2 tool calls, 1 file, 40 tokens."
+                );
             }
             other => panic!("unexpected {other:?}"),
         }
