@@ -234,9 +234,7 @@ pub fn register_audio_pack_runner(
     let cmd_path = Path::new(command);
     // On Windows, Unix-style "/foo" is not `is_absolute()`. Treat any path with a
     // separator as a concrete filesystem path that must exist before register.
-    let looks_like_path = cmd_path.is_absolute()
-        || command.contains('/')
-        || command.contains('\\');
+    let looks_like_path = cmd_path.is_absolute() || command.contains('/') || command.contains('\\');
     if looks_like_path && !cmd_path.exists() {
         bail!(
             "Audio pack runner '{}' does not exist. Pick a binary or script on this machine.",
@@ -656,8 +654,11 @@ mod tests {
             .expect("stt stub")
             .to_pack_manifest();
         // STT stub needs 1024 MiB; 256 free with keep-alive on graphics → unload.
-        let plan =
-            crate::runtime::plan_pack_vram(&sample_inventory(256), &pack, Some(&sample_graphics_loaded()));
+        let plan = crate::runtime::plan_pack_vram(
+            &sample_inventory(256),
+            &pack,
+            Some(&sample_graphics_loaded()),
+        );
         assert_eq!(plan.status, crate::runtime::PackVramStatus::Unloaded);
         assert!(plan.stop_keep_alive);
     }

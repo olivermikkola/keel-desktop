@@ -2274,8 +2274,7 @@ pub async fn run_audio_stt(
     state: State<'_, AppState>,
     audio_path: String,
 ) -> Result<String, String> {
-    let prep = prepare_vram_for_audio_capability(&state, audio::AudioCapability::Stt).await?;
-    eprintln!("[keel-audio] stt prepare: {} ({})", prep.reason, prep.status);
+    prepare_vram_for_audio_capability(&state, audio::AudioCapability::Stt).await?;
     let data_dir = state.data_dir.clone();
     tokio::task::spawn_blocking(move || {
         audio::run_stt(&data_dir, Path::new(&audio_path)).map_err(|e| e.to_string())
@@ -2294,8 +2293,7 @@ pub async fn run_audio_tts(
     text: String,
     output_path: String,
 ) -> Result<(), String> {
-    let prep = prepare_vram_for_audio_capability(&state, audio::AudioCapability::Tts).await?;
-    eprintln!("[keel-audio] tts prepare: {} ({})", prep.reason, prep.status);
+    prepare_vram_for_audio_capability(&state, audio::AudioCapability::Tts).await?;
     let data_dir = state.data_dir.clone();
     tokio::task::spawn_blocking(move || {
         audio::run_tts(&data_dir, &text, Path::new(&output_path)).map_err(|e| e.to_string())
