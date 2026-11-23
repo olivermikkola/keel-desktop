@@ -737,6 +737,21 @@ mod tests {
         assert_eq!(list[1].id, "keel-cli");
     }
 
+    #[tokio::test]
+    async fn keel_cli_one_shot_path_is_removed() {
+        let dir = std::env::temp_dir().join(format!("keel_cli_oneshot_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let err = run_external_harness("keel-cli", &dir, "hi", None, None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("Keel CLI") || err.contains("one-shot"),
+            "unexpected error: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn recommends_keel_cli_only_when_installed() {
         let without = vec![HarnessOption {
