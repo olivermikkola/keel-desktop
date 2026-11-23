@@ -24,8 +24,6 @@ pub const PACK_HELD_OUT: &str = "held_out";
 
 /// Planned held-out case ids that are not yet runnable (need richer harness).
 pub const HELD_OUT_TODOS: &[&str] = &[
-    // Needs a long multi-turn session that triggers compaction mid-run.
-    "long_session_compaction",
     // Needs native UI interruption / restart while a turn is in flight.
     "native_recovery_mid_turn",
 ];
@@ -35,6 +33,14 @@ const SAVED_PREFERENCE_CONTEXT: &str = "I am vegetarian and prefer concise answe
 const MEAT_WORDS: &[&str] = &["chicken", "beef", "pork", "salmon", "tuna", "turkey"];
 
 const BURIED_CODEWORD: &str = "CEDAR";
+
+/// Vault codeword buried early in the long-session compaction fixture.
+/// Must survive `compact_messages` excerpts when the mid-run budget trips.
+const COMPACTION_CODEWORD: &str = "MAPLE";
+
+/// Token budget used by the long-session fixture contract test (mirrors a
+/// tight agent step budget so `compact_messages` is forced to run).
+const LONG_SESSION_COMPACTION_BUDGET: usize = 1024;
 
 /// How the example CLI prepares history / workspace for a case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +57,8 @@ pub enum EvalSetup {
     PreferenceConflict,
     /// Multi-turn history with a buried fact the model must recall.
     BuriedFact,
+    /// Long multi-turn history sized to trip mid-run `compact_messages`.
+    LongSessionCompaction,
 }
 
 /// One registered eval case.
@@ -177,6 +185,13 @@ const CASES: &[EvalCase] = &[
         preset: AppPreset::Chat,
         prompt: "According to the attached brief, what is the legal counsel's name? Keep the answer short.",
         setup: EvalSetup::DocumentBrief,
+    },
+    EvalCase {
+        name: "long_session_compaction",
+        packs: HELD_OUT_ONLY,
+        preset: AppPreset::Chat,
+        prompt: "What is the vault codeword from earlier in this conversation? Answer with only the codeword.",
+        setup: EvalSetup::LongSessionCompaction,
     },
 ];
 
@@ -348,6 +363,40 @@ pub fn prepare_turn(case: &EvalCase) -> (Vec<ChatTurnMessage>, String) {
             );
             (crate::context::history(&session, None, 8192), String::new())
         }
+        EvalSetup::LongSessionCompaction => {
+            // Early vault codeword + bulky filler so agent mid-run compaction
+            // (`compact_messages` with keep_tail=6) must trip before the ask.
+            let mut messages = vec![
+                ui_text(
+                    "u0",
+                    "user",
+                    &format!(
+                        "For the vault, the codeword is {COMPACTION_CODEWORD}. Do not bring it up unless asked."
+                    ),
+                ),
+                ui_text(
+                    "a0",
+                    "assistant",
+                    "Understood. I will keep the vault codeword for later.",
+                ),
+            ];
+            let filler = "padding note about cafe logistics and supplier timing. ".repeat(24);
+            for i in 1..=18 {
+                messages.push(ui_text(
+                    &format!("u{i}"),
+                    "user",
+                    &format!("Status update {i}: {filler}"),
+                ));
+                messages.push(ui_text(
+                    &format!("a{i}"),
+                    "assistant",
+                    &format!("Acknowledged status update {i}. {filler}"),
+                ));
+            }
+            messages.push(ui_text("user", "user", case.prompt));
+            let session = empty_session(case, "Long session", messages);
+            (crate::context::history(&session, None, 8192), String::new())
+        }
     }
 }
 
@@ -373,6 +422,7 @@ pub fn grade(case: &EvalCase, input: GradeInput<'_>) -> Result<bool> {
         }
         "buried_fact_recall" => Ok(grade_buried_fact_recall(input.answer)),
         "unknown_from_brief" => Ok(grade_unknown_from_brief(input.answer)),
+        "long_session_compaction" => Ok(grade_long_session_compaction(input.answer)),
         other => bail!("unknown eval case: {other}"),
     }
 }
@@ -444,6 +494,11 @@ pub fn grade_multi_file_code(workspace: &Path, staged_edits: &mut [StagedEdit]) 
 
 pub fn grade_buried_fact_recall(answer: &str) -> bool {
     answer.to_uppercase().contains(BURIED_CODEWORD)
+}
+
+/// Passes when the model recalls the vault codeword after long-session compaction.
+pub fn grade_long_session_compaction(answer: &str) -> bool {
+    answer.to_uppercase().contains(COMPACTION_CODEWORD)
 }
 
 /// Passes when the model refuses to invent a counsel name not in the brief.
@@ -581,9 +636,10 @@ mod tests {
                 "multi_file_code",
                 "buried_fact_recall",
                 "unknown_from_brief",
+                "long_session_compaction",
             ]
         );
-        assert_eq!(all_cases().len(), 10);
+        assert_eq!(all_cases().len(), 11);
         assert_eq!(known_packs(), &[PACK_SMOKE, PACK_HELD_OUT]);
         // Planned cases stay documented and distinct from runnable names.
         for todo in HELD_OUT_TODOS {
@@ -593,6 +649,10 @@ mod tests {
             );
             assert!(!names.contains(todo));
         }
+        assert!(
+            case_by_name("long_session_compaction").is_some(),
+            "long_session_compaction must be runnable (removed from HELD_OUT_TODOS)"
+        );
     }
 
     #[test]
@@ -753,6 +813,9 @@ mod tests {
         assert!(grade_buried_fact_recall("CEDAR"));
         assert!(grade_buried_fact_recall("The codeword is cedar."));
         assert!(!grade_buried_fact_recall("I forget."));
+        assert!(grade_long_session_compaction("MAPLE"));
+        assert!(grade_long_session_compaction("The vault codeword is maple."));
+        assert!(!grade_long_session_compaction("I forget."));
         assert!(grade_unknown_from_brief(
             "The brief does not name legal counsel."
         ));
@@ -800,6 +863,53 @@ mod tests {
         let blob = format!("{history:?}");
         assert!(blob.contains(BURIED_CODEWORD));
         assert!(history.len() >= 4);
+
+        let long = case_by_name("long_session_compaction").unwrap();
+        let (history, _) = prepare_turn(long);
+        let blob = format!("{history:?}");
+        assert!(blob.contains(COMPACTION_CODEWORD));
+        assert!(
+            history.len() > 20,
+            "long session must include bulky multi-turn filler"
+        );
+    }
+
+    /// Contract: the long-session fixture exceeds a tight budget and
+    /// `compact_messages` still keeps the vault codeword in excerpts/tail.
+    #[test]
+    fn long_session_compaction_triggers_compact_and_preserves_codeword() {
+        use crate::compaction::{compact_messages, estimate_tokens};
+
+        let case = case_by_name("long_session_compaction").expect("case registered");
+        let (history, _) = prepare_turn(case);
+        let mut messages = vec![ChatTurnMessage::text("system", "You are Keel.")];
+        messages.extend(history);
+
+        let before = estimate_tokens(&messages);
+        assert!(
+            before > LONG_SESSION_COMPACTION_BUDGET,
+            "fixture must exceed compaction budget ({before} <= {LONG_SESSION_COMPACTION_BUDGET})"
+        );
+
+        let (compacted, did_compact) =
+            compact_messages(messages, LONG_SESSION_COMPACTION_BUDGET, 6);
+        assert!(did_compact, "long session must trigger compact_messages");
+        assert!(
+            estimate_tokens(&compacted) <= LONG_SESSION_COMPACTION_BUDGET,
+            "compacted history must fit the budget"
+        );
+        assert_eq!(compacted[0].role, "system");
+        let blob = format!("{compacted:?}");
+        assert!(
+            blob.contains(COMPACTION_CODEWORD),
+            "vault codeword must survive compaction excerpts or tail"
+        );
+        assert!(
+            compacted
+                .iter()
+                .any(|m| m.role == "user" && m.content.contains("vault codeword")),
+            "final ask must remain after compaction"
+        );
     }
 
     #[test]
@@ -887,7 +997,7 @@ mod tests {
         }
 
         assert_eq!(cases_for_pack(PACK_SMOKE).len(), 5);
-        assert_eq!(cases_for_pack(PACK_HELD_OUT).len(), 10);
+        assert_eq!(cases_for_pack(PACK_HELD_OUT).len(), 11);
     }
 
     #[test]
