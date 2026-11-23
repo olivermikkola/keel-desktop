@@ -2527,10 +2527,9 @@ mod audio_prepare_pack_vram_wiring {
     use super::*;
     use keel_core::sessions::DesktopConfig;
     use std::fs;
-    use std::sync::Mutex as StdMutex;
 
     /// Serialize spy-counter assertions; Tokio runs these tests in parallel.
-    static WIRING_TEST_LOCK: StdMutex<()> = StdMutex::new(());
+    static WIRING_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
     fn temp_root(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -2568,7 +2567,7 @@ mod audio_prepare_pack_vram_wiring {
 
     #[tokio::test]
     async fn run_audio_stt_calls_real_prepare_pack_vram_without_gpu() {
-        let _guard = WIRING_TEST_LOCK.lock().unwrap();
+        let _guard = WIRING_TEST_LOCK.lock().await;
         let root = temp_root("stt");
         let state = test_app_state(&root);
         audio::mark_audio_pack_installed(&state.data_dir, "stt-whisper-base").unwrap();
@@ -2594,7 +2593,7 @@ mod audio_prepare_pack_vram_wiring {
 
     #[tokio::test]
     async fn run_audio_tts_calls_real_prepare_pack_vram_without_gpu() {
-        let _guard = WIRING_TEST_LOCK.lock().unwrap();
+        let _guard = WIRING_TEST_LOCK.lock().await;
         let root = temp_root("tts");
         let state = test_app_state(&root);
         audio::mark_audio_pack_installed(&state.data_dir, "tts-local-en").unwrap();
@@ -2623,7 +2622,7 @@ mod audio_prepare_pack_vram_wiring {
 
     #[tokio::test]
     async fn audio_start_skips_prepare_pack_vram_when_pack_is_not_installed() {
-        let _guard = WIRING_TEST_LOCK.lock().unwrap();
+        let _guard = WIRING_TEST_LOCK.lock().await;
         let root = temp_root("skip");
         let state = test_app_state(&root);
 
