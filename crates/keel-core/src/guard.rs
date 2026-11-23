@@ -7,6 +7,8 @@ pub struct ParsedToolCall {
     pub id: String,
     pub name: String,
     pub arguments: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parse_error: Option<String>,
 }
 
 /// Extracts `<think>...</think>` blocks from model text so UI can show reasoning separately.
@@ -76,22 +78,48 @@ pub fn parse_tool_calls_from_text(text: &str) -> (Vec<ParsedToolCall>, String) {
     (calls, cleaned.trim().to_string())
 }
 
+fn strip_json_fence(raw: &str) -> &str {
+    let trimmed = raw.trim();
+    if let Some(rest) = trimmed.strip_prefix("```") {
+        let after_lang = rest.split_once('\n').map(|(_, body)| body).unwrap_or(rest);
+        if let Some(inner) = after_lang.strip_suffix("```") {
+            return inner.trim();
+        }
+    }
+    trimmed
+}
+
 fn parse_json_call_object(raw: &str, idx: usize) -> Option<ParsedToolCall> {
-    let val: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let clean = strip_json_fence(raw);
+    let val: serde_json::Value = serde_json::from_str(clean).ok()?;
     let name = val.get("name")?.as_str()?.trim().to_string();
     if name.is_empty() {
         return None;
     }
-    let arguments = match val.get("arguments") {
-        Some(serde_json::Value::String(s)) => serde_json::from_str(s)
-            .unwrap_or_else(|_| serde_json::Value::Object(Default::default())),
-        Some(other) => other.clone(),
-        None => serde_json::Value::Object(Default::default()),
+    let raw_args = val.get("arguments").or_else(|| val.get("parameters"));
+    let (arguments, parse_error) = match raw_args {
+        Some(serde_json::Value::String(s)) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                (serde_json::Value::Object(Default::default()), None)
+            } else {
+                match serde_json::from_str::<serde_json::Value>(trimmed) {
+                    Ok(parsed) => (parsed, None),
+                    Err(err) => (
+                        serde_json::Value::Object(Default::default()),
+                        Some(format!("Invalid JSON arguments: {err}")),
+                    ),
+                }
+            }
+        }
+        Some(other) => (other.clone(), None),
+        None => (serde_json::Value::Object(Default::default()), None),
     };
     Some(ParsedToolCall {
         id: format!("fallback-call-{idx}"),
         name,
         arguments,
+        parse_error,
     })
 }
 
@@ -168,6 +196,18 @@ mod tests {
         assert_eq!(calls[0].name, "read_file");
         assert_eq!(calls[0].arguments["path"], "README.md");
         assert_eq!(text, "Let me check.");
+
+        let fenced = "<tool_call>\n```json\n{\"name\":\"list_files\",\"parameters\":{\"path\":\".\"}}\n```\n</tool_call>";
+        let (calls2, _) = parse_tool_calls_from_text(fenced);
+        assert_eq!(calls2.len(), 1);
+        assert_eq!(calls2[0].name, "list_files");
+        assert_eq!(calls2[0].arguments["path"], ".");
+        assert!(calls2[0].parse_error.is_none());
+
+        let bad_args = r#"<tool_call>{"name":"read_file","arguments":"{broken"}</tool_call>"#;
+        let (calls3, _) = parse_tool_calls_from_text(bad_args);
+        assert_eq!(calls3.len(), 1);
+        assert!(calls3[0].parse_error.is_some());
     }
 
     #[test]

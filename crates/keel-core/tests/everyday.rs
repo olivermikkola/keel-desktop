@@ -250,6 +250,15 @@ fn excerpts_are_bounded_unicode_safe_and_find_relevant_later_sections() {
     let (snippet, partial) = documents::excerpt(&text, "What is the launch budget?", 2200);
     assert!(partial && snippet.chars().count() <= 2200);
     assert!(snippet.contains("4800"));
+
+    // Short domain terms like Q4 and SQL must not be dropped by keyword filtering.
+    let short_term_doc = format!(
+        "{}\nQ4 SQL tax total is 9123 EUR.\n{}",
+        "general filler paragraph line.\n".repeat(80),
+        "trailing notes paragraph line.\n".repeat(80)
+    );
+    let (short_snip, short_partial) = documents::excerpt(&short_term_doc, "Q4 SQL tax?", 2200);
+    assert!(short_partial && short_snip.contains("9123 EUR"));
 }
 
 #[test]
@@ -287,6 +296,26 @@ fn byte_streams_preserve_multilingual_text_and_split_reasoning_tags() {
         .collect();
     assert_eq!(visible, "Hi  there ");
     assert_eq!(thoughts, "quiet thoughts");
+
+    // Literal <think> inside a fenced code block stays visible instead of entering reasoning mode.
+    let mut fence_router = TextRouter::default();
+    let mut fence_out = vec![];
+    for chunk in ["Example:\n```html\n<thi", "nk>demo</think>\n```\nDone"] {
+        fence_out.extend(fence_router.push(chunk));
+    }
+    fence_out.extend(fence_router.finish());
+    let fence_vis: String = fence_out
+        .iter()
+        .filter(|s| !s.0)
+        .map(|s| s.1.as_str())
+        .collect();
+    let fence_think: String = fence_out
+        .iter()
+        .filter(|s| s.0)
+        .map(|s| s.1.as_str())
+        .collect();
+    assert!(fence_vis.contains("<think>demo</think>"));
+    assert!(fence_think.is_empty());
 }
 
 #[test]

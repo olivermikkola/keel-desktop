@@ -23,6 +23,9 @@ pub struct DesktopConfig {
     pub recent_workspaces: Vec<String>,
     #[serde(default)]
     pub trusted_mcp_workspaces: Vec<String>,
+    /// Preferred context window in tokens (`0` = automatic RAM-aware default).
+    #[serde(default)]
+    pub context_window: u32,
 }
 
 impl Default for DesktopConfig {
@@ -40,6 +43,7 @@ impl Default for DesktopConfig {
             custom_model_paths: HashMap::new(),
             recent_workspaces: Vec::new(),
             trusted_mcp_workspaces: Vec::new(),
+            context_window: 0,
         }
     }
 }

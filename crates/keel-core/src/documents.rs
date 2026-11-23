@@ -167,18 +167,84 @@ fn extract_docx(bytes: &[u8]) -> Result<String> {
     Ok(text)
 }
 
+fn is_stopword(word: &str) -> bool {
+    matches!(
+        word,
+        "am" | "an"
+            | "as"
+            | "at"
+            | "be"
+            | "by"
+            | "do"
+            | "go"
+            | "he"
+            | "if"
+            | "in"
+            | "is"
+            | "it"
+            | "me"
+            | "my"
+            | "no"
+            | "of"
+            | "on"
+            | "or"
+            | "so"
+            | "to"
+            | "up"
+            | "us"
+            | "we"
+            | "and"
+            | "are"
+            | "for"
+            | "the"
+            | "was"
+            | "you"
+    )
+}
+
+fn split_boundary_chunks(text: &str, target_chars: usize, overlap_chars: usize) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= target_chars {
+        return vec![text.to_string()];
+    }
+    let mut chunks = Vec::new();
+    let mut start = 0usize;
+    let step_min = target_chars / 2;
+    while start < chars.len() {
+        let hard_end = (start + target_chars).min(chars.len());
+        let mut end = hard_end;
+        if hard_end < chars.len() {
+            // Prefer splitting on a newline or whitespace boundary near target_chars.
+            let min_pos = start + step_min;
+            if let Some(nl) = (min_pos..hard_end).rev().find(|&i| chars[i] == '\n') {
+                end = nl + 1;
+            } else if let Some(sp) = (min_pos..hard_end)
+                .rev()
+                .find(|&i| chars[i].is_whitespace())
+            {
+                end = sp + 1;
+            }
+        }
+        chunks.push(chars[start..end].iter().collect());
+        if end >= chars.len() {
+            break;
+        }
+        start = end.saturating_sub(overlap_chars).max(start + 1);
+    }
+    chunks
+}
+
 /// Include relevant sections under a strict character budget, retaining source order.
 /// This is retrieval of source text, never a fabricated summary of unseen pages.
 pub fn excerpt(text: &str, query: &str, budget: usize) -> (String, bool) {
     if text.chars().count() <= budget {
         return (text.to_string(), false);
     }
-    let chars: Vec<_> = text.chars().collect();
-    let chunks: Vec<String> = chars.chunks(1000).map(|c| c.iter().collect()).collect();
+    let chunks = split_boundary_chunks(text, 1000, 120);
     let words: Vec<_> = query
         .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| w.len() > 3)
         .map(str::to_lowercase)
+        .filter(|w| w.chars().count() >= 2 && !is_stopword(w))
         .collect();
     let mut ranked: Vec<_> = chunks
         .iter()

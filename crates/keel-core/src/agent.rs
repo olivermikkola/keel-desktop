@@ -3,6 +3,19 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
+
+fn shared_http_client() -> Result<&'static reqwest::Client> {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    if let Some(c) = CLIENT.get() {
+        return Ok(c);
+    }
+    let built = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .read_timeout(std::time::Duration::from_secs(180))
+        .build()?;
+    Ok(CLIENT.get_or_init(|| built))
+}
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -186,9 +199,7 @@ where
         .map(|t| (t.full_name.clone(), t.clone()))
         .collect();
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(180))
-        .build()?;
+    let client = shared_http_client()?;
     let endpoint = format!("{}/chat/completions", params.base_url.trim_end_matches('/'));
 
     let mut repeat_guard = RepeatToolGuard::default();
@@ -201,11 +212,20 @@ where
     let mut final_content = String::new();
     let turn_start = Instant::now();
 
-    let budget = (params.context_size * 3) / 4;
+    let tool_schema_tokens = if tool_schemas.is_empty() {
+        0
+    } else {
+        serde_json::to_string(&tool_schemas)
+            .map(|s| s.len() / 4 + 32)
+            .unwrap_or(0)
+    };
+    let budget = ((params.context_size * 3) / 4)
+        .saturating_sub(tool_schema_tokens)
+        .max(1024);
     let steps = params.max_steps.max(1);
 
     for _step in 0..steps {
-        let (compacted, did_compact) = compact_messages(messages, budget.max(2048), 6);
+        let (compacted, did_compact) = compact_messages(messages, budget, 6);
         messages = compacted;
         if did_compact {
             emit(AgentEvent::Compacted {
@@ -213,12 +233,12 @@ where
             });
         }
 
-        if crate::compaction::estimate_tokens(&messages) > budget.max(2048) {
+        if crate::compaction::estimate_tokens(&messages) > budget {
             bail!("This request is larger than the selected model’s context. Shorten the message or project instructions, or attach a document so Keel can select excerpts.");
         }
 
         let resp = stream_completion(
-            &client,
+            client,
             &endpoint,
             &params.model_name,
             &messages,
@@ -280,7 +300,12 @@ where
 
             let repeated_nudge = repeat_guard.record(&tc.name, &tc.arguments);
 
-            let exec = if !exposed_tools.contains(&tc.name) {
+            let exec = if let Some(ref parse_err) = tc.parse_error {
+                Err(anyhow::anyhow!(
+                    "Invalid JSON arguments for tool `{}` ({parse_err}). Retry with a valid JSON object.",
+                    tc.name
+                ))
+            } else if !exposed_tools.contains(&tc.name) {
                 Err(anyhow::anyhow!(
                     "Tool `{}` is not available in this mode",
                     tc.name
@@ -650,7 +675,7 @@ where
         body["tool_choice"] = json!("auto");
     }
 
-    let resp = client
+    let mut resp = client
         .post(endpoint)
         .json(&body)
         .send()
@@ -659,13 +684,46 @@ where
             anyhow::Error::new(EndpointUnreachable {
                 is_loopback: crate::runtime::is_loopback_url(endpoint),
             })
-        })?
-        .error_for_status()
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "Your AI ran into an error while replying. Try again, or switch to a different model."
-            )
         })?;
+
+    if matches!(resp.status().as_u16(), 400 | 422) {
+        // Retry once without vendor-specific kwargs for strict OpenAI-compatible servers.
+        let mut compat_body = body.clone();
+        if let Some(obj) = compat_body.as_object_mut() {
+            obj.remove("chat_template_kwargs");
+            obj.remove("stream_options");
+        }
+        if let Ok(retry_resp) = client.post(endpoint).json(&compat_body).send().await {
+            if retry_resp.status().is_success() {
+                resp = retry_resp;
+            }
+        }
+    }
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let err_body = resp.text().await.unwrap_or_default();
+        let lower = err_body.to_ascii_lowercase();
+        if lower.contains("exceed") && (lower.contains("context") || lower.contains("token"))
+            || lower.contains("n_ctx")
+        {
+            bail!("This conversation exceeded the model’s context limit. Start a new thread or increase the context window in Settings.");
+        }
+        if let Ok(parsed) = serde_json::from_str::<Value>(&err_body) {
+            if let Some(msg) = parsed
+                .get("error")
+                .and_then(|e| e.get("message").or(Some(e)))
+                .and_then(|m| m.as_str())
+                .filter(|m| !m.trim().is_empty())
+            {
+                let snippet: String = msg.trim().chars().take(240).collect();
+                bail!("Your AI returned an error ({status}): {snippet}");
+            }
+        }
+        bail!(
+            "Your AI ran into an error ({status}) while replying. Try again, or switch to a different model."
+        );
+    }
 
     let mut content = String::new();
     let mut reasoning_content = String::new();
@@ -783,8 +841,15 @@ where
             if pc.name.trim().is_empty() {
                 return None;
             }
-            let args: Value =
-                serde_json::from_str(pc.arguments.trim()).unwrap_or_else(|_| json!({}));
+            let trimmed_args = pc.arguments.trim();
+            let (args, parse_error) = if trimmed_args.is_empty() {
+                (json!({}), None)
+            } else {
+                match serde_json::from_str::<Value>(trimmed_args) {
+                    Ok(v) => (v, None),
+                    Err(e) => (json!({}), Some(e.to_string())),
+                }
+            };
             Some(crate::guard::ParsedToolCall {
                 id: if pc.id.is_empty() {
                     format!("call-{idx}")
@@ -793,6 +858,7 @@ where
                 },
                 name: pc.name,
                 arguments: args,
+                parse_error,
             })
         })
         .collect();
