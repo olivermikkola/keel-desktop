@@ -31,6 +31,8 @@ pub struct CodeExecutionBoundary {
 /// Evaluate whether Code mode may run shell commands on this platform.
 /// On macOS, command execution requires both Seatbelt (`/usr/bin/sandbox-exec`)
 /// and an installed Keel CLI; otherwise Code mode stays in inspect-and-propose mode.
+/// On Windows there is no landlock/seatbelt; commands may run with approvals only
+/// and Desktop prefers the Keel CLI when it is installed.
 pub fn code_execution_boundary() -> CodeExecutionBoundary {
     let has_sandbox_exec = Path::new("/usr/bin/sandbox-exec").is_file();
     let has_keel_cli = find_on_path("keel").is_some();
@@ -61,6 +63,20 @@ pub fn code_execution_boundary_for(
                     .into(),
             ),
         },
+        "windows" => {
+            // Honest: Windows has no Desktop-enforced OS sandbox equivalent to
+            // landlock/seatbelt. Prefer Keel CLI (stdio approvals) when present.
+            let notice = if has_keel_cli {
+                "Windows has no landlock or Seatbelt confinement. Prefer Keel CLI for Code (stdio approvals); shell commands still need your approval and are not OS-sandboxed."
+            } else {
+                "Windows has no landlock or Seatbelt confinement. Install the Keel CLI for Code when possible; shell commands need your approval and are not OS-sandboxed."
+            };
+            CodeExecutionBoundary {
+                can_run_commands: true,
+                sandbox: "none".into(),
+                notice: Some(notice.into()),
+            }
+        }
         _ => CodeExecutionBoundary {
             can_run_commands: true,
             sandbox: "approval-only".into(),
@@ -1018,18 +1034,28 @@ mod tests {
         let validated = validate_keel_session_log(&source).unwrap();
         assert_eq!(validated, source.canonicalize().unwrap());
 
-        // Point HOME at a temp tree so export does not touch the real ~/.keel.
+        // Point home at a temp tree so export does not touch the real ~/.keel.
+        // `dirs::home_dir` reads HOME on Unix and USERPROFILE on Windows.
         let fake_home = dir.join("home");
         std::fs::create_dir_all(&fake_home).unwrap();
         let prev_home = std::env::var_os("HOME");
+        let prev_profile = std::env::var_os("USERPROFILE");
         std::env::set_var("HOME", &fake_home);
+        std::env::set_var("USERPROFILE", &fake_home);
         let exported =
             export_keel_session_log(&source, "sess-1", "My Thread").expect("export should succeed");
         match prev_home {
             Some(value) => std::env::set_var("HOME", value),
             None => std::env::remove_var("HOME"),
         }
-        assert!(exported.starts_with(fake_home.join(".keel").join("sessions")));
+        match prev_profile {
+            Some(value) => std::env::set_var("USERPROFILE", value),
+            None => std::env::remove_var("USERPROFILE"),
+        }
+        assert!(
+            exported.starts_with(&fake_home.join(".keel").join("sessions")),
+            "exported={exported:?} fake_home={fake_home:?}"
+        );
         assert_eq!(
             exported.file_name().and_then(|n| n.to_str()),
             Some("keel-desktop-sess-1-my-thread.jsonl")
