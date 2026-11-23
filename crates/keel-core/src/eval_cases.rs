@@ -814,7 +814,9 @@ mod tests {
         assert!(grade_buried_fact_recall("The codeword is cedar."));
         assert!(!grade_buried_fact_recall("I forget."));
         assert!(grade_long_session_compaction("MAPLE"));
-        assert!(grade_long_session_compaction("The vault codeword is maple."));
+        assert!(grade_long_session_compaction(
+            "The vault codeword is maple."
+        ));
         assert!(!grade_long_session_compaction("I forget."));
         assert!(grade_unknown_from_brief(
             "The brief does not name legal counsel."
