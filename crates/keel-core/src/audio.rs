@@ -1198,7 +1198,10 @@ mod tests {
             adapter: AudioSttAdapterKind::WhisperCpp,
             model: None,
         };
-        let err = tts_adapter_from_runner(config).unwrap_err().to_string();
+        let err = match tts_adapter_from_runner(config) {
+            Ok(_) => panic!("expected whisper_cpp TTS adapter to be rejected"),
+            Err(e) => e.to_string(),
+        };
         assert!(
             err.contains("whisper_cpp") && err.contains("not supported"),
             "unexpected: {err}"
