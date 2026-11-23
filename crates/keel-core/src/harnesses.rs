@@ -346,6 +346,51 @@ const MAX_EVENT_BYTES: u64 = 1024 * 1024;
 const TURN_TIMEOUT: Duration = Duration::from_secs(300);
 const EXIT_GRACE: Duration = Duration::from_secs(5);
 
+/// Unix stop sends SIGINT (`sigint-shell-v1`) before the grace wait; Windows
+/// does not invent a SIGINT equivalent and falls through to grace → kill.
+fn keel_cli_stop_sends_sigint() -> bool {
+    cfg!(unix)
+}
+
+/// After the turn future settles (including stop → [`Ok(None)`]), optionally
+/// SIGINT, then grace-wait / kill the child. `send_sigint = false` is the
+/// Windows path: no libc SIGINT, just drop stdin → grace → `child.kill()`.
+async fn reap_keel_cli_after_turn(
+    mut child: tokio::process::Child,
+    stdin: tokio::process::ChildStdin,
+    drain: tokio::task::JoinHandle<std::io::Result<u64>>,
+    result: Result<Option<String>>,
+    send_sigint: bool,
+    grace: Duration,
+) -> Result<Option<String>> {
+    if send_sigint && !matches!(result, Ok(Some(_))) {
+        #[cfg(unix)]
+        if let Some(pid) = child.id() {
+            // The Child still owns this PID until wait or kill completes.
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGINT) };
+        }
+    }
+    drop(stdin);
+    let status = match tokio::time::timeout(grace, child.wait()).await {
+        Ok(status) => status?,
+        Err(_) => {
+            child.kill().await.context("Stopping the Keel CLI")?;
+            drain.abort();
+            return result.and_then(|answer| {
+                if answer.is_some() {
+                    bail!("Keel CLI did not exit after reporting a result");
+                }
+                Ok(None)
+            });
+        }
+    };
+    let _ = tokio::time::timeout(grace, drain).await;
+    if matches!(result, Ok(Some(_))) && !status.success() {
+        bail!("Keel CLI exited unsuccessfully ({status})");
+    }
+    result
+}
+
 /// Build a Code-mode Desktop session from a Keel CLI journal under
 /// `~/.keel/sessions` (or any validated JSONL path). Used by the import picker
 /// after the user selects a file; kept dialog-free so tests can cover the
@@ -701,32 +746,15 @@ where
         }
     };
 
-    #[cfg(unix)]
-    if !matches!(result, Ok(Some(_))) {
-        if let Some(pid) = child.id() {
-            // The Child still owns this PID until wait or kill completes.
-            unsafe { libc::kill(pid as libc::pid_t, libc::SIGINT) };
-        }
-    }
-    drop(stdin);
-    let status = match tokio::time::timeout(EXIT_GRACE, child.wait()).await {
-        Ok(status) => status?,
-        Err(_) => {
-            child.kill().await.context("Stopping the Keel CLI")?;
-            drain.abort();
-            return result.and_then(|answer| {
-                if answer.is_some() {
-                    bail!("Keel CLI did not exit after reporting a result");
-                }
-                Ok(None)
-            });
-        }
-    };
-    let _ = tokio::time::timeout(EXIT_GRACE, drain).await;
-    if matches!(result, Ok(Some(_))) && !status.success() {
-        bail!("Keel CLI exited unsuccessfully ({status})");
-    }
-    result
+    reap_keel_cli_after_turn(
+        child,
+        stdin,
+        drain,
+        result,
+        keel_cli_stop_sends_sigint(),
+        EXIT_GRACE,
+    )
+    .await
 }
 
 /// Drive a Keel-CLI-shaped NDJSON event stream through Desktop's projection
@@ -1538,6 +1566,46 @@ mod tests {
                 "windows-shaped ok"
             );
         }
+    }
+
+    #[test]
+    fn keel_cli_stop_sigint_only_on_unix() {
+        assert_eq!(keel_cli_stop_sends_sigint(), cfg!(unix));
+    }
+
+    /// Windows stop path (also exercised on Unix CI with `send_sigint = false`):
+    /// user stop → [`Ok(None)`] → no SIGINT → short grace wait → `kill` → [`Ok(None)`].
+    #[tokio::test]
+    async fn fake_cli_windows_stop_grace_wait_then_kill_returns_ok_none() {
+        // Process ignores stdin close and outlives a short grace window so kill runs.
+        let mut child = Command::new("python3")
+            .args(["-c", "import time; time.sleep(30)"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn long-lived fake CLI stand-in");
+        let stdin = child.stdin.take().expect("stdin");
+        let mut stderr = child.stderr.take().expect("stderr");
+        let drain =
+            tokio::spawn(async move { tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await });
+
+        let stopped: Result<Option<String>> = Ok(None);
+        let out = reap_keel_cli_after_turn(
+            child,
+            stdin,
+            drain,
+            stopped,
+            /* send_sigint */ false,
+            Duration::from_millis(80),
+        )
+        .await
+        .expect("Windows stop path must stay Ok");
+        assert!(
+            out.is_none(),
+            "stop without SIGINT must return Ok(None) after grace+kill"
+        );
     }
 
     /// Fake-CLI e2e: reasoning deltas, AllowAlways → `allow\n`, and sentinel veto projection.
