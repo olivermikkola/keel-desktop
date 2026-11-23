@@ -91,6 +91,17 @@ pub fn extract_image_ocr(path: &Path) -> Result<String> {
     Ok(text)
 }
 
+const VISION_FALLBACK_CAPTION: &str =
+    "(Image pixels attached for vision. No OCR text was extracted.)";
+
+fn image_text_with_optional_ocr(path: &Path, has_pixels: bool) -> Result<String> {
+    match extract_image_ocr(path) {
+        Ok(text) => Ok(text),
+        Err(_) if has_pixels => Ok(VISION_FALLBACK_CAPTION.to_string()),
+        Err(err) => Err(err),
+    }
+}
+
 struct TempFileGuard(PathBuf);
 impl Drop for TempFileGuard {
     fn drop(&mut self) {
@@ -148,7 +159,7 @@ pub fn import_document_bytes(name: &str, bytes: &[u8]) -> Result<Document> {
             let tmp = std::env::temp_dir().join(format!("keel_ocr_{}.{ext}", uuid::Uuid::new_v4()));
             write_private_temp(&tmp, bytes)?;
             let _guard = TempFileGuard(tmp.clone());
-            extract_image_ocr(&tmp)?
+            image_text_with_optional_ocr(&tmp, image_data_url.is_some())?
         }
         "txt" | "md" | "csv" | "tsv" | "json" | "html" | "htm" | "xml" | "yaml" | "yml" | "toml" | "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "css" | "sql" | "log" => {
             String::from_utf8(bytes.to_vec()).context("This file is not UTF-8 text. Export it as UTF-8 and try again.")?
@@ -193,7 +204,7 @@ pub fn import_document(path: &Path) -> Result<Document> {
                 let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
                 image_data_url = Some(format!("data:{};base64,{encoded}", image_mime(ext)));
             }
-            extract_image_ocr(path)?
+            image_text_with_optional_ocr(path, image_data_url.is_some())?
         }
         "txt" | "md" | "csv" | "tsv" | "json" | "html" | "htm" | "xml" | "yaml" | "yml" | "toml" | "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "css" | "sql" | "log" => String::from_utf8(bytes).context("This file is not UTF-8 text. Export it as UTF-8 and try again.")?,
         _ => bail!("Attach a PDF, DOCX, text, Markdown, CSV, source-code file, or image (PNG, JPG, WebP, BMP, TIFF)."),

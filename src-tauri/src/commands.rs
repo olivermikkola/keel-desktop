@@ -948,8 +948,14 @@ pub async fn send_message(
         .map(|id| keel_core::projects::load_project(&state.data_dir, id))
         .transpose()
         .map_err(|e| e.to_string())?;
-    let history =
-        keel_core::context::history_for_turn(&session, &cfg, project.as_ref(), context_size);
+    let vision = session.app_preset == AppPreset::Chat;
+    let history = keel_core::context::history_for_turn_with_vision(
+        &session,
+        &cfg,
+        project.as_ref(),
+        context_size,
+        vision,
+    );
 
     let allowance_key = format!(
         "{}:{}",

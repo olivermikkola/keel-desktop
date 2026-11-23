@@ -9,6 +9,7 @@ pub mod runtime;
 pub mod sessions;
 pub mod sql_sandbox;
 pub mod tools;
+pub mod web_search;
 
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")

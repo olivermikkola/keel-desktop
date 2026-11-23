@@ -1,11 +1,12 @@
-# Everyday assistant candidate — 0.4.0
+# Everyday assistant — 0.5.0
 
-The target is an assistant a person can use for recurring writing, document, data, and coding work without managing model-server commands. This milestone makes those workflows concrete. It does not establish parity with Claude Pro, or justify a blanket recommendation to cancel a subscription.
+The target is an assistant a person can use for recurring writing, document, data, and coding work without managing model-server commands. 0.4.0 made those workflows concrete; 0.5.0 adds approved web search and Chat vision. It does not establish parity with Claude Pro, or justify a blanket recommendation to cancel a subscription.
 
 ## Ready for testing
 
 - Guided local setup: a recommendation based on total RAM, a pinned/checksummed model-runner package, model download/verification, RAM-aware configurable context window, and managed startup. An existing compatible server can be connected instead. The bundled packages cover macOS Intel/Apple Silicon, Windows CPU x64/ARM64, and Linux x64/ARM64; runtime compatibility and performance still depend on the user's hardware and operating system.
-- Chat with attachments: drag-and-drop, clipboard image paste, or file picker import for pure-Rust PDF/DOCX extraction, text/CSV/code import, offline image text extraction via local Tesseract OCR, source inspection, and source context retained for follow-up questions. Files are limited to 20 MB and extracted text to 300,000 characters. Scanned PDFs need OCR. Image attachments currently use OCR text extraction rather than native multimodal vision. The model receives bounded excerpts when full source text will not fit; the prompt labels those excerpts explicitly.
+- Chat with attachments: drag-and-drop, clipboard image paste, or file picker import for pure-Rust PDF/DOCX extraction, text/CSV/code import, optional offline image text extraction via local Tesseract OCR, source inspection, and source context retained for follow-up questions. Files are limited to 20 MB and extracted text to 300,000 characters. Scanned PDFs need OCR. In Chat, image attachments also send image pixels as multimodal `image_url` parts when the model accepts them; OCR text is a caption/fallback. The model receives bounded excerpts when full source text will not fit; the prompt labels those excerpts explicitly.
+- Web search: Chat and Work (and Code) can call `web_search` after explicit user approval. Results come from the public web over the network; Keel does not fall back to a cloud chat model.
 - Projects: instructions, reusable reference documents, optional working folders, and related conversations. Project documents are not added to unrelated conversations.
 - User-controlled preferences: explicit “Remember that …” requests or edits in Saved preferences. These are included in future model context and can be edited or cleared locally. This does not guarantee every model will obey them.
 - Conversation management: content/title search, rename, pin, export Markdown, fork-before-edit, retry text-only answers, draft retention, and delete/undo. Deleted conversations move to the app's local trash directory; undo restores them. They are not securely erased by deletion.
@@ -44,4 +45,4 @@ One additional email experiment showed why the reasoning switch needed a backend
 1. Run a larger held-out suite and repeated runs on the intended user hardware, including projects with real documents, conflicting/updated preferences, multi-file coding, long sessions, and recovery during actual native interactions.
 2. Establish acceptable time to first token, answer latency, memory use, and task success for each recommended model/hardware combination. Do not infer GPU results from CPU tests.
 3. Test with people doing the recurring tasks they currently use Claude for, and compare completed work, correction effort, and time—not just UI appearance or a few successful prompts.
-4. Address the failures those evaluations find. Web search, image understanding in Chat, hosted provider authentication, and automatic audio/video packs are still separate unimplemented capabilities.
+4. Address the failures those evaluations find. Hosted provider authentication and automatic audio/video packs remain separate unimplemented capabilities.

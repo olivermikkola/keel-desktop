@@ -85,12 +85,7 @@ async fn main() -> Result<()> {
             workspace_root: workspace,
             auto_apply_edits: auto_apply,
             enable_thinking: true,
-            history: vec![ChatTurnMessage {
-                role: "user".to_string(),
-                content: prompt,
-                tool_call_id: None,
-                tool_calls: None,
-            }],
+            history: vec![ChatTurnMessage::text("user", prompt)],
             mcp_config: McpConfigFile::default(),
             mcp_tools: Vec::new(),
             max_steps: 8,
