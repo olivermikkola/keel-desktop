@@ -2415,6 +2415,47 @@ function openCustomizeModal() {
     };
     body.appendChild(checkCard);
 
+    const audioCard = document.createElement("div");
+    audioCard.className = "card";
+    audioCard.innerHTML = `
+      <strong>Speech packs</strong>
+      <p class="muted">Speech-to-text and text-to-speech packs will live here. Nothing downloads yet — runners are still stubs.</p>
+      <div id="audio-packs-list"><p class="muted">Loading…</p></div>
+    `;
+    body.appendChild(audioCard);
+    (async () => {
+      const slot = audioCard.querySelector("#audio-packs-list");
+      try {
+        const packs = await invoke("list_audio_packs");
+        if (!packs?.length) {
+          slot.innerHTML = `<p class="muted">No audio packs listed yet.</p>`;
+          return;
+        }
+        slot.innerHTML = packs
+          .map((pack) => {
+            const kind =
+              pack.capability === "stt"
+                ? "Speech to text"
+                : pack.capability === "tts"
+                  ? "Text to speech"
+                  : String(pack.capability || "Audio");
+            const status = pack.installed ? "Installed" : "Not installed yet";
+            return `
+              <div class="row" style="align-items:flex-start">
+                <div class="grow">
+                  <div>${escapeHtml(pack.display_name || pack.id)}</div>
+                  <div class="muted" style="font-size:12px">${escapeHtml(kind)}</div>
+                </div>
+                <span class="muted" style="font-size:12px;white-space:nowrap">${escapeHtml(status)}</span>
+              </div>
+            `;
+          })
+          .join("");
+      } catch (err) {
+        slot.innerHTML = `<p class="muted">${escapeHtml(friendlyRuntimeError(err))}</p>`;
+      }
+    })();
+
     const ap = appState.appearance;
     const appearanceCard = document.createElement("div");
     appearanceCard.className = "card";

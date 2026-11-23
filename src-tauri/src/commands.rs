@@ -2,6 +2,7 @@ use keel_core::agent::{
     run_agent_turn, AgentEvent, ApprovalDecision, EndpointUnreachable, TurnParams,
 };
 use keel_core::apps::{AppPreset, AppPresetInfo};
+use keel_core::audio::{self, AudioPackManifest};
 use keel_core::harnesses::{
     code_execution_boundary, detect_harnesses, run_external_harness, run_keel_cli_turn,
     CodeExecutionBoundary, HarnessOption, KeelCliTurn,
@@ -2050,4 +2051,48 @@ pub async fn publish_code_changes(
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())
+}
+
+/// List STT/TTS pack stubs. `installed` reflects on-disk markers under the data dir.
+#[tauri::command]
+pub async fn list_audio_packs(
+    state: State<'_, AppState>,
+) -> Result<Vec<AudioPackManifest>, String> {
+    let data_dir = state.data_dir.clone();
+    Ok(audio::list_audio_packs()
+        .into_iter()
+        .map(|pack| AudioPackManifest {
+            installed: audio::is_audio_pack_installed(&data_dir, &pack.id),
+            ..pack
+        })
+        .collect())
+}
+
+/// Speech-to-text entry. Surfaces not-installed (and unwired-runner) errors as strings.
+#[tauri::command]
+pub async fn run_audio_stt(
+    state: State<'_, AppState>,
+    audio_path: String,
+) -> Result<String, String> {
+    let data_dir = state.data_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        audio::run_stt(&data_dir, Path::new(&audio_path)).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Text-to-speech entry. Surfaces not-installed (and unwired-runner) errors as strings.
+#[tauri::command]
+pub async fn run_audio_tts(
+    state: State<'_, AppState>,
+    text: String,
+    output_path: String,
+) -> Result<(), String> {
+    let data_dir = state.data_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        audio::run_tts(&data_dir, &text, Path::new(&output_path)).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }

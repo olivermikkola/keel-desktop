@@ -164,6 +164,9 @@ fn main() {
             commands::remove_mcp_server,
             commands::set_workspace_mcp_trust,
             commands::refresh_mcp_servers,
+            commands::list_audio_packs,
+            commands::run_audio_stt,
+            commands::run_audio_tts,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Keel Desktop");
