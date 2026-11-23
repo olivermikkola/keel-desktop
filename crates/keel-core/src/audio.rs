@@ -48,12 +48,23 @@
 //! Weights are **not** bundled. Missing model paths fail with a clear error; the
 //! catalog `download_url` for Whisper is an unpinned `keel-pack:unpinned/…`
 //! placeholder until a checksummed artifact is pinned.
+//!
+//! ## Audio artifacts
+//!
+//! Successful [`run_stt`] / [`run_tts`] calls also persist a thin local record
+//! under `<data_dir>/audio-artifacts/`:
+//! - STT → `{id}.txt` transcript + `{id}.meta.json`
+//! - TTS → copy of the output wav as `{id}.wav` + `{id}.meta.json`
+//!
+//! [`list_audio_artifacts`] reads those meta files. No cloud upload, no fake
+//! players — just paths on disk for Settings to show.
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Capability ids exposed by the audio pack catalog.
 pub const CAPABILITY_STT: &str = "stt";
@@ -375,6 +386,170 @@ pub fn audio_packs_dir(data_dir: &Path) -> PathBuf {
 
 fn pack_dir(data_dir: &Path, pack_id: &str) -> PathBuf {
     audio_packs_dir(data_dir).join(pack_id)
+}
+
+/// On-disk directory for STT transcripts and TTS wav copies.
+pub fn audio_artifacts_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("audio-artifacts")
+}
+
+/// Kind of persisted audio artifact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioArtifactKind {
+    SttTranscript,
+    TtsOutput,
+}
+
+impl AudioArtifactKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SttTranscript => "stt_transcript",
+            Self::TtsOutput => "tts_output",
+        }
+    }
+}
+
+/// One persisted STT transcript or TTS wav under [`audio_artifacts_dir`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioArtifact {
+    pub id: String,
+    pub kind: AudioArtifactKind,
+    /// Absolute path to the primary artifact file (`.txt` or `.wav`).
+    pub path: String,
+    /// Unix seconds when the artifact was written.
+    pub created_at: u64,
+    /// Input audio path for STT, or the caller's original TTS output path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
+    /// Short text preview (STT transcript or TTS input), truncated for UI lists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_preview: Option<String>,
+}
+
+const ARTIFACT_META_SUFFIX: &str = ".meta.json";
+const ARTIFACT_PREVIEW_CHARS: usize = 120;
+
+fn now_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn truncate_preview(text: &str) -> String {
+    let trimmed = text.trim();
+    let mut chars = trimmed.chars();
+    let preview: String = chars.by_ref().take(ARTIFACT_PREVIEW_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{preview}…")
+    } else {
+        preview
+    }
+}
+
+fn write_artifact_meta(dir: &Path, artifact: &AudioArtifact) -> Result<()> {
+    let meta_path = dir.join(format!("{}{ARTIFACT_META_SUFFIX}", artifact.id));
+    let raw = serde_json::to_string_pretty(artifact).context("serialize audio artifact meta")?;
+    fs::write(&meta_path, raw)
+        .with_context(|| format!("write audio artifact meta {}", meta_path.display()))?;
+    Ok(())
+}
+
+/// Persist an STT transcript under [`audio_artifacts_dir`].
+///
+/// Best-effort for callers: returns the artifact record on success.
+pub fn persist_stt_artifact(
+    data_dir: &Path,
+    transcript: &str,
+    source_audio: &Path,
+) -> Result<AudioArtifact> {
+    let dir = audio_artifacts_dir(data_dir);
+    fs::create_dir_all(&dir)
+        .with_context(|| format!("create audio artifacts dir {}", dir.display()))?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let txt_path = dir.join(format!("{id}.txt"));
+    fs::write(&txt_path, transcript)
+        .with_context(|| format!("write STT transcript {}", txt_path.display()))?;
+    let artifact = AudioArtifact {
+        id,
+        kind: AudioArtifactKind::SttTranscript,
+        path: txt_path.to_string_lossy().into_owned(),
+        created_at: now_unix_secs(),
+        source_path: Some(source_audio.to_string_lossy().into_owned()),
+        text_preview: Some(truncate_preview(transcript)),
+    };
+    write_artifact_meta(&dir, &artifact)?;
+    Ok(artifact)
+}
+
+/// Persist a TTS output by copying the wav into [`audio_artifacts_dir`].
+pub fn persist_tts_artifact(
+    data_dir: &Path,
+    text: &str,
+    output_path: &Path,
+) -> Result<AudioArtifact> {
+    let dir = audio_artifacts_dir(data_dir);
+    fs::create_dir_all(&dir)
+        .with_context(|| format!("create audio artifacts dir {}", dir.display()))?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let wav_path = dir.join(format!("{id}.wav"));
+    fs::copy(output_path, &wav_path).with_context(|| {
+        format!(
+            "copy TTS output {} → {}",
+            output_path.display(),
+            wav_path.display()
+        )
+    })?;
+    let artifact = AudioArtifact {
+        id,
+        kind: AudioArtifactKind::TtsOutput,
+        path: wav_path.to_string_lossy().into_owned(),
+        created_at: now_unix_secs(),
+        source_path: Some(output_path.to_string_lossy().into_owned()),
+        text_preview: Some(truncate_preview(text)),
+    };
+    write_artifact_meta(&dir, &artifact)?;
+    Ok(artifact)
+}
+
+/// List persisted audio artifacts (newest first). Skips unreadable meta files.
+pub fn list_audio_artifacts(data_dir: &Path) -> Vec<AudioArtifact> {
+    let dir = audio_artifacts_dir(data_dir);
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut artifacts = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) if n.ends_with(ARTIFACT_META_SUFFIX) => n,
+            _ => continue,
+        };
+        let Ok(raw) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(mut artifact) = serde_json::from_str::<AudioArtifact>(&raw) else {
+            continue;
+        };
+        // Prefer the id from the filename when meta is incomplete.
+        if artifact.id.is_empty() {
+            artifact.id = name.trim_end_matches(ARTIFACT_META_SUFFIX).to_string();
+        }
+        artifacts.push(artifact);
+    }
+    artifacts.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.id.cmp(&a.id)));
+    artifacts
+}
+
+/// Remove all files under [`audio_artifacts_dir`]. No-op if the dir is missing.
+pub fn clear_audio_artifacts(data_dir: &Path) -> Result<()> {
+    let dir = audio_artifacts_dir(data_dir);
+    if !dir.exists() {
+        return Ok(());
+    }
+    fs::remove_dir_all(&dir).with_context(|| format!("clear audio artifacts {}", dir.display()))?;
+    Ok(())
 }
 
 /// True only when an install marker exists under the data directory.
@@ -882,6 +1057,8 @@ pub fn run_stt(data_dir: &Path, audio_path: &Path) -> Result<String> {
             audio_path.display()
         );
     }
+    // Best-effort local record; STT success does not depend on artifact I/O.
+    let _ = persist_stt_artifact(data_dir, &transcript, audio_path);
     Ok(transcript)
 }
 
@@ -959,6 +1136,8 @@ pub fn run_tts(data_dir: &Path, text: &str, output_path: &Path) -> Result<()> {
             output_path.display()
         );
     }
+    // Best-effort local record; TTS success does not depend on artifact I/O.
+    let _ = persist_tts_artifact(data_dir, text, output_path);
     Ok(())
 }
 
@@ -1207,6 +1386,13 @@ mod tests {
         fs::write(&wav, b"RIFF").unwrap();
         let text = run_stt(&dir, &wav).unwrap();
         assert_eq!(text, "hello from stt");
+        let artifacts = list_audio_artifacts(&dir);
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].kind, AudioArtifactKind::SttTranscript);
+        assert_eq!(
+            fs::read_to_string(&artifacts[0].path).unwrap().trim(),
+            "hello from stt"
+        );
     }
 
     #[cfg(unix)]
@@ -1240,6 +1426,11 @@ mod tests {
         let out = dir.join("out.wav");
         run_tts(&dir, "hello world", &out).unwrap();
         assert_eq!(fs::read_to_string(&out).unwrap(), "wav");
+        let artifacts = list_audio_artifacts(&dir);
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].kind, AudioArtifactKind::TtsOutput);
+        assert_eq!(fs::read_to_string(&artifacts[0].path).unwrap(), "wav");
+        assert_eq!(artifacts[0].text_preview.as_deref(), Some("hello world"));
     }
 
     #[test]
@@ -1570,8 +1761,90 @@ mod tests {
         assert!(plan.stop_keep_alive);
     }
 
+    #[test]
+    fn persist_and_list_stt_and_tts_artifacts() {
+        let dir = tempfile_dir("artifacts-list");
+        let source = dir.join("in.wav");
+        fs::write(&source, b"RIFF").unwrap();
+        let stt = persist_stt_artifact(&dir, "spoken words", &source).unwrap();
+        assert_eq!(stt.kind, AudioArtifactKind::SttTranscript);
+        assert!(Path::new(&stt.path).is_file());
+        assert_eq!(fs::read_to_string(&stt.path).unwrap(), "spoken words");
+        assert_eq!(stt.text_preview.as_deref(), Some("spoken words"));
+
+        let out = dir.join("spoken.wav");
+        fs::write(&out, b"RIFFDATA").unwrap();
+        let tts = persist_tts_artifact(&dir, "say this", &out).unwrap();
+        assert_eq!(tts.kind, AudioArtifactKind::TtsOutput);
+        assert!(Path::new(&tts.path).is_file());
+        assert_eq!(fs::read(&tts.path).unwrap(), b"RIFFDATA");
+        assert_ne!(tts.path, out.to_string_lossy());
+
+        let listed = list_audio_artifacts(&dir);
+        assert_eq!(listed.len(), 2);
+        assert!(listed
+            .iter()
+            .any(|a| a.id == stt.id && a.kind == AudioArtifactKind::SttTranscript));
+        assert!(listed
+            .iter()
+            .any(|a| a.id == tts.id && a.kind == AudioArtifactKind::TtsOutput));
+
+        // Newest-first ordering when timestamps differ.
+        let older = AudioArtifact {
+            created_at: 100,
+            ..stt.clone()
+        };
+        let newer = AudioArtifact {
+            created_at: 200,
+            ..tts.clone()
+        };
+        write_artifact_meta(&audio_artifacts_dir(&dir), &older).unwrap();
+        write_artifact_meta(&audio_artifacts_dir(&dir), &newer).unwrap();
+        let ordered = list_audio_artifacts(&dir);
+        assert_eq!(ordered[0].id, newer.id);
+        assert_eq!(ordered[1].id, older.id);
+    }
+
+    #[test]
+    fn list_audio_artifacts_empty_when_dir_missing() {
+        let dir = tempfile_dir("artifacts-missing");
+        let _ = fs::remove_dir_all(dir.join("audio-artifacts"));
+        assert!(list_audio_artifacts(&dir).is_empty());
+    }
+
+    #[test]
+    fn clear_audio_artifacts_removes_dir() {
+        let dir = tempfile_dir("artifacts-clear");
+        let source = dir.join("clip.wav");
+        fs::write(&source, b"x").unwrap();
+        persist_stt_artifact(&dir, "bye", &source).unwrap();
+        assert_eq!(list_audio_artifacts(&dir).len(), 1);
+        clear_audio_artifacts(&dir).unwrap();
+        assert!(!audio_artifacts_dir(&dir).exists());
+        assert!(list_audio_artifacts(&dir).is_empty());
+        // Clearing again is a no-op.
+        clear_audio_artifacts(&dir).unwrap();
+    }
+
+    #[test]
+    fn artifact_text_preview_truncates() {
+        let dir = tempfile_dir("artifacts-preview");
+        let long = "a".repeat(ARTIFACT_PREVIEW_CHARS + 40);
+        let source = dir.join("a.wav");
+        fs::write(&source, b"x").unwrap();
+        let art = persist_stt_artifact(&dir, &long, &source).unwrap();
+        let preview = art.text_preview.expect("preview");
+        assert!(preview.ends_with('…'));
+        assert_eq!(preview.chars().count(), ARTIFACT_PREVIEW_CHARS + 1);
+    }
+
     fn tempfile_dir(label: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("keel-audio-{}-{}", label, std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "keel-audio-{}-{}-{}",
+            label,
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir

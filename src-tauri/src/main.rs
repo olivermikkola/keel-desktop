@@ -180,6 +180,8 @@ fn main() {
             commands::set_workspace_mcp_trust,
             commands::refresh_mcp_servers,
             commands::list_audio_packs,
+            commands::list_audio_artifacts,
+            commands::clear_audio_artifacts,
             commands::mark_audio_pack_installed,
             commands::register_audio_pack_runner,
             commands::register_whisper_cpp_runner,

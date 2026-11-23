@@ -2556,8 +2556,65 @@ function openCustomizeModal() {
       <strong>Speech packs</strong>
       <p class="muted">Local speech-to-text and text-to-speech only. Mark a pack installed, register a local or Whisper.cpp runner, download a checksum-pinned fixture, or record a download URL stub. Whisper base stays unpinned until a real ggml URL + SHA-256 are published — no fake fetch.</p>
       <div id="audio-packs-list"><p class="muted">Loading…</p></div>
+      <strong style="display:block;margin-top:14px">Recent audio artifacts</strong>
+      <p class="muted">Local STT transcripts and TTS wav copies written under the data directory after a successful run. Paths only — no cloud upload or fake player.</p>
+      <div id="audio-artifacts-list"><p class="muted">Loading…</p></div>
+      <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
+        <button type="button" class="btn btn-sm btn-ghost" id="audio-artifacts-refresh">Refresh</button>
+        <button type="button" class="btn btn-sm btn-ghost" id="audio-artifacts-clear">Clear</button>
+      </div>
     `;
     body.appendChild(audioCard);
+
+    const renderAudioArtifacts = async () => {
+      const slot = audioCard.querySelector("#audio-artifacts-list");
+      try {
+        const artifacts = await invoke("list_audio_artifacts");
+        if (!artifacts?.length) {
+          slot.innerHTML = `<p class="muted">No audio artifacts yet. Run STT or TTS to create one.</p>`;
+          return;
+        }
+        const recent = artifacts.slice(0, 12);
+        slot.innerHTML = recent
+          .map((art) => {
+            const kind =
+              art.kind === "stt_transcript"
+                ? "STT transcript"
+                : art.kind === "tts_output"
+                  ? "TTS output"
+                  : String(art.kind || "Artifact");
+            const preview = art.text_preview
+              ? `<div class="muted" style="font-size:12px">${escapeHtml(art.text_preview)}</div>`
+              : "";
+            return `
+              <div class="row" style="align-items:flex-start;gap:10px;margin-bottom:8px">
+                <div class="grow">
+                  <div class="muted" style="font-size:12px">${escapeHtml(kind)}</div>
+                  <div class="mono" style="font-size:12px;word-break:break-all">${escapeHtml(art.path || "")}</div>
+                  ${preview}
+                </div>
+              </div>
+            `;
+          })
+          .join("");
+      } catch (err) {
+        slot.innerHTML = `<p class="muted">${escapeHtml(friendlyRuntimeError(err))}</p>`;
+      }
+    };
+    audioCard.querySelector("#audio-artifacts-refresh").addEventListener("click", () => {
+      renderAudioArtifacts();
+    });
+    audioCard.querySelector("#audio-artifacts-clear").addEventListener("click", async () => {
+      if (!window.confirm("Clear all local audio artifacts from disk?")) return;
+      try {
+        await invoke("clear_audio_artifacts");
+        showToast("Audio artifacts cleared.");
+        await renderAudioArtifacts();
+      } catch (err) {
+        showToast(friendlyRuntimeError(err));
+      }
+    });
+    renderAudioArtifacts();
     const renderAudioPacks = async () => {
       const slot = audioCard.querySelector("#audio-packs-list");
       try {
