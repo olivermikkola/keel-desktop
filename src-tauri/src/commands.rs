@@ -649,11 +649,17 @@ async fn auto_start_local_model(
         let Some(path_str) = cand.local_path.as_deref() else {
             continue;
         };
-        let configured_ctx = state.config.lock().await.context_window;
+        let mut cfg_now = state.config.lock().await;
+        let mut rt = state.runtime.lock().await;
+        if rt.status().state == "external" {
+            return Ok(rt.status());
+        }
         let ram_gb = keel_core::setup::system_ram_gb();
-        let ctx_size =
-            keel_core::setup::effective_context_size(cand.context_size, configured_ctx, ram_gb);
-        let cfg_now = state.config.lock().await.clone();
+        let ctx_size = keel_core::setup::effective_context_size(
+            cand.context_size,
+            cfg_now.context_window,
+            ram_gb,
+        );
         let advice = keel_core::hardware::advise(
             &keel_core::hardware::detect_machine(),
             &cfg_now.run_where,
@@ -661,9 +667,8 @@ async fn auto_start_local_model(
             cand.bytes,
             &prepared.devices,
         );
-        let started = {
-            let mut rt = state.runtime.lock().await;
-            rt.start_model(launch_for(
+        let started = rt
+            .start_model(launch_for(
                 &cand.id,
                 Path::new(path_str),
                 ctx_size,
@@ -671,8 +676,7 @@ async fn auto_start_local_model(
                 &advice,
                 &cfg_now,
             ))
-            .await
-        };
+            .await;
         match started {
             Ok(status) => {
                 if cand.id != preferred_id {
@@ -697,12 +701,11 @@ async fn auto_start_local_model(
                         );
                     }
                 }
-                let mut cfg = state.config.lock().await;
-                cfg.selected_model_id = cand.id;
-                cfg.external_base_url = None;
-                cfg.external_model_name = None;
+                cfg_now.selected_model_id = cand.id;
+                cfg_now.external_base_url = None;
+                cfg_now.external_model_name = None;
                 let _ = keel_core::remote::clear_external_api_key(&state.data_dir);
-                save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
+                save_config(&state.config_dir, &cfg_now).map_err(|e| e.to_string())?;
                 return Ok(status);
             }
             Err(error) => {
@@ -759,9 +762,10 @@ pub async fn start_model(
         cfg_snapshot.context_window,
         ram_gb,
     );
-    let status = {
-        let mut rt = state.runtime.lock().await;
-        rt.start_model(launch_for(
+    let mut cfg = state.config.lock().await;
+    let mut rt = state.runtime.lock().await;
+    let status = rt
+        .start_model(launch_for(
             &model.id,
             Path::new(&path_str),
             ctx_size,
@@ -770,10 +774,7 @@ pub async fn start_model(
             &cfg_snapshot,
         ))
         .await
-        .map_err(|e| e.to_string())?
-    };
-
-    let mut cfg = state.config.lock().await;
+        .map_err(|e| e.to_string())?;
     cfg.selected_model_id = model.id;
     cfg.external_base_url = None;
     cfg.external_model_name = None;
@@ -812,7 +813,7 @@ pub async fn check_current_model(
         })?;
     // External endpoints may require the stored Bearer key; local keep-alive does not.
     let api_key = if status.state == "external" {
-        keel_core::remote::load_external_api_key(&state.data_dir)
+        keel_core::remote::load_external_api_key(&state.data_dir, &status.base_url)
     } else {
         None
     };
@@ -989,20 +990,23 @@ pub async fn set_external_endpoint(
     confirm_remote: Option<bool>,
     api_key: Option<String>,
 ) -> Result<RuntimeStatus, String> {
-    let confirm_remote = confirm_remote.unwrap_or(false);
-    keel_core::remote::validate_external_connect(&base_url, confirm_remote)
+    let base_url = base_url.trim().trim_end_matches('/');
+    keel_core::remote::validate_external_connect(base_url, confirm_remote.unwrap_or(false))
         .map_err(|e| e.to_string())?;
-    // None keeps any previously saved key; Some("") clears; Some(value) replaces.
+    let mut cfg = state.config.lock().await;
     let key_for_request = match api_key.as_deref().map(str::trim) {
         Some("") => None,
         Some(key) => Some(key.to_string()),
-        None => keel_core::remote::load_external_api_key(&state.data_dir),
+        None => keel_core::remote::load_external_api_key(&state.data_dir, base_url),
     };
+    if key_for_request.is_some() {
+        keel_core::remote::validate_external_key_transport(base_url).map_err(|e| e.to_string())?;
+    }
     let probed =
-        keel_core::runtime::probe_openai_models_with_auth(&base_url, key_for_request.as_deref())
+        keel_core::runtime::probe_openai_models_with_auth(base_url, key_for_request.as_deref())
             .await
             .map_err(|_| {
-                if keel_core::runtime::is_loopback_url(&base_url) {
+                if keel_core::runtime::is_loopback_url(base_url) {
                     "Couldn't connect. Make sure Ollama or LM Studio is open and running, then try again."
                         .to_string()
                 } else {
@@ -1015,29 +1019,31 @@ pub async fn set_external_endpoint(
         .or_else(|| probed.into_iter().next())
         .unwrap_or_else(|| "default".to_string());
 
-    match api_key.as_deref().map(str::trim) {
-        None => {}
-        Some("") => {
-            keel_core::remote::clear_external_api_key(&state.data_dir).map_err(|e| e.to_string())?
-        }
-        Some(key) => keel_core::remote::save_external_api_key(&state.data_dir, Some(key))
-            .map_err(|e| e.to_string())?,
-    }
-
-    let mut cfg = state.config.lock().await;
     let mut rt = state.runtime.lock().await;
-    rt.set_external_url(&base_url, Some(chosen.clone()));
+    let mut updated = cfg.clone();
+    updated.external_base_url = Some(base_url.to_string());
+    updated.external_model_name = Some(chosen.clone());
+    let previous_url = cfg.external_base_url.as_deref().unwrap_or_default();
+    let previous_key = keel_core::remote::load_external_api_key(&state.data_dir, previous_url);
+    keel_core::remote::save_external_api_key(&state.data_dir, base_url, key_for_request.as_deref())
+        .map_err(|e| e.to_string())?;
+    if let Err(error) = save_config(&state.config_dir, &updated) {
+        keel_core::remote::save_external_api_key(
+            &state.data_dir,
+            previous_url,
+            previous_key.as_deref(),
+        )
+        .map_err(|restore| format!("{error}. Could not restore the previous API key: {restore}"))?;
+        return Err(error.to_string());
+    }
+    *cfg = updated;
+    rt.set_external_url(base_url, Some(chosen));
     let status = rt.status();
-
-    cfg.external_base_url = Some(base_url.trim_end_matches('/').to_string());
-    cfg.external_model_name = Some(chosen);
-    save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
     Ok(status)
 }
 
 #[tauri::command]
 pub async fn clear_external_endpoint(state: State<'_, AppState>) -> Result<RuntimeStatus, String> {
-    let _ = keel_core::remote::clear_external_api_key(&state.data_dir);
     stop_runtime(state).await
 }
 
@@ -1465,7 +1471,7 @@ pub async fn send_message(
 
     for attempt in 0..2 {
         let external_api_key = if rt_status.state == "external" {
-            keel_core::remote::load_external_api_key(&state.data_dir)
+            keel_core::remote::load_external_api_key(&state.data_dir, &base_url)
         } else {
             None
         };

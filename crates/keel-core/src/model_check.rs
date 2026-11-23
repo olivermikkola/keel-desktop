@@ -188,6 +188,7 @@ pub async fn run_model_check_with_auth(
 ) -> Result<ModelCheckReport> {
     let started = Instant::now();
     let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(45))
         .build()
         .context("Could not start the model check")?;

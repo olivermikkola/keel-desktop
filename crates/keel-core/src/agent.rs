@@ -11,6 +11,7 @@ fn shared_http_client() -> Result<&'static reqwest::Client> {
         return Ok(c);
     }
     let built = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(10))
         .read_timeout(std::time::Duration::from_secs(180))
         .build()?;
