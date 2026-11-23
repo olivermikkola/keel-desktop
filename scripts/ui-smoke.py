@@ -21,7 +21,12 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  window.__test.calls.push({cmd,args});
  let result;
  switch(cmd) {
- case 'get_bootstrap_state': result={version:'0.1.0',config:cfg, runtime,models:[{id:'test',name:'Test local model',installed:true,damaged:false,quantization:'Q4',bytes:1000000000,detail:'Fast local model',tier:'fast'},{id:'broken-9b',name:'Damaged 9B',installed:false,damaged:true,damage_reason:'This model file is incomplete or damaged.',quantization:'Q2_0',bytes:2556640128,detail:'Balanced model',tier:'balanced'}].filter(m=>m.id!=='broken-9b'||window.__test.includeDamaged),sessions:sessions.map(s=>({...s})),projects,presets,harnesses:[{id:'keel',name:'Keel Harness'}],code_execution:window.__test.codeExecution || {can_run_commands:true,sandbox:'landlock',notice:null},mcp_servers:[]};break;
+ case 'get_bootstrap_state': result={version:'0.4.0',config:cfg, runtime,models:[{id:'test',name:'Test local model',installed:true,damaged:false,quantization:'Q4',bytes:1000000000,detail:'Fast local model',tier:'fast'},{id:'broken-9b',name:'Damaged 9B',installed:false,damaged:true,damage_reason:'This model file is incomplete or damaged.',quantization:'Q2_0',bytes:2556640128,detail:'Balanced model',tier:'balanced'}].filter(m=>m.id!=='broken-9b'||window.__test.includeDamaged),sessions:sessions.map(s=>({...s})),projects,presets,harnesses:[{id:'keel',name:'Keel Harness'}],code_execution:window.__test.codeExecution || {can_run_commands:true,sandbox:'landlock',notice:null},mcp_servers:[],ocr_available:true,system_ram_gb:16};break;
+ case 'refresh_mcp_servers': result=[];break;
+ case 'set_workspace_mcp_trust': result=[];break;
+ case 'export_html_file': result='/test/export.html';break;
+ case 'open_models_folder': result=null;break;
+ case 'import_document_from_bytes': result={id:crypto.randomUUID(),name:args.name || 'pasted.txt',kind:'txt',text:'Imported bytes',truncated:false};break;
  case 'create_session': result={id:crypto.randomUUID(),title:'New '+args.preset+' chat',app_preset:args.preset,workspace_path:args.workspacePath,project_id:args.projectId || null,pinned:false,messages:[],staged_edits:[],updated_at:Date.now()/1000};sessions.unshift(result);break;
  case 'load_session_cmd':result=sessions.find(s=>s.id===args.id);break;
  case 'list_workspace_files_cmd':result=files;break;
@@ -223,9 +228,13 @@ async def main(port):
         await page.locator('#model-switcher-menu').get_by_text('ON THIS COMPUTER', exact=False).wait_for()
         await page.keyboard.press('Escape')
         await page.locator('#model-switcher-menu').wait_for(state='hidden')
-        # Settings hides developer options (llama-server / Code engine) by default.
+        # Settings hides developer options (llama-server / Code engine) by default and supports Paper light theme.
         await page.locator('#open-customize-btn').click()
         assert await page.locator('#cust-llama').is_hidden()
+        await page.locator('[data-tone-pick="paper"]').click()
+        assert await page.evaluate("document.documentElement.dataset.tone === 'paper'")
+        await page.locator('[data-tone-pick="ink"]').click()
+        assert await page.evaluate("document.documentElement.dataset.tone === 'ink'")
         await page.locator('#modal-close-btn').click()
         await page.locator('#prompt-input').fill('Hello Keel')
         await page.locator('#send-btn').click()
@@ -332,6 +341,9 @@ async def main(port):
         await page.locator('[data-view=library]').click()
         await page.locator('.library-card').first.wait_for()
         await page.screenshot(path=str(OUTPUT / 'library.png'))
+        await page.locator('[data-view=connectors]').click()
+        await page.locator('#conn-pick-ws').wait_for()
+        await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='refresh_mcp_servers')")
         await page.locator('[data-view=models]').click()
         models_text = await page.locator('#view-models').inner_text()
         for jargon in ('GGUF', 'Q4', 'Q2_0', 'OpenAI', 'llama-server'):

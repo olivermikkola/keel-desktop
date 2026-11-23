@@ -1,11 +1,11 @@
-# Everyday assistant candidate — 0.2.0
+# Everyday assistant candidate — 0.4.0
 
 The target is an assistant a person can use for recurring writing, document, data, and coding work without managing model-server commands. This milestone makes those workflows concrete. It does not establish parity with Claude Pro, or justify a blanket recommendation to cancel a subscription.
 
 ## Ready for testing
 
-- Guided local setup: a recommendation based on total RAM, a pinned/checksummed model-runner package, model download/verification, and managed startup. An existing compatible server can be connected instead. The bundled packages cover macOS Intel/Apple Silicon, Windows CPU x64/ARM64, and Linux x64/ARM64; runtime compatibility and performance still depend on the user's hardware and operating system.
-- Chat with attachments: pure-Rust PDF/DOCX extraction, text/CSV/code import, source inspection, and source context retained for follow-up questions. Files are limited to 20 MB and extracted text to 300,000 characters. Scanned PDFs need OCR. The model receives bounded excerpts when full source text will not fit; the prompt labels those excerpts explicitly.
+- Guided local setup: a recommendation based on total RAM, a pinned/checksummed model-runner package, model download/verification, RAM-aware configurable context window, and managed startup. An existing compatible server can be connected instead. The bundled packages cover macOS Intel/Apple Silicon, Windows CPU x64/ARM64, and Linux x64/ARM64; runtime compatibility and performance still depend on the user's hardware and operating system.
+- Chat with attachments: drag-and-drop, clipboard image paste, or file picker import for pure-Rust PDF/DOCX extraction, text/CSV/code import, offline image text extraction via local Tesseract OCR, source inspection, and source context retained for follow-up questions. Files are limited to 20 MB and extracted text to 300,000 characters. Scanned PDFs need OCR. Image attachments currently use OCR text extraction rather than native multimodal vision. The model receives bounded excerpts when full source text will not fit; the prompt labels those excerpts explicitly.
 - Projects: instructions, reusable reference documents, optional working folders, and related conversations. Project documents are not added to unrelated conversations.
 - User-controlled preferences: explicit “Remember that …” requests or edits in Saved preferences. These are included in future model context and can be edited or cleared locally. This does not guarantee every model will obey them.
 - Conversation management: content/title search, rename, pin, export Markdown, fork-before-edit, retry text-only answers, draft retention, and delete/undo. Deleted conversations move to the app's local trash directory; undo restores them. They are not securely erased by deletion.
