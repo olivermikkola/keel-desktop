@@ -5,8 +5,7 @@ use keel_core::apps::{AppPreset, AppPresetInfo};
 use keel_core::audio::{self, AudioArtifact, AudioPackManifest};
 use keel_core::harnesses::{
     code_execution_boundary, detect_harnesses, recommended_code_harness, run_external_harness,
-    run_keel_cli_turn, validate_keel_session_log, CodeExecutionBoundary, HarnessOption,
-    KeelCliTurn,
+    run_keel_cli_turn, CodeExecutionBoundary, HarnessOption, KeelCliTurn,
 };
 use keel_core::mcp::{
     inspect_mcp_servers_with_trust, load_global_mcp_config, load_mcp_configs_with_trust,
@@ -302,48 +301,15 @@ pub async fn import_keel_session(
     let Some(file) = selected else {
         return Ok(None);
     };
-    let path = file
-        .into_path()
-        .map_err(|error| error.to_string())?
-        .canonicalize()
+    let path = file.into_path().map_err(|error| error.to_string())?;
+    let session = keel_core::harnesses::chat_session_from_keel_journal(&path, &root)
         .map_err(|error| error.to_string())?;
-    let messages =
-        keel_core::harnesses::read_keel_session(&path).map_err(|error| error.to_string())?;
-    let title = messages
-        .iter()
-        .find(|message| message.role == "user")
-        .map(|message| message.content.chars().take(48).collect())
-        .unwrap_or_else(|| "Keel CLI session".to_string());
-    let session = ChatSession {
-        id: uuid::Uuid::new_v4().to_string(),
-        title,
-        project_id: None,
-        pinned: false,
-        app_preset: AppPreset::Code,
-        workspace_path: Some(root.to_string_lossy().into_owned()),
-        keel_session_log: Some(path),
-        code_checkout: None,
-        applied_code_patch: None,
-        last_code_test: None,
-        messages,
-        staged_edits: Vec::new(),
-        updated_at: now_epoch(),
-    };
     save_session(&state.data_dir, &session).map_err(|error| error.to_string())?;
     Ok(Some(session))
 }
 
 fn session_keel_log(session: &ChatSession) -> Result<PathBuf, String> {
-    if session.app_preset != AppPreset::Code {
-        return Err("Journal handoff is only available for Code sessions.".into());
-    }
-    let Some(log) = session.keel_session_log.as_ref() else {
-        return Err(
-            "This Code thread has no Keel CLI journal yet. Start a turn with Engine for Code mode set to Keel CLI, or use Open CLI session to import one."
-                .into(),
-        );
-    };
-    validate_keel_session_log(log).map_err(|e| e.to_string())
+    keel_core::harnesses::require_code_session_journal(session).map_err(|e| e.to_string())
 }
 
 /// Reveal the Code session's Keel CLI journal in the system file manager.
