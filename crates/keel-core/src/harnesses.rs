@@ -230,9 +230,24 @@ pub fn default_keel_sessions_dir() -> Option<std::path::PathBuf> {
     sessions.is_dir().then_some(sessions)
 }
 
+/// Home used for Keel CLI journal paths.
+///
+/// Prefers `KEEL_HOME` when set (tests / portable layouts). Falls back to
+/// `dirs::home_dir()` — on Windows that uses the Known Folder API and does
+/// **not** honor `USERPROFILE`/`HOME` overrides.
+fn keel_home_dir() -> Option<std::path::PathBuf> {
+    if let Some(override_home) = std::env::var_os("KEEL_HOME") {
+        let path = std::path::PathBuf::from(override_home);
+        if !path.as_os_str().is_empty() {
+            return Some(path);
+        }
+    }
+    dirs::home_dir()
+}
+
 /// Path of the Keel CLI journal folder (`~/.keel/sessions`), whether or not it exists yet.
 pub fn keel_sessions_dir() -> Option<std::path::PathBuf> {
-    Some(dirs::home_dir()?.join(".keel").join("sessions"))
+    Some(keel_home_dir()?.join(".keel").join("sessions"))
 }
 
 /// Create `~/.keel/sessions` if needed so Desktop can export a journal for the CLI.
@@ -1380,23 +1395,17 @@ mod tests {
         let validated = validate_keel_session_log(&source).unwrap();
         assert_eq!(validated, source.canonicalize().unwrap());
 
-        // Point home at a temp tree so export does not touch the real ~/.keel.
-        // `dirs::home_dir` reads HOME on Unix and USERPROFILE on Windows.
+        // Point Keel home at a temp tree so export does not touch the real ~/.keel.
+        // (dirs::home_dir on Windows uses Known Folder APIs; KEEL_HOME is the override.)
         let fake_home = dir.join("home");
         std::fs::create_dir_all(&fake_home).unwrap();
-        let prev_home = std::env::var_os("HOME");
-        let prev_profile = std::env::var_os("USERPROFILE");
-        std::env::set_var("HOME", &fake_home);
-        std::env::set_var("USERPROFILE", &fake_home);
+        let prev_keel_home = std::env::var_os("KEEL_HOME");
+        std::env::set_var("KEEL_HOME", &fake_home);
         let exported =
             export_keel_session_log(&source, "sess-1", "My Thread").expect("export should succeed");
-        match prev_home {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
-        }
-        match prev_profile {
-            Some(value) => std::env::set_var("USERPROFILE", value),
-            None => std::env::remove_var("USERPROFILE"),
+        match prev_keel_home {
+            Some(value) => std::env::set_var("KEEL_HOME", value),
+            None => std::env::remove_var("KEEL_HOME"),
         }
         assert!(
             exported.starts_with(fake_home.join(".keel").join("sessions")),
