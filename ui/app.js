@@ -1099,7 +1099,7 @@ function renderChat() {
         ? '<button class="btn btn-ghost" id="empty-reveal-cli-journal">Show journal</button><button class="btn btn-ghost" id="empty-export-cli-journal">Export journal</button>'
         : "";
     const boundaryNotice =
-      preset.id === "code" && b.code_execution && !b.code_execution.can_run_commands && b.code_execution.notice
+      preset.id === "code" && b.code_execution?.notice
         ? `<p id="code-boundary-notice" class="empty-status" role="status">${escapeHtml(b.code_execution.notice)}</p>`
         : "";
     const heading = preset.id === "chat" && !project ? "What can I help with?" : preset.title;
