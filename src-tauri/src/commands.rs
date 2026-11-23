@@ -2375,10 +2375,7 @@ pub async fn download_audio_pack(
 
 /// Remove an installed audio pack directory.
 #[tauri::command]
-pub async fn remove_audio_pack(
-    state: State<'_, AppState>,
-    pack_id: String,
-) -> Result<(), String> {
+pub async fn remove_audio_pack(state: State<'_, AppState>, pack_id: String) -> Result<(), String> {
     let _download = state
         .download_lock
         .try_lock()
