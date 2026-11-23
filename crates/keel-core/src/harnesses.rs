@@ -72,27 +72,41 @@ pub fn code_execution_boundary_for(
 }
 
 /// Lists built-in Keel Harness plus any installed external CLI coding agents.
+///
+/// When the standalone `keel` binary is on PATH, **Keel CLI** is listed
+/// immediately after the built-in harness and marked as the recommended Code
+/// engine (canonical vision: one coding engine).
 pub fn detect_harnesses() -> Vec<HarnessOption> {
     let mut list = vec![HarnessOption {
         id: "keel".to_string(),
         name: "Keel Harness".to_string(),
         description:
-            "Built-in small-model engine with staged diffs, SQLite/CSV sandbox, and stdio MCP"
+            "Built-in small-model engine with staged diffs, SQLite/CSV sandbox, and stdio MCP. Default until the Keel CLI is installed."
                 .to_string(),
         available: true,
         binary_path: None,
     }];
 
-    let externals = [
+    let keel_bin = find_on_path("keel");
+    list.push(HarnessOption {
+        id: "keel-cli".to_string(),
+        name: "Keel CLI".to_string(),
+        description: if keel_bin.is_some() {
+            "Recommended for Code. Streams tools, requests approvals in the app, and resumes the same JSONL journal in the terminal."
+                .to_string()
+        } else {
+            "Canonical coding engine. Install the `keel` CLI on PATH to use it from Code."
+                .to_string()
+        },
+        available: keel_bin.is_some(),
+        binary_path: keel_bin.map(|p| p.to_string_lossy().to_string()),
+    });
+
+    let others = [
         (
             "opencode",
             "OpenCode",
             "Route workspace prompts through the installed `opencode` CLI",
-        ),
-        (
-            "keel-cli",
-            "Keel CLI",
-            "Route workspace prompts through the standalone `keel` CLI binary",
         ),
         (
             "claude",
@@ -101,11 +115,8 @@ pub fn detect_harnesses() -> Vec<HarnessOption> {
         ),
     ];
 
-    for (id, name, desc) in externals {
-        let bin = match id {
-            "keel-cli" => find_on_path("keel"),
-            other => find_on_path(other),
-        };
+    for (id, name, desc) in others {
+        let bin = find_on_path(id);
         list.push(HarnessOption {
             id: id.to_string(),
             name: name.to_string(),
@@ -116,6 +127,15 @@ pub fn detect_harnesses() -> Vec<HarnessOption> {
     }
 
     list
+}
+
+/// Prefer the Keel CLI for Code when it is installed; otherwise the built-in harness.
+pub fn recommended_code_harness(harnesses: &[HarnessOption]) -> &'static str {
+    if harnesses.iter().any(|h| h.id == "keel-cli" && h.available) {
+        "keel-cli"
+    } else {
+        "keel"
+    }
 }
 
 fn find_on_path(bin: &str) -> Option<PathBuf> {
@@ -211,7 +231,7 @@ pub fn read_keel_session(path: &Path) -> Result<Vec<UiMessage>> {
     Ok(messages)
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum KeelEvent {
     Capabilities {
@@ -249,6 +269,43 @@ enum KeelEvent {
     },
     #[serde(other)]
     Other,
+}
+
+fn parse_keel_event_line(line: &[u8]) -> Result<KeelEvent> {
+    serde_json::from_slice(line).context("Invalid event from the Keel CLI")
+}
+
+fn keel_capabilities_ready(event: &KeelEvent) -> Result<bool> {
+    match event {
+        KeelEvent::Capabilities {
+            approval_protocol,
+            stop_protocol,
+            sandbox,
+        } if approval_protocol == "stdio-line-v1"
+            && stop_protocol.as_deref() == Some("sigint-shell-v1") =>
+        {
+            if cfg!(target_os = "macos") && sandbox.as_deref() != Some("seatbelt") {
+                bail!("Update Keel CLI. This Mac build requires Seatbelt command confinement before running Code commands.");
+            }
+            Ok(true)
+        }
+        KeelEvent::Done {
+            error: Some(error), ..
+        } => bail!("{error}"),
+        _ => bail!(
+            "Update Keel CLI. This version does not advertise interactive approvals and command cancellation"
+        ),
+    }
+}
+
+fn approval_stdin_line(decision: ApprovalDecision) -> &'static [u8] {
+    // Keep CLI approvals per call. Desktop never grants an entire tool class
+    // through the stdio-line-v1 protocol (AllowAlways still maps to one allow).
+    if decision == ApprovalDecision::Deny {
+        b"deny\n"
+    } else {
+        b"allow\n"
+    }
 }
 
 /// Run the canonical CLI once against its original session log. Closing stdin
@@ -378,26 +435,12 @@ where
         if size as u64 > MAX_EVENT_BYTES {
             bail!("Keel CLI event exceeded the size limit");
         }
-        let event: KeelEvent =
-            serde_json::from_slice(&line).context("Invalid event from the Keel CLI")?;
+        let event = parse_keel_event_line(&line)?;
         if !ready {
-            match event {
-                KeelEvent::Capabilities {
-                    approval_protocol,
-                    stop_protocol,
-                    sandbox,
-                } if approval_protocol == "stdio-line-v1"
-                    && stop_protocol.as_deref() == Some("sigint-shell-v1") =>
-                {
-                    if cfg!(target_os = "macos") && sandbox.as_deref() != Some("seatbelt") {
-                        bail!("Update Keel CLI. This Mac build requires Seatbelt command confinement before running Code commands.");
-                    }
-                    ready = true;
-                    continue;
-                }
-                KeelEvent::Done { error: Some(error), .. } => bail!("{error}"),
-                _ => bail!("Update Keel CLI. This version does not advertise interactive approvals and command cancellation"),
+            if keel_capabilities_ready(&event)? {
+                ready = true;
             }
+            continue;
         }
         match event {
             KeelEvent::Text { content } => emit(AgentEvent::ContentDelta { text: content }),
@@ -441,13 +484,7 @@ where
                     .unwrap_or_default();
                 let summary = format!("{tool} {detail}");
                 let decision = approve(id, tool, summary, arguments).await;
-                // Keep CLI approvals per call. Desktop never grants an entire tool class.
-                let line = if decision == ApprovalDecision::Deny {
-                    b"deny\n".as_slice()
-                } else {
-                    b"allow\n".as_slice()
-                };
-                stdin.write_all(line).await?;
+                stdin.write_all(approval_stdin_line(decision)).await?;
                 stdin.flush().await?;
                 if decision == ApprovalDecision::Deny {
                     if let Some(name) = tools.remove(&tool_call_id) {
@@ -587,11 +624,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn always_includes_builtin_keel_harness() {
+    fn always_includes_builtin_then_keel_cli_option() {
         let list = detect_harnesses();
-        assert!(!list.is_empty());
+        assert!(list.len() >= 2);
         assert_eq!(list[0].id, "keel");
         assert!(list[0].available);
+        assert_eq!(list[1].id, "keel-cli");
+    }
+
+    #[test]
+    fn recommends_keel_cli_only_when_installed() {
+        let without = vec![HarnessOption {
+            id: "keel".into(),
+            name: "Keel Harness".into(),
+            description: String::new(),
+            available: true,
+            binary_path: None,
+        }];
+        assert_eq!(recommended_code_harness(&without), "keel");
+
+        let with_cli = vec![
+            without[0].clone(),
+            HarnessOption {
+                id: "keel-cli".into(),
+                name: "Keel CLI".into(),
+                description: String::new(),
+                available: true,
+                binary_path: Some("/usr/bin/keel".into()),
+            },
+        ];
+        assert_eq!(recommended_code_harness(&with_cli), "keel-cli");
     }
 
     #[test]
@@ -615,5 +677,55 @@ mod tests {
         let linux = code_execution_boundary_for("linux", false, false);
         assert!(linux.can_run_commands);
         assert_eq!(linux.sandbox, "landlock");
+    }
+
+    #[test]
+    fn parses_streaming_cli_events_and_capabilities() {
+        let sandbox = if cfg!(target_os = "macos") {
+            "seatbelt"
+        } else {
+            "landlock"
+        };
+        let caps_line = format!(
+            r#"{{"type":"capabilities","approval_protocol":"stdio-line-v1","stop_protocol":"sigint-shell-v1","sandbox":"{sandbox}"}}"#
+        );
+        let caps = parse_keel_event_line(caps_line.as_bytes()).unwrap();
+        assert!(keel_capabilities_ready(&caps).unwrap());
+
+        let text = parse_keel_event_line(br#"{"type":"text","content":"hi"}"#).unwrap();
+        assert_eq!(
+            text,
+            KeelEvent::Text {
+                content: "hi".into()
+            }
+        );
+
+        let tool = parse_keel_event_line(
+            br#"{"type":"tool_call","id":"1","name":"run_shell","arguments":{"command":"ls"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(tool, KeelEvent::ToolCall { name, .. } if name == "run_shell"));
+
+        let done =
+            parse_keel_event_line(br#"{"type":"done","status":"ok","answer":"done","error":null}"#)
+                .unwrap();
+        assert!(matches!(done, KeelEvent::Done { status, .. } if status == "ok"));
+    }
+
+    #[test]
+    fn rejects_cli_without_interactive_approval_protocol() {
+        let bad = parse_keel_event_line(br#"{"type":"text","content":"too soon"}"#).unwrap();
+        let err = keel_capabilities_ready(&bad).unwrap_err().to_string();
+        assert!(err.contains("Update Keel CLI"));
+    }
+
+    #[test]
+    fn maps_approval_decisions_to_stdio_lines() {
+        assert_eq!(approval_stdin_line(ApprovalDecision::AllowOnce), b"allow\n");
+        assert_eq!(
+            approval_stdin_line(ApprovalDecision::AllowAlways),
+            b"allow\n"
+        );
+        assert_eq!(approval_stdin_line(ApprovalDecision::Deny), b"deny\n");
     }
 }

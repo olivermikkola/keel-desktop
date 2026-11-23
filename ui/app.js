@@ -2496,12 +2496,20 @@ function openCustomizeModal() {
     });
     body.appendChild(appearanceCard);
 
+    const recommendedHarness = b.recommended_code_harness || "keel";
     const harnessOptions = b.harnesses
-      .map(
-        (h) =>
-          `<option value="${escapeHtml(h.id)}" ${h.id === b.config.harness_mode ? "selected" : ""}>${escapeHtml(h.name)}${h.available ? "" : " (not installed)"}</option>`,
-      )
+      .map((h) => {
+        const recommended = h.id === recommendedHarness && h.available ? " — recommended" : "";
+        const missing = h.available ? "" : " (not installed)";
+        return `<option value="${escapeHtml(h.id)}" ${h.id === b.config.harness_mode ? "selected" : ""}>${escapeHtml(h.name)}${recommended}${missing}</option>`;
+      })
       .join("");
+    const harnessHint =
+      recommendedHarness === "keel-cli" && b.config.harness_mode !== "keel-cli"
+        ? `<p class="muted">The Keel CLI is installed. Prefer it for Code so Desktop and the terminal share one session journal.</p>`
+        : recommendedHarness === "keel-cli"
+          ? `<p class="muted">Code uses the Keel CLI. Finish the current turn before resuming the same journal in a terminal.</p>`
+          : `<p class="muted">Install the Keel CLI on PATH to make it the recommended Code engine.</p>`;
     const card = document.createElement("div");
     card.className = "card";
     card.innerHTML = `
@@ -2520,6 +2528,7 @@ function openCustomizeModal() {
           </select>
           <label><strong>Engine for Code mode</strong></label>
           <select id="cust-harness" class="select-field">${harnessOptions}</select>
+          ${harnessHint}
           <label><strong>Custom local engine path</strong></label>
           <input id="cust-llama" class="input mono" value="${escapeHtml(b.config.llama_server_path || "")}" placeholder="Leave blank to use Keel's built-in engine" />
         </div>
