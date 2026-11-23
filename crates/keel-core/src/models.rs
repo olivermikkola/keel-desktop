@@ -165,6 +165,16 @@ pub fn parse_huggingface_gguf_url(raw: &str) -> Result<(String, String, String, 
     }
     let repo = format!("{}/{}", parts[0], parts[1]);
     let revision = parts[3].to_string();
+    for seg in &parts[4..] {
+        if *seg == "."
+            || *seg == ".."
+            || seg.contains('\\')
+            || seg.contains(':')
+            || seg.chars().any(|c| c.is_control())
+        {
+            bail!("URL contains an invalid file path segment");
+        }
+    }
     let file_path = parts[4..].join("/");
     let file_name = parts.last().unwrap().to_string();
     if !file_name.to_ascii_lowercase().ends_with(".gguf") {
@@ -172,6 +182,19 @@ pub fn parse_huggingface_gguf_url(raw: &str) -> Result<(String, String, String, 
     }
     let resolve_url = format!("https://huggingface.co/{repo}/resolve/{revision}/{file_path}");
     Ok((repo, revision, file_name, resolve_url))
+}
+
+/// Returns an error if a custom download filename would overwrite a built-in catalog model.
+pub fn ensure_non_catalog_filename(file_name: &str) -> Result<()> {
+    if default_catalog()
+        .iter()
+        .any(|m| m.file_name.eq_ignore_ascii_case(file_name))
+    {
+        bail!(
+            "That filename belongs to a built-in catalog model. Download it from the Models list instead."
+        );
+    }
+    Ok(())
 }
 
 /// Fast integrity check for a local model file: verifies the GGUF header and,
@@ -682,5 +705,19 @@ mod tests {
         assert!(!order.contains(&"bonsai-9b".to_string()));
         assert_eq!(order.last().map(String::as_str), Some("bonsai-27b"));
         assert_eq!(order.first().map(String::as_str), Some("lfm3-1.7b"));
+    }
+
+    #[test]
+    fn rejects_traversal_and_catalog_collisions_in_hf_urls() {
+        assert!(parse_huggingface_gguf_url(
+            "https://huggingface.co/owner/repo/resolve/main/..\\evil.gguf"
+        )
+        .is_err());
+        assert!(parse_huggingface_gguf_url(
+            "https://huggingface.co/owner/repo/resolve/main/../evil.gguf"
+        )
+        .is_err());
+        assert!(ensure_non_catalog_filename("Ternary-Bonsai-2-4B-Q2_0.gguf").is_err());
+        assert!(ensure_non_catalog_filename("my-custom-model.gguf").is_ok());
     }
 }

@@ -167,6 +167,15 @@ fn main() {
         if let RunEvent::Exit = event {
             if let Ok(mut rt) = runtime_for_exit.try_lock() {
                 rt.stop_sync();
+            } else {
+                let rt_arc = runtime_for_exit.clone();
+                tauri::async_runtime::block_on(async move {
+                    if let Ok(mut rt) =
+                        tokio::time::timeout(std::time::Duration::from_secs(2), rt_arc.lock()).await
+                    {
+                        rt.stop().await;
+                    }
+                });
             }
         }
     });

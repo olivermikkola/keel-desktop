@@ -140,6 +140,10 @@ impl CircuitBreaker {
 
     pub fn record_failure(&mut self) -> bool {
         self.consecutive_failures += 1;
+        self.is_tripped()
+    }
+
+    pub fn is_tripped(&self) -> bool {
         self.consecutive_failures >= self.max_consecutive_failures
     }
 }
@@ -181,6 +185,10 @@ mod tests {
         assert!(!cb.record_failure());
         assert!(!cb.record_failure());
         assert!(!cb.record_failure());
+        assert!(!cb.is_tripped());
         assert!(cb.record_failure());
+        assert!(cb.is_tripped());
+        cb.record_success();
+        assert!(!cb.is_tripped());
     }
 }

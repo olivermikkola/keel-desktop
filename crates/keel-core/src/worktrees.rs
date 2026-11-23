@@ -200,6 +200,7 @@ impl CodeCheckout {
             if self.isolated.exists() {
                 let _ = std::fs::remove_dir_all(&self.isolated);
             }
+            let _ = run(&self.original, ["worktree", "prune"]);
         }
         Ok(())
     }
@@ -308,12 +309,19 @@ fn apply_patch(folder: &Path, patch: &str, reverse: bool) -> Result<()> {
             .stderr(Stdio::piped())
             .spawn()
             .context("Could not start Git apply")?;
-        let written = child
-            .stdin
-            .take()
-            .context("Cannot send patch to Git")?
-            .write_all(patch.as_bytes());
-        checked(child.wait_with_output()?)?;
+        let mut stdin = child.stdin.take().context("Cannot send patch to Git")?;
+        let patch_bytes = patch.as_bytes();
+        let (written, output) = std::thread::scope(|s| {
+            let writer = s.spawn(move || {
+                let res = stdin.write_all(patch_bytes);
+                drop(stdin);
+                res
+            });
+            let output = child.wait_with_output();
+            let written = writer.join().unwrap_or(Ok(()));
+            (written, output)
+        });
+        checked(output?)?;
         written?;
     }
     Ok(())

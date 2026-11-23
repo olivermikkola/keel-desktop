@@ -196,10 +196,11 @@ pub async fn read_workspace_file_raw(
 ) -> Result<String, String> {
     let root = Path::new(&workspace_path);
     let target = keel_core::tools::confine_path(root, &rel_path).map_err(|e| e.to_string())?;
-    let bytes = std::fs::read(&target).map_err(|e| e.to_string())?;
-    if bytes.len() > 1024 * 1024 {
+    let meta = std::fs::metadata(&target).map_err(|e| e.to_string())?;
+    if meta.len() > 1024 * 1024 {
         return Err("File is larger than 1 MB preview limit".to_string());
     }
+    let bytes = std::fs::read(&target).map_err(|e| e.to_string())?;
     Ok(String::from_utf8_lossy(&bytes).to_string())
 }
 
@@ -305,6 +306,11 @@ pub async fn delete_session_cmd(
         .turn_lock
         .try_lock()
         .map_err(|_| "Wait for the current reply to finish before changing this thread")?;
+    if let Ok(session) = load_session(&state.data_dir, &id) {
+        if let Some(checkout) = session.code_checkout {
+            let _ = tokio::task::spawn_blocking(move || checkout.remove()).await;
+        }
+    }
     delete_session(&state.data_dir, &id).map_err(|e| e.to_string())?;
     Ok(list_sessions(&state.data_dir))
 }
@@ -417,17 +423,17 @@ async fn auto_start_local_model(
         let Some(path_str) = cand.local_path.as_deref() else {
             continue;
         };
-        let mut cfg = state.config.lock().await;
-        let mut rt = state.runtime.lock().await;
-        match rt
-            .start_model(
+        let started = {
+            let mut rt = state.runtime.lock().await;
+            rt.start_model(
                 &cand.id,
                 Path::new(path_str),
                 cand.context_size.min(8192),
                 Some(&engine_str),
             )
             .await
-        {
+        };
+        match started {
             Ok(status) => {
                 if cand.id != preferred_id {
                     if let Some(prev) = preferred
@@ -451,6 +457,7 @@ async fn auto_start_local_model(
                         );
                     }
                 }
+                let mut cfg = state.config.lock().await;
                 cfg.selected_model_id = cand.id;
                 cfg.external_base_url = None;
                 cfg.external_model_name = None;
@@ -498,18 +505,19 @@ pub async fn start_model(
     let engine = resolve_or_install_engine(&app, &state).await?;
     let engine_str = engine.to_string_lossy().into_owned();
 
-    let mut cfg = state.config.lock().await;
-    let mut rt = state.runtime.lock().await;
-    let status = rt
-        .start_model(
+    let status = {
+        let mut rt = state.runtime.lock().await;
+        rt.start_model(
             &model.id,
             Path::new(&path_str),
             model.context_size.min(8192),
             Some(&engine_str),
         )
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+    };
 
+    let mut cfg = state.config.lock().await;
     cfg.selected_model_id = model.id;
     cfg.external_base_url = None;
     cfg.external_model_name = None;
@@ -543,6 +551,12 @@ pub async fn set_external_endpoint(
     base_url: String,
     model_name: Option<String>,
 ) -> Result<RuntimeStatus, String> {
+    if keel_core::runtime::is_default_managed_loopback(&base_url) {
+        return Err(
+            "That address is Keel's own built-in AI engine. Pick a downloaded model in Models instead, or connect Ollama (11434) or LM Studio (1234)."
+                .to_string(),
+        );
+    }
     let probed = probe_openai_models(&base_url).await.map_err(|_| {
         "Couldn't connect. Make sure Ollama or LM Studio is open and running, then try again."
             .to_string()
@@ -604,6 +618,14 @@ pub async fn delete_model(
     state: State<'_, AppState>,
     model_id: String,
 ) -> Result<Vec<CatalogModel>, String> {
+    let _download = state
+        .download_lock
+        .try_lock()
+        .map_err(|_| "Wait for the current download to finish before removing a model")?;
+    let _turn = state
+        .turn_lock
+        .try_lock()
+        .map_err(|_| "Wait for the current reply to finish before removing a model")?;
     let mut cfg = state.config.lock().await;
     let mut rt = state.runtime.lock().await;
     if rt.active_model_id.as_deref() == Some(model_id.as_str()) && rt.is_managed() {
@@ -648,6 +670,7 @@ pub async fn download_huggingface_gguf(
         .map_err(|_| "Another download is running")?;
     let (_repo, _rev, file_name, resolve_url) =
         parse_huggingface_gguf_url(&url).map_err(|e| e.to_string())?;
+    keel_core::models::ensure_non_catalog_filename(&file_name).map_err(|e| e.to_string())?;
     let dest = models_dir(&state.data_dir).join(&file_name);
     let id = format!("local:{file_name}");
 
@@ -810,22 +833,39 @@ pub async fn send_message(
 
     // External harnesses are explicitly a Code capability; Chat never runs them.
     if use_external_harness {
-        let ws = session
-            .workspace_path
-            .as_deref()
-            .map(PathBuf::from)
-            .ok_or_else(|| {
-                "Select a workspace folder before using an external CLI harness".to_string()
-            })?;
-        let text = run_external_harness(
-            &cfg.harness_mode,
-            &ws,
-            &input.prompt,
-            Some(&rt_status.base_url),
-            rt_status.active_model_id.as_deref(),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+        let ws = session.active_workspace().ok_or_else(|| {
+            "Select a workspace folder before using an external CLI harness".to_string()
+        })?;
+        let harness_mode = cfg.harness_mode.clone();
+        let prompt_owned = input.prompt.clone();
+        let base_url = rt_status.base_url.clone();
+        let model_id = rt_status.active_model_id.clone();
+        let handle = tokio::spawn(async move {
+            run_external_harness(
+                &harness_mode,
+                &ws,
+                &prompt_owned,
+                Some(&base_url),
+                model_id.as_deref(),
+            )
+            .await
+        });
+        {
+            let mut abort_slot = state.active_abort.lock().await;
+            *abort_slot = Some(handle.abort_handle());
+        }
+        let run_res = handle.await;
+        {
+            let mut abort_slot = state.active_abort.lock().await;
+            *abort_slot = None;
+        }
+        let text = match run_res {
+            Ok(Ok(text)) => text,
+            Ok(Err(e)) => return Err(e.to_string()),
+            Err(_) => {
+                return Err("Stopped external harness run.".to_string());
+            }
+        };
 
         session.messages.push(UiMessage {
             id: uuid::Uuid::new_v4().to_string(),
@@ -1195,6 +1235,7 @@ pub async fn apply_staged_edit_cmd(
         .ok_or_else(|| "Staged edit not found".to_string())?;
 
     apply_staged_edit(&root, edit).map_err(|e| e.to_string())?;
+    session.last_code_test = None;
     session.updated_at = now_epoch();
     save_session(&state.data_dir, &session).map_err(|e| e.to_string())?;
     Ok(session)
@@ -1236,13 +1277,27 @@ pub async fn apply_all_staged_edits(
         .active_workspace()
         .ok_or_else(|| "No workspace folder selected".to_string())?;
 
+    let mut applied_any = false;
+    let mut first_err: Option<String> = None;
     for edit in &mut session.staged_edits {
         if edit.status == StagedEditStatus::Pending {
-            apply_staged_edit(&root, edit).map_err(|e| e.to_string())?;
+            match apply_staged_edit(&root, edit) {
+                Ok(()) => applied_any = true,
+                Err(e) => {
+                    first_err = Some(e.to_string());
+                    break;
+                }
+            }
         }
     }
-    session.updated_at = now_epoch();
-    save_session(&state.data_dir, &session).map_err(|e| e.to_string())?;
+    if applied_any {
+        session.last_code_test = None;
+        session.updated_at = now_epoch();
+        save_session(&state.data_dir, &session).map_err(|e| e.to_string())?;
+    }
+    if let Some(err) = first_err {
+        return Err(err);
+    }
     Ok(session)
 }
 
@@ -1519,6 +1574,10 @@ pub async fn review_code_worktree(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<keel_core::worktrees::CodePatch, String> {
+    let _guard = state
+        .turn_lock
+        .try_lock()
+        .map_err(|_| "Wait for the current reply to finish before reviewing changes")?;
     let session = load_session(&state.data_dir, &session_id).map_err(|e| e.to_string())?;
     let checkout = session
         .code_checkout
@@ -1650,7 +1709,7 @@ pub async fn inspect_publish_status(
 pub async fn publish_code_changes(
     state: State<'_, AppState>,
     session_id: String,
-    plan: keel_core::publish::PublishPlan,
+    mut plan: keel_core::publish::PublishPlan,
     test_passed: Option<bool>,
 ) -> Result<keel_core::publish::PublishResult, String> {
     let _guard = state
@@ -1661,8 +1720,19 @@ pub async fn publish_code_changes(
     let folder = session
         .workspace_path
         .ok_or_else(|| "Choose a Git repository folder first".to_string())?;
+    // Enforce server-recorded test status rather than trusting a stale client flag.
+    let effective_test_passed = match (&session.last_code_test, &session.code_checkout) {
+        (Some(result), _) => Some(result.passed),
+        (None, Some(_)) => None,
+        (None, None) => test_passed,
+    };
+    if plan.files.is_empty() {
+        if let Some(ref applied) = session.applied_code_patch {
+            plan.files = applied.paths.clone();
+        }
+    }
     tokio::task::spawn_blocking(move || {
-        keel_core::publish::publish_changes(Path::new(&folder), &plan, test_passed)
+        keel_core::publish::publish_changes(Path::new(&folder), &plan, effective_test_passed)
     })
     .await
     .map_err(|e| e.to_string())?
