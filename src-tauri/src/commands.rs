@@ -540,7 +540,8 @@ fn launch_for<'a>(
 
 /// Keeps the managed runner when the model and the graphics-or-processor choice
 /// have not changed. The next message does not pay for another load.
-/// Pack starts should call [`prepare_pack_vram`] first so keep-alive can yield.
+/// Pack starts should call [`prepare_pack_vram`] first so a VRAM-hungry pack can
+/// stop this keep-alive via `plan_pack_vram` / `should_stop_keep_alive_for_pack`.
 async fn loaded_model_can_stay(state: &AppState) -> Option<RuntimeStatus> {
     let cfg = state.config.lock().await.clone();
     if cfg.external_base_url.is_some() {
@@ -851,18 +852,24 @@ pub async fn prepare_pack_vram(
         Some(raw) => keel_core::packs::parse_runner_kind(raw)?,
         None => keel_core::packs::RunnerKind::Text,
     };
-    let pack = keel_core::packs::PackManifest::new(capability_id, min_vram_mib, kind);
+    let pack = keel_core::packs::PackManifest::new(capability_id.trim(), min_vram_mib, kind);
     let inventory = fresh_vram_inventory(&state);
 
-    // Same lock order as stop_runtime / start_model: config, then runtime.
-    let mut cfg = state.config.lock().await;
     let mut rt = state.runtime.lock().await;
     let plan = keel_core::runtime::plan_pack_vram(&inventory, &pack, rt.loaded_launch());
     if plan.stop_keep_alive {
+        // Same managed-runner stop as stop_runtime; leave external endpoint alone.
         rt.stop().await;
-        // Keep-alive unload only — leave any external endpoint config alone.
-        let _ = &cfg;
+        drop(rt);
         *state.placement_cache.lock().await = None;
+        let mut rt = state.runtime.lock().await;
+        return Ok(PackVramResult {
+            status: "unloaded".into(),
+            reason: plan.reason,
+            capability_id: pack.capability_id,
+            usable_free_mib: inventory.usable_free_mib,
+            runtime: rt.status(),
+        });
     }
     let status = match plan.status {
         keel_core::runtime::PackVramStatus::Unloaded => "unloaded",
