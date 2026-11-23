@@ -160,6 +160,7 @@ fn main() {
             commands::download_huggingface_gguf,
             commands::import_local_gguf,
             commands::pick_model_file,
+            commands::pick_audio_file,
             commands::send_message,
             commands::stop_generation,
             commands::respond_approval,
