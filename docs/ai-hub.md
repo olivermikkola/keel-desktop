@@ -18,7 +18,7 @@ The image adapter uses `GET /sdapi/v1/sd-models` for checkpoint discovery and `P
 
 Image jobs have running, succeeded, failed, and cancelled states. Their request, chosen checkpoint, output folder, and artifact path are kept in Keel's data directory. An app restart marks interrupted jobs failed and never replays them. Only one request is active at a time; **Stop waiting** cancels Keel's request, not the server's global queue. The server may still finish its computation. The UI labels this explicitly.
 
-Successful images are written as new `assets/keel-<job-id>.png` files in the selected workspace. Clicking Generate authorizes creation of this new artifact; existing workspace files are not overwritten. In Work, refer to that relative path when building a website or deck. The sandboxed preview embeds local PNG references as data URLs. Standalone HTML exports keep their relative asset paths, so keep the assets folder with the HTML.
+Successful images are written as new `assets/keel-<job-id>.png` files in the selected workspace. Clicking Generate authorizes creation of this new artifact; existing workspace files are not overwritten. In Work, refer to that relative path when building a website or deck. Both the sandboxed preview and standalone **Export HTML** embed local PNG references as data URLs so exported pages stay self-contained.
 
 ## Next milestones
 
@@ -28,7 +28,7 @@ Successful images are written as new `assets/keel-<job-id>.png` files in the sel
 4. **Video:** asynchronous generation with engine-specific requirements, progress, cancellation semantics, and playable artifacts after image/audio jobs are dependable.
 5. **Explicit remote providers:** opt-in endpoint/auth configuration, secure credential storage, clear processing-location/cost labels, and no silent cloud fallback. A model still has to run somewhere when a user skips a local download.
 
-Images currently need a separately installed image server. Audio/video backends, hardware detection, automatic media runtime installation, hosted-provider authentication and web search are not implemented by this milestone.
+Images currently need a separately installed image server. System RAM detection is implemented for model sizing, while GPU/VRAM detection, audio/video backends, automatic media runtime installation, hosted-provider authentication, and web search are not implemented by this milestone.
 
 ## Verification
 
