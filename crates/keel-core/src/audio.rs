@@ -232,7 +232,12 @@ pub fn register_audio_pack_runner(
         bail!("Provide a local binary or script path for the audio pack runner.");
     }
     let cmd_path = Path::new(command);
-    if cmd_path.is_absolute() && !cmd_path.exists() {
+    // On Windows, Unix-style "/foo" is not `is_absolute()`. Treat any path with a
+    // separator as a concrete filesystem path that must exist before register.
+    let looks_like_path = cmd_path.is_absolute()
+        || command.contains('/')
+        || command.contains('\\');
+    if looks_like_path && !cmd_path.exists() {
         bail!(
             "Audio pack runner '{}' does not exist. Pick a binary or script on this machine.",
             command
@@ -301,90 +306,15 @@ pub fn install_audio_pack_download_stub(
     Ok(resolve_audio_pack(data_dir, pack))
 }
 
-/// Soft VRAM readiness note for an audio pack start.
-///
-/// Local shim matching the intent of `prepare_pack_vram` from the VRAM inventory
-/// PR (`packs::place_pack` / `should_unload_for_pack`). This branch only has
-/// `Machine::nvidia_memory_mib` (total reported), not free-MiB inventory or
-/// keep-alive unload — so this never stops the managed text runner. Swap the
-/// body for a real `prepare_pack_vram` call once that API lands.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AudioPackVramNote {
-    pub sufficient: bool,
-    pub message: String,
-    pub reported_vram_mib: u64,
-    pub min_vram_mib: u64,
-    /// Soft status aligned with the #46 command surface.
-    pub status: String,
-}
-
-/// Soft prepare using detect_machine + reported NVIDIA total memory.
-pub fn prepare_for_audio_pack(pack: &AudioPackManifest) -> AudioPackVramNote {
-    prepare_for_audio_pack_on(pack, &crate::hardware::detect_machine())
-}
-
-/// Alias kept so audio start paths can call through a name that mirrors #46.
-pub fn prepare_pack_vram_shim(pack: &AudioPackManifest) -> AudioPackVramNote {
-    prepare_for_audio_pack(pack)
-}
-
-/// Same as [`prepare_for_audio_pack`] with an injected [`crate::hardware::Machine`].
-pub fn prepare_for_audio_pack_on(
-    pack: &AudioPackManifest,
-    machine: &crate::hardware::Machine,
-) -> AudioPackVramNote {
-    let reported = machine.nvidia_memory_mib;
-    let need = pack.min_vram_mib;
-    if need == 0 {
-        return AudioPackVramNote {
-            sufficient: true,
-            message: format!("Pack '{}' does not require graphics memory.", pack.id),
-            reported_vram_mib: reported,
-            min_vram_mib: need,
-            status: "processor_fallback".into(),
+impl AudioPackManifest {
+    /// Convert to the shared pack-scheduling manifest used by [`crate::runtime::plan_pack_vram`].
+    pub fn to_pack_manifest(&self) -> crate::packs::PackManifest {
+        let kind = match self.runner_kind {
+            AudioRunnerKind::AudioStt => crate::packs::RunnerKind::AudioStt,
+            AudioRunnerKind::AudioTts => crate::packs::RunnerKind::AudioTts,
         };
+        crate::packs::PackManifest::new(self.id.clone(), self.min_vram_mib, kind)
     }
-    if !machine.has_nvidia_graphics || reported == 0 {
-        return AudioPackVramNote {
-            // Soft: local runners may still use the processor.
-            sufficient: true,
-            message: format!(
-                "Pack '{}' prefers at least {need} MiB graphics memory; no NVIDIA memory was reported. Running on the processor. Free-MiB inventory / prepare_pack_vram unload is not on this branch yet.",
-                pack.id
-            ),
-            reported_vram_mib: reported,
-            min_vram_mib: need,
-            status: "processor_fallback".into(),
-        };
-    }
-    if reported < need {
-        return AudioPackVramNote {
-            sufficient: true,
-            message: format!(
-                "Pack '{}' prefers at least {need} MiB graphics memory; only {reported} MiB was reported. Prefer the processor or free VRAM first. prepare_pack_vram keep-alive unload is not wired on this branch yet.",
-                pack.id
-            ),
-            reported_vram_mib: reported,
-            min_vram_mib: need,
-            status: "processor_fallback".into(),
-        };
-    }
-    AudioPackVramNote {
-        sufficient: true,
-        message: format!(
-            "Pack '{}' min VRAM {need} MiB looks covered by reported NVIDIA memory ({reported} MiB). Free-MiB / keep-alive unload via prepare_pack_vram is not wired on this branch yet.",
-            pack.id
-        ),
-        reported_vram_mib: reported,
-        min_vram_mib: need,
-        status: "already_free".into(),
-    }
-}
-
-fn soft_vram_prepare(pack: &AudioPackManifest) -> AudioPackVramNote {
-    let note = prepare_pack_vram_shim(pack);
-    eprintln!("[keel-audio] {} ({})", note.message, note.status);
-    note
 }
 
 fn require_runner(data_dir: &Path, pack: &AudioPackManifest) -> Result<AudioRunnerConfig> {
@@ -444,7 +374,8 @@ fn run_local_command(config: &AudioRunnerConfig, extra_args: &[String]) -> Resul
 /// Requires an installed pack and a registered (or env-overridden) local runner.
 pub fn run_stt(data_dir: &Path, audio_path: &Path) -> Result<String> {
     let pack = require_installed_audio_pack(data_dir, AudioCapability::Stt)?;
-    soft_vram_prepare(&pack);
+    // VRAM prepare / keep-alive unload runs in the Desktop shell via
+    // `prepare_pack_vram` before this entry is called.
     if !audio_path.exists() {
         bail!("Audio file not found: {}", audio_path.display());
     }
@@ -465,7 +396,8 @@ pub fn run_stt(data_dir: &Path, audio_path: &Path) -> Result<String> {
 /// Requires an installed pack and a registered (or env-overridden) local runner.
 pub fn run_tts(data_dir: &Path, text: &str, output_path: &Path) -> Result<()> {
     let pack = require_installed_audio_pack(data_dir, AudioCapability::Tts)?;
-    soft_vram_prepare(&pack);
+    // VRAM prepare / keep-alive unload runs in the Desktop shell via
+    // `prepare_pack_vram` before this entry is called.
     let text = text.trim();
     if text.is_empty() {
         bail!("Provide text to speak.");
@@ -665,49 +597,69 @@ mod tests {
         assert!(meta.contains("download_stub"));
     }
 
-    fn machine_with_nvidia(mib: u64) -> crate::hardware::Machine {
-        crate::hardware::Machine {
-            physical_cores: 8,
-            logical_cpus: 16,
-            memory_bytes: 32 * 1024 * 1024 * 1024,
-            has_intel_graphics: false,
-            has_amd_graphics: false,
-            has_nvidia_graphics: mib > 0,
-            nvidia_driver_usable: mib > 0,
-            nvidia_memory_mib: mib,
+    fn sample_inventory(free: u64) -> crate::hardware::VramInventory {
+        use crate::hardware::{DeviceKind, GraphicsDevice, InventorySource, VramInventory};
+        let device = GraphicsDevice {
+            id: "CUDA0".into(),
+            name: "NVIDIA".into(),
+            total_mib: 8192,
+            free_mib: free,
+            kind: DeviceKind::Discrete,
+        };
+        VramInventory {
+            usable_free_mib: free,
+            total_mib: 8192,
+            kind: "discrete".into(),
+            source: InventorySource::ListDevices,
+            preferred: Some(device.clone()),
+            devices: vec![device],
+        }
+    }
+
+    fn sample_graphics_loaded() -> crate::runtime::LoadedLaunch {
+        crate::runtime::LoadedLaunch {
+            model_id: "bonsai-4b".into(),
+            model_path: "/models/bonsai.gguf".into(),
+            context_size: 8192,
+            bin: "/runtime/llama-server".into(),
+            run_where: "auto".into(),
+            graphics_share: "auto".into(),
+            offload_args: vec![
+                "--device".into(),
+                "CUDA0".into(),
+                "--gpu-layers".into(),
+                "all".into(),
+            ],
+            settings_bin: None,
         }
     }
 
     #[test]
-    fn prepare_for_audio_pack_soft_notes_low_vram() {
-        let pack = find_audio_pack("stt-whisper-base").expect("stt stub");
-        let low = prepare_for_audio_pack_on(&pack, &machine_with_nvidia(512));
-        assert!(low.sufficient, "CPU fallback stays soft");
-        assert_eq!(low.status, "processor_fallback");
-        assert!(
-            low.message.contains("prefers at least") && low.message.contains("512"),
-            "unexpected: {}",
-            low.message
-        );
+    fn audio_pack_maps_to_shared_pack_manifest_for_vram_plan() {
+        let stt = find_audio_pack("stt-whisper-base").expect("stt stub");
+        let manifest = stt.to_pack_manifest();
+        assert_eq!(manifest.capability_id, stt.id);
+        assert_eq!(manifest.min_vram_mib, stt.min_vram_mib);
+        assert_eq!(manifest.runner_kind, crate::packs::RunnerKind::AudioStt);
 
-        let ok = prepare_for_audio_pack_on(&pack, &machine_with_nvidia(4096));
-        assert!(ok.sufficient);
-        assert_eq!(ok.status, "already_free");
-        assert!(ok.message.contains("4096"), "unexpected: {}", ok.message);
+        let plan = crate::runtime::plan_pack_vram(&sample_inventory(400), &manifest, None);
+        assert_eq!(
+            plan.status,
+            crate::runtime::PackVramStatus::ProcessorFallback
+        );
+        assert!(!plan.stop_keep_alive);
     }
 
     #[test]
-    fn prepare_pack_vram_shim_aliases_prepare() {
-        let pack = find_audio_pack("tts-local-en").unwrap();
-        let a = prepare_for_audio_pack_on(&pack, &machine_with_nvidia(0));
-        let b = prepare_pack_vram_shim(&pack);
-        assert_eq!(a.status, "processor_fallback");
-        // b uses live detect_machine; status is always a known soft token.
-        assert!(
-            b.status == "already_free" || b.status == "processor_fallback",
-            "unexpected status {}",
-            b.status
-        );
+    fn audio_pack_vram_plan_unloads_keep_alive_when_free_vram_is_short() {
+        let pack = find_audio_pack("stt-whisper-base")
+            .expect("stt stub")
+            .to_pack_manifest();
+        // STT stub needs 1024 MiB; 256 free with keep-alive on graphics → unload.
+        let plan =
+            crate::runtime::plan_pack_vram(&sample_inventory(256), &pack, Some(&sample_graphics_loaded()));
+        assert_eq!(plan.status, crate::runtime::PackVramStatus::Unloaded);
+        assert!(plan.stop_keep_alive);
     }
 
     fn tempfile_dir(label: &str) -> PathBuf {

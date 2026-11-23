@@ -102,7 +102,8 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
   if(!args.url && !pack.download_url) throw new Error('Pack has no download URL yet. Register a local runner path instead, or provide a URL.');
   pack.installed=true; result=structuredClone(pack); break;
  }
- case 'prepare_audio_pack_vram': result={sufficient:true,message:'shim',reported_vram_mib:0,min_vram_mib:0,status:'processor_fallback'};break;
+ case 'prepare_audio_pack_vram': result={status:'already_free',reason:'smoke',capability_id:'stt-whisper-base',usable_free_mib:0,runtime:{state:'stopped'}};break;
+ case 'prepare_pack_vram': result={status:'already_free',reason:'smoke',capability_id:'demo.capability',usable_free_mib:0,runtime:{state:'stopped'}};break;
  case 'run_audio_stt': throw new Error('No speech-to-text pack is installed. Download or register an audio pack from Settings before using speech-to-text.');
  case 'run_audio_tts': throw new Error('No text-to-speech pack is installed. Download or register an audio pack from Settings before using text-to-speech.');
  default: throw new Error('Unexpected command '+cmd);

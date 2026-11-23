@@ -442,8 +442,9 @@ async fn cached_advice(state: &AppState, model_bytes: u64) -> keel_core::hardwar
     let devices = keel_core::setup::installed_graphics_runtime(&state.data_dir)
         .map(|bin| keel_core::hardware::probe_devices(&bin))
         .unwrap_or_default();
+    let machine = keel_core::hardware::detect_machine();
     let advice = keel_core::hardware::advise(
-        &keel_core::hardware::detect_machine(),
+        &machine,
         &cfg.run_where,
         &cfg.graphics_share,
         model_bytes,
@@ -540,6 +541,8 @@ fn launch_for<'a>(
 
 /// Keeps the managed runner when the model and the graphics-or-processor choice
 /// have not changed. The next message does not pay for another load.
+/// Pack starts should call [`prepare_pack_vram`] first so a VRAM-hungry pack can
+/// stop this keep-alive via `plan_pack_vram` / `should_stop_keep_alive_for_pack`.
 async fn loaded_model_can_stay(state: &AppState) -> Option<RuntimeStatus> {
     let cfg = state.config.lock().await.clone();
     if cfg.external_base_url.is_some() {
@@ -813,6 +816,134 @@ pub async fn stop_runtime(state: State<'_, AppState>) -> Result<RuntimeStatus, S
     cfg.external_model_name = None;
     save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
     Ok(rt.status())
+}
+
+/// Result of probing VRAM and optionally stopping keep-alive for a pack.
+#[derive(Debug, Clone, Serialize)]
+pub struct PackVramResult {
+    /// `unloaded` | `already_free` | `processor_fallback`
+    pub status: String,
+    pub reason: String,
+    pub capability_id: String,
+    pub usable_free_mib: u64,
+    pub runtime: RuntimeStatus,
+}
+
+fn fresh_vram_inventory(state: &AppState) -> keel_core::hardware::VramInventory {
+    let devices = keel_core::setup::installed_graphics_runtime(&state.data_dir)
+        .map(|bin| keel_core::hardware::probe_devices(&bin))
+        .unwrap_or_default();
+    let machine = keel_core::hardware::detect_machine();
+    keel_core::hardware::inventory(&machine, &devices)
+}
+
+/// Probe current VRAM and stop keep-alive when a pack needs the graphics memory.
+async fn prepare_pack_vram_for_manifest(
+    state: &AppState,
+    pack: keel_core::packs::PackManifest,
+) -> Result<PackVramResult, String> {
+    let inventory = fresh_vram_inventory(state);
+
+    let mut rt = state.runtime.lock().await;
+    let plan = keel_core::runtime::plan_pack_vram(&inventory, &pack, rt.loaded_launch());
+    if plan.stop_keep_alive {
+        // Same managed-runner stop as stop_runtime; leave external endpoint alone.
+        rt.stop().await;
+        drop(rt);
+        *state.placement_cache.lock().await = None;
+        let mut rt = state.runtime.lock().await;
+        return Ok(PackVramResult {
+            status: "unloaded".into(),
+            reason: plan.reason,
+            capability_id: pack.capability_id,
+            usable_free_mib: inventory.usable_free_mib,
+            runtime: rt.status(),
+        });
+    }
+    let status = match plan.status {
+        keel_core::runtime::PackVramStatus::Unloaded => "unloaded",
+        keel_core::runtime::PackVramStatus::AlreadyFree => "already_free",
+        keel_core::runtime::PackVramStatus::ProcessorFallback => "processor_fallback",
+    };
+    Ok(PackVramResult {
+        status: status.to_string(),
+        reason: plan.reason,
+        capability_id: pack.capability_id,
+        usable_free_mib: inventory.usable_free_mib,
+        runtime: rt.status(),
+    })
+}
+
+/// Probe current VRAM and stop keep-alive when a pack needs the graphics memory.
+///
+/// Returns `unloaded` when the managed runner was stopped, `already_free` when
+/// the pack can use graphics without unloading, or `processor_fallback` when
+/// the pack should run on the processor.
+#[tauri::command]
+pub async fn prepare_pack_vram(
+    state: State<'_, AppState>,
+    capability_id: String,
+    min_vram_mib: u64,
+    runner_kind: Option<String>,
+) -> Result<PackVramResult, String> {
+    let kind = match runner_kind.as_deref() {
+        Some(raw) => keel_core::packs::parse_runner_kind(raw)?,
+        None => keel_core::packs::RunnerKind::Text,
+    };
+    let pack = keel_core::packs::PackManifest::new(capability_id.trim(), min_vram_mib, kind);
+    prepare_pack_vram_for_manifest(&state, pack).await
+}
+
+/// List capability packs with on-disk install status under the data directory.
+#[tauri::command]
+pub async fn list_capability_packs(
+    state: State<'_, AppState>,
+) -> Result<Vec<keel_core::packs::CapabilityPack>, String> {
+    let data_dir = state.data_dir.clone();
+    tokio::task::spawn_blocking(move || keel_core::packs::list_capability_packs(&data_dir))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Download a checksummed catalog pack into `{data_dir}/packs/<id>/`.
+#[tauri::command]
+pub async fn download_capability_pack(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    capability_id: String,
+) -> Result<Vec<keel_core::packs::CapabilityPack>, String> {
+    let _download = state
+        .download_lock
+        .try_lock()
+        .map_err(|_| "Another download is running")?;
+    let data_dir = state.data_dir.clone();
+    let id = capability_id.trim().to_string();
+    keel_core::packs::download_capability_pack(&data_dir, &id, |prog| {
+        let _ = app.emit("keel://download-progress", prog);
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(keel_core::packs::list_capability_packs(&data_dir))
+}
+
+/// Remove an installed capability pack from disk.
+#[tauri::command]
+pub async fn remove_capability_pack(
+    state: State<'_, AppState>,
+    capability_id: String,
+) -> Result<Vec<keel_core::packs::CapabilityPack>, String> {
+    let _download = state
+        .download_lock
+        .try_lock()
+        .map_err(|_| "Wait for the current download to finish before removing a pack")?;
+    let data_dir = state.data_dir.clone();
+    let id = capability_id.trim().to_string();
+    tokio::task::spawn_blocking(move || {
+        keel_core::packs::remove_capability_pack(&data_dir, &id).map_err(|e| e.to_string())?;
+        Ok(keel_core::packs::list_capability_packs(&data_dir))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -2109,28 +2240,42 @@ pub async fn install_audio_pack_download_stub(
     .map_err(|e| e.to_string())?
 }
 
-/// Soft VRAM note before an audio pack start (shim until prepare_pack_vram lands).
+/// Prepare VRAM for an audio catalog pack (real keep-alive unload via [`prepare_pack_vram_for_manifest`]).
 #[tauri::command]
 pub async fn prepare_audio_pack_vram(
     state: State<'_, AppState>,
     pack_id: String,
-) -> Result<audio::AudioPackVramNote, String> {
-    let _ = &state;
+) -> Result<PackVramResult, String> {
     let pack = audio::find_audio_pack(&pack_id)
         .ok_or_else(|| format!("Unknown audio pack id '{pack_id}'."))?;
-    Ok(audio::prepare_pack_vram_shim(&pack))
+    prepare_pack_vram_for_manifest(&state, pack.to_pack_manifest()).await
+}
+
+/// Resolve the installed pack for a capability and run real `prepare_pack_vram`.
+async fn prepare_vram_for_audio_capability(
+    state: &AppState,
+    capability: audio::AudioCapability,
+) -> Result<PackVramResult, String> {
+    let data_dir = state.data_dir.clone();
+    let pack = tokio::task::spawn_blocking(move || {
+        audio::require_installed_audio_pack(&data_dir, capability).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    prepare_pack_vram_for_manifest(state, pack.to_pack_manifest()).await
 }
 
 /// Speech-to-text entry. Surfaces not-installed / missing-runner errors as strings.
 ///
-/// Soft VRAM check lives in `keel_core::audio::prepare_pack_vram_shim` (total
-/// `nvidia_memory_mib` only). TODO: call real `prepare_pack_vram` once `packs.rs`
-/// lands from the VRAM inventory PR.
+/// Calls real [`prepare_pack_vram_for_manifest`] first so a VRAM-hungry STT pack
+/// can unload keep-alive before the local runner starts.
 #[tauri::command]
 pub async fn run_audio_stt(
     state: State<'_, AppState>,
     audio_path: String,
 ) -> Result<String, String> {
+    let prep = prepare_vram_for_audio_capability(&state, audio::AudioCapability::Stt).await?;
+    eprintln!("[keel-audio] stt prepare: {} ({})", prep.reason, prep.status);
     let data_dir = state.data_dir.clone();
     tokio::task::spawn_blocking(move || {
         audio::run_stt(&data_dir, Path::new(&audio_path)).map_err(|e| e.to_string())
@@ -2141,14 +2286,16 @@ pub async fn run_audio_stt(
 
 /// Text-to-speech entry. Surfaces not-installed / missing-runner errors as strings.
 ///
-/// Soft VRAM check lives in `keel_core::audio::prepare_pack_vram_shim`. TODO:
-/// call real `prepare_pack_vram` once `packs.rs` lands from the VRAM inventory PR.
+/// Calls real [`prepare_pack_vram_for_manifest`] first so a VRAM-hungry TTS pack
+/// can unload keep-alive before the local runner starts.
 #[tauri::command]
 pub async fn run_audio_tts(
     state: State<'_, AppState>,
     text: String,
     output_path: String,
 ) -> Result<(), String> {
+    let prep = prepare_vram_for_audio_capability(&state, audio::AudioCapability::Tts).await?;
+    eprintln!("[keel-audio] tts prepare: {} ({})", prep.reason, prep.status);
     let data_dir = state.data_dir.clone();
     tokio::task::spawn_blocking(move || {
         audio::run_tts(&data_dir, &text, Path::new(&output_path)).map_err(|e| e.to_string())

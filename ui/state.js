@@ -59,11 +59,20 @@ export function filterModels(models = [], query = "", filter = "all") {
   });
 }
 
-export function modelFitLabel(modelBytes, systemRamGb) {
-  if (!Number.isFinite(modelBytes) || modelBytes <= 0 || !Number.isFinite(systemRamGb) || systemRamGb <= 0) {
+export function modelFitLabel(modelBytes, systemRamGb, vramTotalMib = 0) {
+  if (!Number.isFinite(modelBytes) || modelBytes <= 0) {
     return "";
   }
   const modelGb = modelBytes / (1024 * 1024 * 1024);
+  if (Number.isFinite(vramTotalMib) && vramTotalMib > 0) {
+    const vramGb = vramTotalMib / 1024;
+    // Mirror hardware::model_fits_entirely cushion (weights + ~25% + margin).
+    if (modelGb * 1.25 + 0.25 <= vramGb) return "Fits on graphics";
+    if (modelGb * 0.5 <= vramGb) return "Tight on graphics";
+  }
+  if (!Number.isFinite(systemRamGb) || systemRamGb <= 0) {
+    return "";
+  }
   if (modelGb * 2.2 <= systemRamGb) return "Fits easily";
   if (modelGb * 1.4 <= systemRamGb) return "Tight fit";
   return "Heavy for your RAM";

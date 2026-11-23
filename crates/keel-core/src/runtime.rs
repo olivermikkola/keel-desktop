@@ -37,6 +37,86 @@ pub fn same_loaded_launch(live: bool, current: &LoadedLaunch, next: &LoadedLaunc
     live && current == next
 }
 
+/// True when the loaded launch is using graphics offload (not `--device none`).
+pub fn launch_uses_graphics(loaded: &LoadedLaunch) -> bool {
+    !loaded
+        .offload_args
+        .windows(2)
+        .any(|pair| pair[0] == "--device" && pair[1] == "none")
+        && loaded
+            .offload_args
+            .iter()
+            .any(|arg| arg == "--device" || arg == "--gpu-layers")
+}
+
+/// Whether keep-alive should stop so a pack can claim free VRAM.
+pub fn should_stop_keep_alive_for_pack(
+    inventory: &crate::hardware::VramInventory,
+    pack: &crate::packs::PackManifest,
+    loaded: Option<&LoadedLaunch>,
+) -> bool {
+    let Some(loaded) = loaded else {
+        return false;
+    };
+    crate::packs::should_unload_for_pack(inventory, pack, launch_uses_graphics(loaded))
+}
+
+/// Outcome of preparing VRAM for a capability pack (keep-alive may stop).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PackVramStatus {
+    /// Keep-alive was (or should be) stopped so the pack can claim graphics memory.
+    Unloaded,
+    /// Enough free VRAM already; keep-alive can stay.
+    AlreadyFree,
+    /// Pack should run on the processor (no graphics fit).
+    ProcessorFallback,
+}
+
+/// Decision returned by [`plan_pack_vram`] before the shell stops the runner.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackVramPreparation {
+    pub status: PackVramStatus,
+    pub reason: String,
+    /// When true, the desktop shell must stop the keep-alive runtime.
+    pub stop_keep_alive: bool,
+}
+
+/// Decide whether to unload keep-alive or fall back to the processor for this pack.
+pub fn plan_pack_vram(
+    inventory: &crate::hardware::VramInventory,
+    pack: &crate::packs::PackManifest,
+    loaded: Option<&LoadedLaunch>,
+) -> PackVramPreparation {
+    if should_stop_keep_alive_for_pack(inventory, pack, loaded) {
+        return PackVramPreparation {
+            status: PackVramStatus::Unloaded,
+            reason: format!(
+                "Stopping the keep-alive model so pack '{}' can use graphics memory (needs {} MiB; {} MiB free).",
+                pack.capability_id, pack.min_vram_mib, inventory.usable_free_mib
+            ),
+            stop_keep_alive: true,
+        };
+    }
+    match crate::packs::place_pack(inventory, pack) {
+        crate::packs::PackPlacement::Graphics {
+            usable_free_mib, ..
+        } => PackVramPreparation {
+            status: PackVramStatus::AlreadyFree,
+            reason: format!(
+                "Pack '{}' can use graphics memory ({} MiB free; needs {} MiB).",
+                pack.capability_id, usable_free_mib, pack.min_vram_mib
+            ),
+            stop_keep_alive: false,
+        },
+        crate::packs::PackPlacement::Processor { reason } => PackVramPreparation {
+            status: PackVramStatus::ProcessorFallback,
+            reason,
+            stop_keep_alive: false,
+        },
+    }
+}
+
 pub struct ModelLaunch<'a> {
     pub model_id: &'a str,
     pub model_path: &'a Path,
@@ -95,6 +175,11 @@ impl RuntimeManager {
 
     pub fn is_managed(&self) -> bool {
         self.child.is_some()
+    }
+
+    /// The launch identity of the keep-alive / managed runner, when one is loaded.
+    pub fn loaded_launch(&self) -> Option<&LoadedLaunch> {
+        self.loaded.as_ref()
     }
 
     /// True when the managed runner is already serving this model, context,
@@ -412,15 +497,115 @@ mod tests {
             bin: "/runtime/llama-server".into(),
             run_where: "auto".into(),
             graphics_share: "auto".into(),
-            offload_args: vec!["--gpu-layers".into(), "all".into()],
+            offload_args: vec![
+                "--device".into(),
+                "CUDA0".into(),
+                "--gpu-layers".into(),
+                "all".into(),
+            ],
             settings_bin: None,
         };
         assert!(same_loaded_launch(true, &current, &current.clone()));
         assert!(!same_loaded_launch(false, &current, &current.clone()));
+        assert!(launch_uses_graphics(&current));
         let mut processor = current.clone();
         processor.run_where = "processor".into();
-        processor.offload_args = vec!["--gpu-layers".into(), "0".into()];
+        processor.offload_args = vec![
+            "--device".into(),
+            "none".into(),
+            "--gpu-layers".into(),
+            "0".into(),
+        ];
         assert!(!same_loaded_launch(true, &current, &processor));
+        assert!(!launch_uses_graphics(&processor));
+    }
+
+    fn sample_graphics_loaded() -> LoadedLaunch {
+        LoadedLaunch {
+            model_id: "bonsai-4b".into(),
+            model_path: "/models/bonsai.gguf".into(),
+            context_size: 8192,
+            bin: "/runtime/llama-server".into(),
+            run_where: "auto".into(),
+            graphics_share: "auto".into(),
+            offload_args: vec![
+                "--device".into(),
+                "CUDA0".into(),
+                "--gpu-layers".into(),
+                "all".into(),
+            ],
+            settings_bin: None,
+        }
+    }
+
+    fn sample_inventory(free: u64) -> crate::hardware::VramInventory {
+        use crate::hardware::{DeviceKind, GraphicsDevice, InventorySource, VramInventory};
+        let device = GraphicsDevice {
+            id: "CUDA0".into(),
+            name: "NVIDIA".into(),
+            total_mib: 8192,
+            free_mib: free,
+            kind: DeviceKind::Discrete,
+        };
+        VramInventory {
+            usable_free_mib: free,
+            total_mib: 8192,
+            kind: "discrete".into(),
+            source: InventorySource::ListDevices,
+            preferred: Some(device.clone()),
+            devices: vec![device],
+        }
+    }
+
+    #[test]
+    fn keep_alive_releases_graphics_when_a_pack_needs_more_free_vram() {
+        use crate::packs::{PackManifest, RunnerKind};
+
+        let inv = sample_inventory(600);
+        let loaded = sample_graphics_loaded();
+        let pack = PackManifest::new("audio.stt", 2048, RunnerKind::AudioStt);
+        assert!(should_stop_keep_alive_for_pack(&inv, &pack, Some(&loaded)));
+        assert!(!should_stop_keep_alive_for_pack(&inv, &pack, None));
+    }
+
+    #[test]
+    fn plan_pack_vram_unloads_keep_alive_when_free_vram_is_short() {
+        use crate::packs::{PackManifest, RunnerKind};
+
+        let inv = sample_inventory(600);
+        let loaded = sample_graphics_loaded();
+        let pack = PackManifest::new("audio.stt", 2048, RunnerKind::AudioStt);
+        let plan = plan_pack_vram(&inv, &pack, Some(&loaded));
+        assert_eq!(plan.status, PackVramStatus::Unloaded);
+        assert!(plan.stop_keep_alive);
+        assert!(plan.reason.contains("audio.stt"));
+        assert!(plan.reason.contains("2048"));
+    }
+
+    #[test]
+    fn plan_pack_vram_reports_already_free_when_inventory_covers_the_pack() {
+        use crate::packs::{PackManifest, RunnerKind};
+
+        let inv = sample_inventory(4096);
+        let loaded = sample_graphics_loaded();
+        let pack = PackManifest::new("audio.stt", 2048, RunnerKind::AudioStt);
+        let plan = plan_pack_vram(&inv, &pack, Some(&loaded));
+        assert_eq!(plan.status, PackVramStatus::AlreadyFree);
+        assert!(!plan.stop_keep_alive);
+        assert!(plan.reason.contains("4096"));
+    }
+
+    #[test]
+    fn plan_pack_vram_falls_back_to_processor_without_unloading() {
+        use crate::packs::{PackManifest, RunnerKind};
+
+        let inv = sample_inventory(400);
+        let pack = PackManifest::new("audio.stt", 2048, RunnerKind::AudioStt);
+        // No keep-alive loaded: cannot unload; pack must use the processor.
+        let plan = plan_pack_vram(&inv, &pack, None);
+        assert_eq!(plan.status, PackVramStatus::ProcessorFallback);
+        assert!(!plan.stop_keep_alive);
+        assert!(plan.reason.contains("2048"));
     }
 
     #[tokio::test]

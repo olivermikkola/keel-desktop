@@ -1643,7 +1643,9 @@ function renderModelsWorkspace() {
       const tier = tierLabel(m);
       const badgeClass = m.damaged ? "model-badge warn" : isRunning ? "model-badge live" : "model-badge";
       const badgeText = m.damaged ? "Needs repair" : isRunning ? "In use" : tier;
-      const fit = !m.damaged ? modelFitLabel(m.bytes, b.system_ram_gb) : "";
+      const fit = !m.damaged
+        ? modelFitLabel(m.bytes, b.system_ram_gb, b.computer?.vram_total_mib || 0)
+        : "";
       const subText = m.damaged
         ? m.damage_reason || "This download looks incomplete or damaged."
         : `${m.detail} · ${formatBytes(m.bytes)}${fit ? ` · ${fit}` : ""}`;
@@ -2414,6 +2416,89 @@ function openCustomizeModal() {
       }
     };
     body.appendChild(checkCard);
+
+    const packsCard = document.createElement("div");
+    packsCard.className = "card";
+    packsCard.innerHTML = `
+      <strong>Capability packs</strong>
+      <p class="muted">Optional local packs (speech and demos). Downloads are checksummed and stored on this computer.</p>
+      <div id="capability-packs-list"><p class="muted">Loading…</p></div>
+    `;
+    body.appendChild(packsCard);
+    const renderPacksList = async () => {
+      const slot = packsCard.querySelector("#capability-packs-list");
+      try {
+        const packs = await invoke("list_capability_packs");
+        if (!packs?.length) {
+          slot.innerHTML = `<p class="muted">No capability packs listed yet.</p>`;
+          return;
+        }
+        slot.innerHTML = packs
+          .map((pack) => {
+            const id = escapeHtml(pack.capability_id || "");
+            const name = escapeHtml(pack.display_name || pack.capability_id || "Pack");
+            const detail = escapeHtml(pack.detail || "");
+            const vram =
+              pack.min_vram_mib > 0
+                ? `${Number(pack.min_vram_mib).toLocaleString()} MiB graphics`
+                : "No graphics required";
+            const status = pack.installed ? "Installed" : "Not installed";
+            const canDownload = Boolean(pack.download_url) && !pack.installed;
+            const actions = pack.installed
+              ? `<button type="button" class="btn btn-ghost btn-sm" data-remove-pack="${id}">Remove</button>`
+              : canDownload
+                ? `<button type="button" class="btn btn-primary btn-sm" data-download-pack="${id}">Download</button>`
+                : `<button type="button" class="btn btn-ghost btn-sm" disabled title="Download URL not pinned yet">Coming soon</button>`;
+            return `<div class="row" style="align-items:flex-start;gap:0.75rem;margin:0.65rem 0;">
+              <div class="grow">
+                <div><strong>${name}</strong></div>
+                <div class="muted">${detail}</div>
+                <div class="muted">${escapeHtml(status)} · ${escapeHtml(vram)}</div>
+              </div>
+              <div>${actions}</div>
+            </div>`;
+          })
+          .join("");
+        slot.querySelectorAll("[data-download-pack]").forEach((btn) => {
+          btn.onclick = async () => {
+            const packId = btn.getAttribute("data-download-pack");
+            btn.disabled = true;
+            btn.textContent = "Downloading…";
+            try {
+              await invoke("download_capability_pack", { capabilityId: packId });
+              showToast("Pack downloaded.");
+              await renderPacksList();
+            } catch (err) {
+              showToast(friendlyRuntimeError(err));
+              btn.disabled = false;
+              btn.textContent = "Download";
+            }
+          };
+        });
+        slot.querySelectorAll("[data-remove-pack]").forEach((btn) => {
+          btn.onclick = () => {
+            const packId = btn.getAttribute("data-remove-pack");
+            confirmAction(
+              "Remove pack?",
+              "This deletes the pack files from this computer. You can download again later.",
+              "Remove pack",
+              async () => {
+                try {
+                  await invoke("remove_capability_pack", { capabilityId: packId });
+                  showToast("Pack removed.");
+                  await renderPacksList();
+                } catch (err) {
+                  showToast(friendlyRuntimeError(err));
+                }
+              },
+            );
+          };
+        });
+      } catch (err) {
+        slot.innerHTML = `<p class="muted">${escapeHtml(friendlyRuntimeError(err))}</p>`;
+      }
+    };
+    renderPacksList();
 
     const audioCard = document.createElement("div");
     audioCard.className = "card";
