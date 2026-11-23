@@ -58,8 +58,8 @@ pub struct Machine {
     pub has_nvidia_graphics: bool,
     pub nvidia_driver_usable: bool,
     pub nvidia_memory_mib: u64,
-    /// Free MiB from nvidia-smi when available; 0 means unknown (use total).
-    pub nvidia_free_mib: u64,
+    /// Free MiB from nvidia-smi, when reported.
+    pub nvidia_free_mib: Option<u64>,
 }
 
 impl Machine {
@@ -82,13 +82,9 @@ pub struct GraphicsDevice {
 }
 
 impl GraphicsDevice {
-    /// Free MiB when known, otherwise the reported total.
+    /// Cap reported free memory to the device capacity.
     pub fn usable_mib(&self) -> u64 {
-        if self.free_mib > 0 {
-            self.free_mib
-        } else {
-            self.total_mib
-        }
+        self.free_mib.min(self.total_mib)
     }
 }
 
@@ -261,11 +257,11 @@ pub fn parse_lspci(text: &str) -> (bool, bool, bool) {
 }
 
 /// `(driver responded, largest total MiB, free MiB for that GPU)`.
-/// Free is 0 when the CSV line only has total (older query shape).
-pub fn parse_nvidia_smi(text: &str) -> (bool, u64, u64) {
+/// Missing free memory stays unknown. A reported zero is a real measurement.
+pub fn parse_nvidia_smi(text: &str) -> (bool, u64, Option<u64>) {
     let mut any = false;
     let mut best_total = 0u64;
-    let mut best_free = 0u64;
+    let mut best_free = None;
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.to_ascii_lowercase().contains("failed") {
@@ -275,7 +271,7 @@ pub fn parse_nvidia_smi(text: &str) -> (bool, u64, u64) {
         let mut parts = line.split(',');
         let _name = parts.next();
         let total = parts.next().and_then(parse_mib_token).unwrap_or(0);
-        let free = parts.next().and_then(parse_mib_token).unwrap_or(0);
+        let free = parts.next().and_then(parse_mib_token);
         if total >= best_total {
             best_total = total;
             best_free = free;
@@ -289,11 +285,7 @@ pub fn nvidia_fallback_devices(machine: &Machine) -> Vec<GraphicsDevice> {
     if !machine.nvidia_driver_usable || machine.nvidia_memory_mib == 0 {
         return Vec::new();
     }
-    let free = if machine.nvidia_free_mib > 0 {
-        machine.nvidia_free_mib
-    } else {
-        machine.nvidia_memory_mib
-    };
+    let free = machine.nvidia_free_mib.unwrap_or(0);
     vec![GraphicsDevice {
         id: "nvidia".to_string(),
         name: "NVIDIA".to_string(),
@@ -739,7 +731,7 @@ pub fn detect_machine() -> Machine {
     let (nvidia_driver_usable, nvidia_memory_mib, nvidia_free_mib) = nvidia
         .as_deref()
         .map(parse_nvidia_smi)
-        .unwrap_or((false, 0, 0));
+        .unwrap_or((false, 0, None));
     Machine {
         physical_cores: physical,
         logical_cpus: logical,
@@ -814,7 +806,7 @@ Available devices:
             has_nvidia_graphics: true,
             nvidia_driver_usable: false,
             nvidia_memory_mib: 0,
-            nvidia_free_mib: 0,
+            nvidia_free_mib: None,
         }
     }
 
@@ -860,13 +852,13 @@ physical id\t: 0
         );
         assert_eq!(
             parse_nvidia_smi("NVIDIA GeForce MX150, 2048 MiB\n"),
-            (true, 2048, 0)
+            (true, 2048, None)
         );
         assert_eq!(
             parse_nvidia_smi("NVIDIA GeForce RTX 4070, 12288 MiB, 11000 MiB\n"),
-            (true, 12288, 11000)
+            (true, 12288, Some(11000))
         );
-        assert_eq!(parse_nvidia_smi(""), (false, 0, 0));
+        assert_eq!(parse_nvidia_smi(""), (false, 0, None));
         let found = devices();
         assert_eq!(found.len(), 2);
         assert_eq!(found[0].id, "Vulkan0");
@@ -972,7 +964,7 @@ physical id\t: 0
             has_nvidia_graphics: false,
             nvidia_driver_usable: false,
             nvidia_memory_mib: 0,
-            nvidia_free_mib: 0,
+            nvidia_free_mib: None,
         };
         let devices = parse_device_list("  Vulkan0: Intel(R) Graphics (8192 MiB, 7000 MiB free)\n");
         assert_eq!(devices[0].kind, DeviceKind::Integrated);
@@ -997,7 +989,7 @@ physical id\t: 0
             has_nvidia_graphics: true,
             nvidia_driver_usable: true,
             nvidia_memory_mib: 12288,
-            nvidia_free_mib: 11000,
+            nvidia_free_mib: Some(11000),
         };
         let devices =
             parse_device_list("  CUDA0: NVIDIA GeForce RTX 4070 (12288 MiB, 11000 MiB free)\n");
@@ -1022,7 +1014,7 @@ physical id\t: 0
             has_nvidia_graphics: true,
             nvidia_driver_usable: true,
             nvidia_memory_mib: 12288,
-            nvidia_free_mib: 11000,
+            nvidia_free_mib: Some(11000),
         };
         assert_eq!(recommended_model_id(&machine, &[]), "bonsai-9b");
         let advice = advise(&machine, "auto", "auto", BONSAI_9B_BYTES, &[]);
@@ -1047,7 +1039,7 @@ physical id\t: 0
             has_nvidia_graphics: true,
             nvidia_driver_usable: true,
             nvidia_memory_mib: 2048,
-            nvidia_free_mib: 1800,
+            nvidia_free_mib: Some(1800),
         };
         // Same discrete-threshold rule as a probed MX150: do not let shared
         // system RAM inflate the recommendation when VRAM is only ~2 GB.
@@ -1069,7 +1061,7 @@ physical id\t: 0
             has_nvidia_graphics: false,
             nvidia_driver_usable: false,
             nvidia_memory_mib: 0,
-            nvidia_free_mib: 0,
+            nvidia_free_mib: None,
         };
         assert_eq!(recommended_model_id(&machine, &[]), "bonsai-9b");
         let modest = Machine {
@@ -1111,7 +1103,7 @@ physical id\t: 0
         let machine = Machine {
             nvidia_driver_usable: true,
             nvidia_memory_mib: 12288,
-            nvidia_free_mib: 11000,
+            nvidia_free_mib: Some(11000),
             ..zenbook()
         };
         let snap = inventory(&machine, &[]);
@@ -1121,6 +1113,27 @@ physical id\t: 0
             snap.preferred.as_ref().map(|d| d.id.as_str()),
             Some("nvidia")
         );
+    }
+
+    #[test]
+    fn zero_free_vram_survives_nvidia_and_runner_probes() {
+        let (_, total, free) = parse_nvidia_smi("NVIDIA GeForce RTX 4070, 12288 MiB, 0 MiB");
+        assert_eq!(free, Some(0));
+        let machine = Machine {
+            nvidia_driver_usable: true,
+            nvidia_memory_mib: total,
+            nvidia_free_mib: free,
+            ..zenbook()
+        };
+        let fallback = inventory(&machine, &[]);
+        assert_eq!(fallback.total_mib, total);
+        assert_eq!(fallback.usable_free_mib, 0);
+        assert!(!fallback.has_free(1));
+
+        let devices = parse_device_list("CUDA0: NVIDIA GeForce RTX 4070 (12288 MiB, 0 MiB free)");
+        let advice = advise(&machine, "auto", "auto", 2 * 1024 * 1024 * 1024, &devices);
+        assert!(!advice.use_graphics);
+        assert!(advice.processor_reason.contains("0 MiB free"));
     }
 
     #[test]

@@ -75,10 +75,10 @@ pub const DEMO_PACK_SHA256: &str =
     "8d687b16b151eaca49c555232b5fecb541f24da00fa195ab3377c11246f0b5b2";
 pub const DEMO_PACK_BYTES: u64 = 67;
 
-/// Raw GitHub URL for the demo fixture on this pillar branch (checksum-pinned).
+/// Raw GitHub URL pinned to the commit containing the checksummed fixture.
 pub fn demo_pack_download_url() -> String {
     format!(
-        "https://raw.githubusercontent.com/olivermikkola/keel-desktop/cursor/v06-vram-inventory-adf8/crates/keel-core/fixtures/packs/{DEMO_PACK_FILE}"
+        "https://raw.githubusercontent.com/olivermikkola/keel-desktop/594a11de008f3c520e41adca592d0e3b1cdd9140/crates/keel-core/fixtures/packs/{DEMO_PACK_FILE}"
     )
 }
 
@@ -307,8 +307,9 @@ pub fn place_pack_bytes(data_dir: &Path, pack: &CapabilityPack, bytes: &[u8]) ->
 
 /// Remove an installed pack directory (artifact, manifest, marker).
 pub fn remove_capability_pack(data_dir: &Path, capability_id: &str) -> Result<()> {
-    let dir = pack_install_dir(data_dir, capability_id)?;
-    if !dir.exists() {
+    let pack = find_catalog_pack(capability_id).context("Unknown capability pack")?;
+    let dir = pack_install_dir(data_dir, &pack.capability_id)?;
+    if !installed_marker(&dir).is_file() {
         bail!("No installed pack found for `{capability_id}`");
     }
     fs::remove_dir_all(&dir).with_context(|| format!("remove {}", dir.display()))?;
