@@ -265,11 +265,7 @@ pub fn list_capability_packs(data_dir: &Path) -> Vec<CapabilityPack> {
 
 /// Write bytes into the pack directory after verifying SHA-256. Used by tests
 /// and by the download path after the network transfer finishes.
-pub fn place_pack_bytes(
-    data_dir: &Path,
-    pack: &CapabilityPack,
-    bytes: &[u8],
-) -> Result<PathBuf> {
+pub fn place_pack_bytes(data_dir: &Path, pack: &CapabilityPack, bytes: &[u8]) -> Result<PathBuf> {
     validate_pack_id(&pack.capability_id)?;
     validate_file_name(&pack.file_name)?;
     if let Some(expected) = pack.sha256.as_deref() {
@@ -288,9 +284,7 @@ pub fn place_pack_bytes(
     let dest = dir.join(&pack.file_name);
     let partial = dest.with_extension(format!(
         "{}.part",
-        dest.extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("bin")
+        dest.extension().and_then(|e| e.to_str()).unwrap_or("bin")
     ));
     fs::write(&partial, bytes).with_context(|| format!("write {}", partial.display()))?;
     fs::rename(&partial, &dest).with_context(|| format!("rename into {}", dest.display()))?;
