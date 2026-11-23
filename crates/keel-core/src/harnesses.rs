@@ -11,6 +11,7 @@ use tokio::sync::watch;
 
 use crate::agent::{AgentEvent, ApprovalDecision};
 use crate::sessions::UiMessage;
+use crate::tools::{StagedEdit, StagedEditKind, StagedEditStatus};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HarnessOption {
@@ -592,8 +593,63 @@ enum KeelEvent {
         answer: Option<String>,
         error: Option<String>,
     },
+    /// Dedicated Diff/--shadow event from Keel CLI (`write_file` / `edit_file` / `patch_file`).
+    /// Shape matches olivermikkola/keel#83: path + unified diff (+ optional tool_call_id).
+    FileEdit {
+        path: String,
+        diff: String,
+        #[serde(default)]
+        tool_call_id: Option<String>,
+    },
     #[serde(other)]
     Other,
+}
+
+/// Build a pending staged edit from a CLI `file_edit` NDJSON event.
+fn staged_edit_from_cli_file_edit(
+    path: String,
+    diff: String,
+    tool_call_id: Option<String>,
+) -> StagedEdit {
+    let mut added = 0usize;
+    let mut removed = 0usize;
+    for line in diff.lines() {
+        if line.starts_with("+++") || line.starts_with("---") || line.starts_with("@@") {
+            continue;
+        }
+        if line.starts_with('+') {
+            added += 1;
+        } else if line.starts_with('-') {
+            removed += 1;
+        }
+    }
+    let kind = if removed == 0 && added > 0 && diff.contains("--- /dev/null") {
+        StagedEditKind::Create
+    } else if added == 0 && removed > 0 && diff.contains("+++ /dev/null") {
+        StagedEditKind::Delete
+    } else {
+        StagedEditKind::Edit
+    };
+    let summary = match kind {
+        StagedEditKind::Create => format!("Keel CLI create · {path}"),
+        StagedEditKind::Delete => format!("Keel CLI delete · {path}"),
+        _ => format!("Keel CLI edit · {path}"),
+    };
+    StagedEdit {
+        id: tool_call_id
+            .filter(|id| !id.trim().is_empty())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+        kind,
+        path,
+        new_path: None,
+        summary,
+        old_content: None,
+        new_content: None,
+        diff,
+        added_lines: added,
+        removed_lines: removed,
+        status: StagedEditStatus::Pending,
+    }
 }
 
 fn turn_summary_note(summary: &Value) -> String {
@@ -875,6 +931,18 @@ where
                         .as_deref()
                         .unwrap_or("Keel CLI reported a failed turn")
                 );
+            }
+            KeelEvent::FileEdit {
+                path,
+                diff,
+                tool_call_id,
+            } => {
+                let path = path.trim().to_string();
+                if path.is_empty() || diff.trim().is_empty() {
+                    continue;
+                }
+                let edit = staged_edit_from_cli_file_edit(path, diff, tool_call_id);
+                emit(AgentEvent::StagedEditAdded { edit });
             }
             _ => {}
         }
@@ -1302,15 +1370,20 @@ mod tests {
     }
 
     #[test]
-    fn streaming_protocol_has_no_file_edit_event_for_diff_projection() {
-        // Checklist: do not invent Diff projection until Keel CLI emits a dedicated
-        // file-edit / patch event type. Unknown types stay KeelEvent::Other.
-        // Diff/--shadow parity cannot be asserted until that protocol lands.
-        let other = parse_keel_event_line(
-            br#"{"type":"file_edit","path":"src/main.rs","diff":"--- a\n+++ b\n"}"#,
+    fn streaming_protocol_parses_file_edit_and_keeps_unknown_patch_as_other() {
+        // CLI protocol (keel#83): dedicated file_edit. Invented "patch" stays Other.
+        let edit = parse_keel_event_line(
+            br#"{"type":"file_edit","path":"src/main.rs","diff":"--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1 +1 @@\n-old\n+new\n","tool_call_id":"call-1"}"#,
         )
         .unwrap();
-        assert_eq!(other, KeelEvent::Other);
+        assert!(matches!(
+            edit,
+            KeelEvent::FileEdit {
+                path,
+                tool_call_id: Some(id),
+                ..
+            } if path == "src/main.rs" && id == "call-1"
+        ));
         let patch = parse_keel_event_line(br#"{"type":"patch","files":[]}"#).unwrap();
         assert_eq!(patch, KeelEvent::Other);
     }
@@ -1439,12 +1512,12 @@ mod tests {
             )),
             "expected turn summary: {events:?}"
         );
-        // Diff/--shadow: no staged edits until CLI advertises a file-edit event.
+        // No file_edit in this stream → still no invented staged edits.
         assert!(
             events
                 .iter()
                 .all(|e| !matches!(e, AgentEvent::StagedEditAdded { .. })),
-            "must not invent staged edits from the stream: {events:?}"
+            "must not invent staged edits without file_edit: {events:?}"
         );
     }
 
@@ -1733,11 +1806,9 @@ mod tests {
         );
     }
 
-    /// Diff/--shadow parity is intentionally not claimed yet: unknown file-edit
-    /// lines stay `Other` and never become `StagedEditAdded`. When the CLI
-    /// advertises a dedicated event, replace this with a real shadow assertion.
+    /// Diff/--shadow: CLI `file_edit` (keel#83) projects to StagedEditAdded.
     #[tokio::test]
-    async fn fake_cli_diff_shadow_parity_blocked_until_file_edit_protocol() {
+    async fn fake_cli_file_edit_projects_staged_edit_for_diff_shadow() {
         let (mut cli_out, desktop_in) = tokio::io::duplex(64 * 1024);
         let (mut desktop_out, _cli_in) = tokio::io::duplex(64 * 1024);
         let sandbox = fake_cli_sandbox();
@@ -1750,15 +1821,14 @@ mod tests {
                 ),
             )
             .await;
-            // Hypothetical future event — must not be treated as production Diff input.
             write_ndjson_line(
                 &mut cli_out,
-                r#"{"type":"file_edit","path":"src/main.rs","diff":"--- a\n+++ b\n"}"#,
+                r#"{"type":"file_edit","path":"src/main.rs","diff":"--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1 +1 @@\n-fn main() {}\n+fn main() { println!(\"hi\"); }\n","tool_call_id":"call-edit"}"#,
             )
             .await;
             write_ndjson_line(
                 &mut cli_out,
-                r#"{"type":"done","status":"ok","answer":"no diff yet","error":null}"#,
+                r#"{"type":"done","status":"ok","answer":"edited under shadow","error":null}"#,
             )
             .await;
         });
@@ -1771,17 +1841,21 @@ mod tests {
             |_id, _tool, _summary, _args| async { ApprovalDecision::Deny },
         )
         .await
-        .expect("unknown event types are skipped, turn still completes");
+        .expect("file_edit turn completes");
 
         fake.await.expect("fake CLI task");
-        assert_eq!(answer, "no diff yet");
-        assert!(
-            events.is_empty()
-                || events
-                    .iter()
-                    .all(|e| !matches!(e, AgentEvent::StagedEditAdded { .. })),
-            "Diff/--shadow must stay off until a real file-edit protocol event exists: {events:?}"
-        );
+        assert_eq!(answer, "edited under shadow");
+        let Some(AgentEvent::StagedEditAdded { edit }) = events
+            .iter()
+            .find(|e| matches!(e, AgentEvent::StagedEditAdded { .. }))
+        else {
+            panic!("expected StagedEditAdded from file_edit: {events:?}");
+        };
+        assert_eq!(edit.path, "src/main.rs");
+        assert_eq!(edit.id, "call-edit");
+        assert!(edit.diff.contains("println!"), "diff={}", edit.diff);
+        assert_eq!(edit.status, StagedEditStatus::Pending);
+        assert!(edit.added_lines >= 1 && edit.removed_lines >= 1);
     }
 
     #[test]
