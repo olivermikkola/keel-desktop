@@ -1,6 +1,6 @@
-# Everyday assistant — 0.5.0
+# Everyday assistant — 0.6.0
 
-The target is an assistant a person can use for recurring writing, document, data, and coding work without managing model-server commands. 0.4.0 made those workflows concrete; 0.5.0 adds approved web search, Chat vision, keep-alive, and a model check. It does not establish parity with Claude Pro, or justify a blanket recommendation to cancel a subscription.
+The target is an assistant a person can use for recurring writing, document, data, and coding work without managing model-server commands. 0.4.0 made those workflows concrete; 0.5.0 adds approved web search, Chat vision, keep-alive, and a model check; 0.6.0 adds Keel CLI Code mode, VRAM/pack scheduling, held-out eval scaffolding, local STT/TTS packs, and explicit opt-in remote providers. It does not establish parity with Claude Pro, or justify a blanket recommendation to cancel a subscription.
 
 ## Ready for testing
 
@@ -174,4 +174,4 @@ One additional email experiment showed why the reasoning switch needed a backend
 1. Measure the held-out pack on intended user hardware with the CPU and GPU/Metal command blocks under Continuous evidence (TTFT is recorded automatically), then expand remaining TODOs (native mid-turn recovery) and stronger project-document / multi-file coverage.
 2. Fill Published targets (TTFT, p50 latency, success rate, peak RSS) only via `scripts/publish_eval_targets.py --report …` after `--scaffold` / `--dry-run` review. Do not invent cells; do not infer GPU/Metal from CPU.
 3. Test with people doing the recurring tasks they currently use Claude for, and compare completed work, correction effort, and time—not just UI appearance or a few successful prompts.
-4. Address the failures those evaluations find. Hosted provider authentication and automatic audio/video packs remain separate unimplemented capabilities.
+4. Address the failures those evaluations find. Explicit remote providers (confirm non-loopback, secure API key, location/cost labels) and local STT/TTS audio packs ship in 0.6.0; video packs and Diff/`--shadow` parity remain open.
