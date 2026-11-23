@@ -496,7 +496,14 @@ mod tests {
         let on_disk = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("fixtures/packs")
             .join(DEMO_PACK_FILE);
-        assert_eq!(fs::read(&on_disk).unwrap(), demo_pack_bytes());
+        let mut bytes = fs::read(&on_disk).unwrap();
+        // Without binary .gitattributes, Windows checkouts may use CRLF.
+        if bytes.ends_with(b"\r\n") {
+            bytes.pop();
+            bytes.pop();
+            bytes.push(b'\n');
+        }
+        assert_eq!(bytes.as_slice(), demo_pack_bytes());
     }
 
     #[test]
