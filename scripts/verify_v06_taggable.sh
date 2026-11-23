@@ -12,13 +12,14 @@ bad() { printf 'FAIL %s\n' "$1"; fail=1; }
 
 version_cargo="$(awk '/^\[workspace.package\]/{p=1;next} p&&/^version/{gsub(/"/,"",$3);print $3;exit}' Cargo.toml)"
 version_tauri="$(python3 -c 'import json;print(json.load(open("src-tauri/tauri.conf.json"))["version"])')"
-version_footer="$(rg -n '0\.6\.0' ui/index.html | head -1 || true)"
+# Prefer grep over ripgrep so CI runners without `rg` still pass.
+version_footer="$(grep -n '0\.6\.0' ui/index.html | head -1 || true)"
 
 if [[ "$version_cargo" == "0.6.0" ]]; then ok "Cargo.toml workspace version 0.6.0"; else bad "Cargo.toml version is '$version_cargo' (want 0.6.0)"; fi
 if [[ "$version_tauri" == "0.6.0" ]]; then ok "tauri.conf.json version 0.6.0"; else bad "tauri.conf.json version is '$version_tauri' (want 0.6.0)"; fi
 if [[ -n "$version_footer" ]]; then ok "ui/index.html mentions 0.6.0"; else bad "ui/index.html missing 0.6.0"; fi
 
-if rg -q 'default: "v0.6.0"' .github/workflows/release.yml; then
+if grep -q 'default: "v0.6.0"' .github/workflows/release.yml; then
   ok "release.yml default tag v0.6.0"
 else
   bad "release.yml default tag is not v0.6.0"
