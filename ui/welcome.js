@@ -251,6 +251,10 @@ export function createWelcome(api) {
       const now = Date.now();
       if (now - lastChange > 250) { lastChange = now; api.changed(); }
     },
-    handleEscape() { if (busy) hide(); else if (view === "intro" || view === "error") skip(); },
+    handleEscape() {
+      if (busy || view === "paused") hide();
+      else if (view === "existing") { view = "intro"; render(); }
+      else if (view === "intro" || view === "error") skip();
+    },
   };
 }
