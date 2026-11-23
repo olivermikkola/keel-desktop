@@ -54,6 +54,8 @@ Formal targets for recommended model × hardware combinations. Fill a cell only 
 
 Re-run against a deliberately started local OpenAI-compatible server. **Measure CPU and GPU/Metal as separate runs** — never copy CPU cells into the GPU row.
 
+CI keeps the publish path honest without inventing cells: the main `CI` workflow runs `scripts/test_publish_eval_targets.py`, and the dispatchable **Eval targets evidence** workflow (`.github/workflows/eval-targets-evidence.yml`) re-runs that suite plus `--scaffold`. Optionally pass a human-supplied `docs/eval-results/*.json` for `--dry-run` validation and artifact upload — never auto-fills the Published targets table.
+
 ### Scaffold (no invented metrics)
 
 ```bash
