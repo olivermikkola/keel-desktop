@@ -2,9 +2,11 @@ use keel_core::agent::{
     run_agent_turn, AgentEvent, ApprovalDecision, EndpointUnreachable, TurnParams,
 };
 use keel_core::apps::{AppPreset, AppPresetInfo};
+use keel_core::audio::{self, AudioPackManifest};
 use keel_core::harnesses::{
-    code_execution_boundary, detect_harnesses, run_external_harness, run_keel_cli_turn,
-    CodeExecutionBoundary, HarnessOption, KeelCliTurn,
+    code_execution_boundary, detect_harnesses, recommended_code_harness, run_external_harness,
+    run_keel_cli_turn, validate_keel_session_log, CodeExecutionBoundary, HarnessOption,
+    KeelCliTurn,
 };
 use keel_core::mcp::{
     inspect_mcp_servers_with_trust, load_global_mcp_config, load_mcp_configs_with_trust,
@@ -17,8 +19,7 @@ use keel_core::models::{
     list_models, models_dir, parse_huggingface_gguf_url, CatalogModel,
 };
 use keel_core::runtime::{
-    check_runner_starts, find_llama_server, probe_openai_models, ModelLaunch, RuntimeManager,
-    RuntimeStatus,
+    check_runner_starts, find_llama_server, ModelLaunch, RuntimeManager, RuntimeStatus,
 };
 use keel_core::sessions::{
     delete_session, list_sessions, load_session, save_config, save_session, ChatSession,
@@ -70,6 +71,7 @@ pub struct BootstrapState {
     pub projects: Vec<keel_core::projects::ProjectInfo>,
     pub presets: Vec<AppPresetInfo>,
     pub harnesses: Vec<HarnessOption>,
+    pub recommended_code_harness: String,
     pub code_execution: CodeExecutionBoundary,
     pub mcp_servers: Vec<McpServerStatus>,
     pub ocr_available: bool,
@@ -97,6 +99,7 @@ pub async fn get_bootstrap_state(
     let sessions = list_sessions(&state.data_dir);
     let presets = AppPreset::all().iter().map(|p| p.info()).collect();
     let harnesses = detect_harnesses();
+    let recommended_code = recommended_code_harness(&harnesses).to_string();
     let ws = workspace_path.as_deref().map(Path::new);
     let ws_trusted = ws.map(|p| cfg.is_mcp_workspace_trusted(p)).unwrap_or(false);
     let loaded_mcp = load_mcp_configs_with_trust(&state.config_dir, ws, ws_trusted);
@@ -125,6 +128,7 @@ pub async fn get_bootstrap_state(
         projects: keel_core::projects::project_info(&state.data_dir),
         presets,
         harnesses,
+        recommended_code_harness: recommended_code,
         code_execution: code_execution_boundary(),
         mcp_servers,
         ocr_available: keel_core::documents::ocr_available(),
@@ -282,11 +286,16 @@ pub async fn import_keel_session(
     let root =
         validate_workspace_root(Path::new(&workspace_path)).map_err(|error| error.to_string())?;
     let selected = tokio::task::spawn_blocking(move || {
-        app.dialog()
+        let mut picker = app
+            .dialog()
             .file()
             .set_title("Open a Keel CLI session")
-            .add_filter("Keel session logs", &["jsonl"])
-            .blocking_pick_file()
+            .add_filter("Keel session logs", &["jsonl"]);
+        // Prefer the CLI's default journal folder when it exists (~/.keel/sessions).
+        if let Some(sessions) = keel_core::harnesses::default_keel_sessions_dir() {
+            picker = picker.set_directory(sessions);
+        }
+        picker.blocking_pick_file()
     })
     .await
     .map_err(|error| error.to_string())?;
@@ -322,6 +331,51 @@ pub async fn import_keel_session(
     };
     save_session(&state.data_dir, &session).map_err(|error| error.to_string())?;
     Ok(Some(session))
+}
+
+fn session_keel_log(session: &ChatSession) -> Result<PathBuf, String> {
+    if session.app_preset != AppPreset::Code {
+        return Err("Journal handoff is only available for Code sessions.".into());
+    }
+    let Some(log) = session.keel_session_log.as_ref() else {
+        return Err(
+            "This Code thread has no Keel CLI journal yet. Start a turn with Engine for Code mode set to Keel CLI, or use Open CLI session to import one."
+                .into(),
+        );
+    };
+    validate_keel_session_log(log).map_err(|e| e.to_string())
+}
+
+/// Reveal the Code session's Keel CLI journal in the system file manager.
+#[tauri::command]
+pub async fn reveal_keel_session_log(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<String, String> {
+    use tauri_plugin_opener::OpenerExt;
+    let session = load_session(&state.data_dir, &session_id).map_err(|e| e.to_string())?;
+    let path = session_keel_log(&session)?;
+    let folder = path
+        .parent()
+        .ok_or_else(|| "Journal path has no parent folder".to_string())?;
+    app.opener()
+        .open_path(folder.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Copy the validated Keel CLI journal into `~/.keel/sessions` under a safe name.
+#[tauri::command]
+pub async fn export_keel_session_log(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<String, String> {
+    let session = load_session(&state.data_dir, &session_id).map_err(|e| e.to_string())?;
+    let log = session_keel_log(&session)?;
+    let exported = keel_core::harnesses::export_keel_session_log(&log, &session.id, &session.title)
+        .map_err(|e| e.to_string())?;
+    Ok(exported.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -441,8 +495,9 @@ async fn cached_advice(state: &AppState, model_bytes: u64) -> keel_core::hardwar
     let devices = keel_core::setup::installed_graphics_runtime(&state.data_dir)
         .map(|bin| keel_core::hardware::probe_devices(&bin))
         .unwrap_or_default();
+    let machine = keel_core::hardware::detect_machine();
     let advice = keel_core::hardware::advise(
-        &keel_core::hardware::detect_machine(),
+        &machine,
         &cfg.run_where,
         &cfg.graphics_share,
         model_bytes,
@@ -539,6 +594,8 @@ fn launch_for<'a>(
 
 /// Keeps the managed runner when the model and the graphics-or-processor choice
 /// have not changed. The next message does not pay for another load.
+/// Pack starts should call [`prepare_pack_vram`] first so a VRAM-hungry pack can
+/// stop this keep-alive via `plan_pack_vram` / `should_stop_keep_alive_for_pack`.
 async fn loaded_model_can_stay(state: &AppState) -> Option<RuntimeStatus> {
     let cfg = state.config.lock().await.clone();
     if cfg.external_base_url.is_some() {
@@ -674,6 +731,7 @@ async fn auto_start_local_model(
                 cfg.selected_model_id = cand.id;
                 cfg.external_base_url = None;
                 cfg.external_model_name = None;
+                let _ = keel_core::remote::clear_external_api_key(&state.data_dir);
                 save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
                 return Ok(status);
             }
@@ -749,6 +807,7 @@ pub async fn start_model(
     cfg.selected_model_id = model.id;
     cfg.external_base_url = None;
     cfg.external_model_name = None;
+    let _ = keel_core::remote::clear_external_api_key(&state.data_dir);
     save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
     Ok(status)
 }
@@ -811,7 +870,136 @@ pub async fn stop_runtime(state: State<'_, AppState>) -> Result<RuntimeStatus, S
     cfg.external_base_url = None;
     cfg.external_model_name = None;
     save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
+    keel_core::remote::clear_external_api_key(&state.data_dir).map_err(|e| e.to_string())?;
     Ok(rt.status())
+}
+
+/// Result of probing VRAM and optionally stopping keep-alive for a pack.
+#[derive(Debug, Clone, Serialize)]
+pub struct PackVramResult {
+    /// `unloaded` | `already_free` | `processor_fallback`
+    pub status: String,
+    pub reason: String,
+    pub capability_id: String,
+    pub usable_free_mib: u64,
+    pub runtime: RuntimeStatus,
+}
+
+fn fresh_vram_inventory(state: &AppState) -> keel_core::hardware::VramInventory {
+    let devices = keel_core::setup::installed_graphics_runtime(&state.data_dir)
+        .map(|bin| keel_core::hardware::probe_devices(&bin))
+        .unwrap_or_default();
+    let machine = keel_core::hardware::detect_machine();
+    keel_core::hardware::inventory(&machine, &devices)
+}
+
+/// Probe current VRAM and stop keep-alive when a pack needs the graphics memory.
+async fn prepare_pack_vram_for_manifest(
+    state: &AppState,
+    pack: keel_core::packs::PackManifest,
+) -> Result<PackVramResult, String> {
+    let inventory = fresh_vram_inventory(state);
+
+    let mut rt = state.runtime.lock().await;
+    let plan = keel_core::runtime::plan_pack_vram(&inventory, &pack, rt.loaded_launch());
+    if plan.stop_keep_alive {
+        // Same managed-runner stop as stop_runtime; leave external endpoint alone.
+        rt.stop().await;
+        drop(rt);
+        *state.placement_cache.lock().await = None;
+        let mut rt = state.runtime.lock().await;
+        return Ok(PackVramResult {
+            status: "unloaded".into(),
+            reason: plan.reason,
+            capability_id: pack.capability_id,
+            usable_free_mib: inventory.usable_free_mib,
+            runtime: rt.status(),
+        });
+    }
+    let status = match plan.status {
+        keel_core::runtime::PackVramStatus::Unloaded => "unloaded",
+        keel_core::runtime::PackVramStatus::AlreadyFree => "already_free",
+        keel_core::runtime::PackVramStatus::ProcessorFallback => "processor_fallback",
+    };
+    Ok(PackVramResult {
+        status: status.to_string(),
+        reason: plan.reason,
+        capability_id: pack.capability_id,
+        usable_free_mib: inventory.usable_free_mib,
+        runtime: rt.status(),
+    })
+}
+
+/// Probe current VRAM and stop keep-alive when a pack needs the graphics memory.
+///
+/// Returns `unloaded` when the managed runner was stopped, `already_free` when
+/// the pack can use graphics without unloading, or `processor_fallback` when
+/// the pack should run on the processor.
+#[tauri::command]
+pub async fn prepare_pack_vram(
+    state: State<'_, AppState>,
+    capability_id: String,
+    min_vram_mib: u64,
+    runner_kind: Option<String>,
+) -> Result<PackVramResult, String> {
+    let kind = match runner_kind.as_deref() {
+        Some(raw) => keel_core::packs::parse_runner_kind(raw)?,
+        None => keel_core::packs::RunnerKind::Text,
+    };
+    let pack = keel_core::packs::PackManifest::new(capability_id.trim(), min_vram_mib, kind);
+    prepare_pack_vram_for_manifest(&state, pack).await
+}
+
+/// List capability packs with on-disk install status under the data directory.
+#[tauri::command]
+pub async fn list_capability_packs(
+    state: State<'_, AppState>,
+) -> Result<Vec<keel_core::packs::CapabilityPack>, String> {
+    let data_dir = state.data_dir.clone();
+    tokio::task::spawn_blocking(move || keel_core::packs::list_capability_packs(&data_dir))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Download a checksummed catalog pack into `{data_dir}/packs/<id>/`.
+#[tauri::command]
+pub async fn download_capability_pack(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    capability_id: String,
+) -> Result<Vec<keel_core::packs::CapabilityPack>, String> {
+    let _download = state
+        .download_lock
+        .try_lock()
+        .map_err(|_| "Another download is running")?;
+    let data_dir = state.data_dir.clone();
+    let id = capability_id.trim().to_string();
+    keel_core::packs::download_capability_pack(&data_dir, &id, |prog| {
+        let _ = app.emit("keel://download-progress", prog);
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(keel_core::packs::list_capability_packs(&data_dir))
+}
+
+/// Remove an installed capability pack from disk.
+#[tauri::command]
+pub async fn remove_capability_pack(
+    state: State<'_, AppState>,
+    capability_id: String,
+) -> Result<Vec<keel_core::packs::CapabilityPack>, String> {
+    let _download = state
+        .download_lock
+        .try_lock()
+        .map_err(|_| "Wait for the current download to finish before removing a pack")?;
+    let data_dir = state.data_dir.clone();
+    let id = capability_id.trim().to_string();
+    tokio::task::spawn_blocking(move || {
+        keel_core::packs::remove_capability_pack(&data_dir, &id).map_err(|e| e.to_string())?;
+        Ok(keel_core::packs::list_capability_packs(&data_dir))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -819,21 +1007,43 @@ pub async fn set_external_endpoint(
     state: State<'_, AppState>,
     base_url: String,
     model_name: Option<String>,
+    confirm_remote: Option<bool>,
+    api_key: Option<String>,
 ) -> Result<RuntimeStatus, String> {
-    if keel_core::runtime::is_default_managed_loopback(&base_url) {
-        return Err(
-            "That address is Keel's own built-in AI engine. Pick a downloaded model in Models instead, or connect Ollama (11434) or LM Studio (1234)."
-                .to_string(),
-        );
-    }
-    let probed = probe_openai_models(&base_url).await.map_err(|_| {
-        "Couldn't connect. Make sure Ollama or LM Studio is open and running, then try again."
-            .to_string()
-    })?;
+    let confirm_remote = confirm_remote.unwrap_or(false);
+    keel_core::remote::validate_external_connect(&base_url, confirm_remote)
+        .map_err(|e| e.to_string())?;
+    // None keeps any previously saved key; Some("") clears; Some(value) replaces.
+    let key_for_request = match api_key.as_deref().map(str::trim) {
+        Some("") => None,
+        Some(key) => Some(key.to_string()),
+        None => keel_core::remote::load_external_api_key(&state.data_dir),
+    };
+    let probed =
+        keel_core::runtime::probe_openai_models_with_auth(&base_url, key_for_request.as_deref())
+            .await
+            .map_err(|_| {
+                if keel_core::runtime::is_loopback_url(&base_url) {
+                    "Couldn't connect. Make sure Ollama or LM Studio is open and running, then try again."
+                        .to_string()
+                } else {
+                    "Couldn't connect to that server. Check the address, API key, and that you confirmed a remote server."
+                        .to_string()
+                }
+            })?;
     let chosen = model_name
         .filter(|s| !s.trim().is_empty())
         .or_else(|| probed.into_iter().next())
         .unwrap_or_else(|| "default".to_string());
+
+    match api_key.as_deref().map(str::trim) {
+        None => {}
+        Some("") => {
+            keel_core::remote::clear_external_api_key(&state.data_dir).map_err(|e| e.to_string())?
+        }
+        Some(key) => keel_core::remote::save_external_api_key(&state.data_dir, Some(key))
+            .map_err(|e| e.to_string())?,
+    }
 
     let mut cfg = state.config.lock().await;
     let mut rt = state.runtime.lock().await;
@@ -848,6 +1058,7 @@ pub async fn set_external_endpoint(
 
 #[tauri::command]
 pub async fn clear_external_endpoint(state: State<'_, AppState>) -> Result<RuntimeStatus, String> {
+    let _ = keel_core::remote::clear_external_api_key(&state.data_dir);
     stop_runtime(state).await
 }
 
@@ -1252,6 +1463,11 @@ pub async fn send_message(
     let mut final_session = session.clone();
 
     for attempt in 0..2 {
+        let external_api_key = if rt_status.state == "external" {
+            keel_core::remote::load_external_api_key(&state.data_dir)
+        } else {
+            None
+        };
         let params = TurnParams {
             base_url: base_url.clone(),
             model_name: model_name.clone(),
@@ -1265,6 +1481,7 @@ pub async fn send_message(
             mcp_config: mcp_cfg.clone(),
             mcp_tools: mcp_tools.clone(),
             max_steps: 12,
+            api_key: external_api_key,
         };
 
         let mut recorder =
@@ -2050,4 +2267,122 @@ pub async fn publish_code_changes(
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())
+}
+
+/// List STT/TTS packs. `installed` / `runner_path` reflect on-disk state under the data dir.
+#[tauri::command]
+pub async fn list_audio_packs(
+    state: State<'_, AppState>,
+) -> Result<Vec<AudioPackManifest>, String> {
+    Ok(audio::list_audio_packs_resolved(&state.data_dir))
+}
+
+/// Mark a catalog pack installed without a runner (Settings → Mark installed).
+#[tauri::command]
+pub async fn mark_audio_pack_installed(
+    state: State<'_, AppState>,
+    pack_id: String,
+) -> Result<AudioPackManifest, String> {
+    let data_dir = state.data_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        audio::mark_audio_pack_installed(&data_dir, &pack_id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Register a local binary/script as the pack runner and mark it installed.
+#[tauri::command]
+pub async fn register_audio_pack_runner(
+    state: State<'_, AppState>,
+    pack_id: String,
+    command: String,
+    args: Option<Vec<String>>,
+) -> Result<AudioPackManifest, String> {
+    let data_dir = state.data_dir.clone();
+    let extra = args.unwrap_or_default();
+    tokio::task::spawn_blocking(move || {
+        audio::register_audio_pack_runner(&data_dir, &pack_id, &command, &extra)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Record a download-URL stub (no bytes fetched yet) and mark the pack installed.
+#[tauri::command]
+pub async fn install_audio_pack_download_stub(
+    state: State<'_, AppState>,
+    pack_id: String,
+    url: Option<String>,
+) -> Result<AudioPackManifest, String> {
+    let data_dir = state.data_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        audio::install_audio_pack_download_stub(&data_dir, &pack_id, url.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Prepare VRAM for an audio catalog pack (real keep-alive unload via [`prepare_pack_vram_for_manifest`]).
+#[tauri::command]
+pub async fn prepare_audio_pack_vram(
+    state: State<'_, AppState>,
+    pack_id: String,
+) -> Result<PackVramResult, String> {
+    let pack = audio::find_audio_pack(&pack_id)
+        .ok_or_else(|| format!("Unknown audio pack id '{pack_id}'."))?;
+    prepare_pack_vram_for_manifest(&state, pack.to_pack_manifest()).await
+}
+
+/// Resolve the installed pack for a capability and run real `prepare_pack_vram`.
+async fn prepare_vram_for_audio_capability(
+    state: &AppState,
+    capability: audio::AudioCapability,
+) -> Result<PackVramResult, String> {
+    let data_dir = state.data_dir.clone();
+    let pack = tokio::task::spawn_blocking(move || {
+        audio::require_installed_audio_pack(&data_dir, capability).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    prepare_pack_vram_for_manifest(state, pack.to_pack_manifest()).await
+}
+
+/// Speech-to-text entry. Surfaces not-installed / missing-runner errors as strings.
+///
+/// Calls real [`prepare_pack_vram_for_manifest`] first so a VRAM-hungry STT pack
+/// can unload keep-alive before the local runner starts.
+#[tauri::command]
+pub async fn run_audio_stt(
+    state: State<'_, AppState>,
+    audio_path: String,
+) -> Result<String, String> {
+    prepare_vram_for_audio_capability(&state, audio::AudioCapability::Stt).await?;
+    let data_dir = state.data_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        audio::run_stt(&data_dir, Path::new(&audio_path)).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Text-to-speech entry. Surfaces not-installed / missing-runner errors as strings.
+///
+/// Calls real [`prepare_pack_vram_for_manifest`] first so a VRAM-hungry TTS pack
+/// can unload keep-alive before the local runner starts.
+#[tauri::command]
+pub async fn run_audio_tts(
+    state: State<'_, AppState>,
+    text: String,
+    output_path: String,
+) -> Result<(), String> {
+    prepare_vram_for_audio_capability(&state, audio::AudioCapability::Tts).await?;
+    let data_dir = state.data_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        audio::run_tts(&data_dir, &text, Path::new(&output_path)).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }

@@ -34,6 +34,15 @@ fn main() {
         .map(|p| p.join("data"))
         .unwrap_or_else(default_data_dir);
     let mut cfg = load_config(&config_dir);
+    // New installs only: prefer Keel CLI for Code when it is on PATH. Never rewrite
+    // an existing config.json (users who chose the built-in harness keep it).
+    if !keel_core::sessions::config_file_exists(&config_dir) {
+        let recommended = keel_core::harnesses::recommended_code_harness(
+            &keel_core::harnesses::detect_harnesses(),
+        );
+        cfg.harness_mode = keel_core::sessions::first_run_harness_mode(recommended).to_string();
+        let _ = keel_core::sessions::save_config(&config_dir, &cfg);
+    }
     if cfg
         .external_base_url
         .as_deref()
@@ -131,12 +140,18 @@ fn main() {
             commands::read_workspace_file_raw,
             commands::create_session,
             commands::import_keel_session,
+            commands::reveal_keel_session_log,
+            commands::export_keel_session_log,
             commands::load_session_cmd,
             commands::delete_session_cmd,
             commands::start_model,
             commands::auto_start_model,
             commands::check_current_model,
             commands::stop_runtime,
+            commands::prepare_pack_vram,
+            commands::list_capability_packs,
+            commands::download_capability_pack,
+            commands::remove_capability_pack,
             commands::get_runtime_status,
             commands::set_external_endpoint,
             commands::clear_external_endpoint,
@@ -164,6 +179,13 @@ fn main() {
             commands::remove_mcp_server,
             commands::set_workspace_mcp_trust,
             commands::refresh_mcp_servers,
+            commands::list_audio_packs,
+            commands::mark_audio_pack_installed,
+            commands::register_audio_pack_runner,
+            commands::install_audio_pack_download_stub,
+            commands::prepare_audio_pack_vram,
+            commands::run_audio_stt,
+            commands::run_audio_tts,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Keel Desktop");

@@ -20,6 +20,8 @@ use std::time::{Duration, Instant};
 
 const SMALL_MODEL_BYTES: u64 = 1_099_627_808;
 const FULL_MARGIN_MIB: u64 = 256;
+/// Below this free MiB, Auto/Graphics placement falls back to the processor.
+pub const MIN_USEFUL_FREE_MIB: u64 = 512;
 /// A discrete graphics chip at least this large can comfortably run the 4B model.
 const DISCRETE_4B_MIB: u64 = 3072;
 /// A discrete graphics chip at least this large can comfortably run the 9B model.
@@ -56,6 +58,8 @@ pub struct Machine {
     pub has_nvidia_graphics: bool,
     pub nvidia_driver_usable: bool,
     pub nvidia_memory_mib: u64,
+    /// Free MiB from nvidia-smi when available; 0 means unknown (use total).
+    pub nvidia_free_mib: u64,
 }
 
 impl Machine {
@@ -78,12 +82,56 @@ pub struct GraphicsDevice {
 }
 
 impl GraphicsDevice {
-    fn usable_mib(&self) -> u64 {
+    /// Free MiB when known, otherwise the reported total.
+    pub fn usable_mib(&self) -> u64 {
         if self.free_mib > 0 {
             self.free_mib
         } else {
             self.total_mib
         }
+    }
+}
+
+/// Where the usable-free figure came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InventorySource {
+    ListDevices,
+    NvidiaSmi,
+    None,
+}
+
+/// Snapshot used by runtime start, keep-alive, and pack unload decisions.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct VramInventory {
+    /// Best free MiB available for a new load (preferred device).
+    pub usable_free_mib: u64,
+    pub total_mib: u64,
+    /// `"discrete"`, `"integrated"`, or empty when unknown.
+    pub kind: String,
+    pub source: InventorySource,
+    /// Preferred graphics device when one is known.
+    #[serde(skip)]
+    pub preferred: Option<GraphicsDevice>,
+    #[serde(skip)]
+    pub devices: Vec<GraphicsDevice>,
+}
+
+impl VramInventory {
+    pub fn empty() -> Self {
+        Self {
+            usable_free_mib: 0,
+            total_mib: 0,
+            kind: String::new(),
+            source: InventorySource::None,
+            preferred: None,
+            devices: Vec::new(),
+        }
+    }
+
+    /// True when the preferred device has at least `need_mib` free.
+    pub fn has_free(&self, need_mib: u64) -> bool {
+        need_mib == 0 || self.usable_free_mib >= need_mib
     }
 }
 
@@ -93,6 +141,14 @@ pub struct ComputerAdvice {
     pub summary: String,
     pub recommended_model_id: String,
     pub graphics_ready: bool,
+    /// Best known graphics memory (MiB). Prefers `--list-devices`; falls back to nvidia-smi.
+    pub vram_total_mib: u64,
+    pub vram_free_mib: u64,
+    /// `"discrete"`, `"integrated"`, or empty when unknown.
+    pub vram_kind: String,
+    /// Empty when using graphics or the person chose the processor; otherwise why.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub processor_reason: String,
     #[serde(skip)]
     pub args: Vec<String>,
     #[serde(skip)]
@@ -204,21 +260,101 @@ pub fn parse_lspci(text: &str) -> (bool, bool, bool) {
     (intel, amd, nvidia)
 }
 
-/// `(driver responded, largest memory in MiB)`.
-pub fn parse_nvidia_smi(text: &str) -> (bool, u64) {
+/// `(driver responded, largest total MiB, free MiB for that GPU)`.
+/// Free is 0 when the CSV line only has total (older query shape).
+pub fn parse_nvidia_smi(text: &str) -> (bool, u64, u64) {
     let mut any = false;
-    let mut best = 0u64;
+    let mut best_total = 0u64;
+    let mut best_free = 0u64;
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.to_ascii_lowercase().contains("failed") {
             continue;
         }
         any = true;
-        if let Some(memory) = line.split(',').nth(1).and_then(parse_mib_token) {
-            best = best.max(memory);
+        let mut parts = line.split(',');
+        let _name = parts.next();
+        let total = parts.next().and_then(parse_mib_token).unwrap_or(0);
+        let free = parts.next().and_then(parse_mib_token).unwrap_or(0);
+        if total >= best_total {
+            best_total = total;
+            best_free = free;
         }
     }
-    (any, best)
+    (any, best_total, best_free)
+}
+
+/// Discrete NVIDIA chip inferred from nvidia-smi when `--list-devices` is empty.
+pub fn nvidia_fallback_devices(machine: &Machine) -> Vec<GraphicsDevice> {
+    if !machine.nvidia_driver_usable || machine.nvidia_memory_mib == 0 {
+        return Vec::new();
+    }
+    let free = if machine.nvidia_free_mib > 0 {
+        machine.nvidia_free_mib
+    } else {
+        machine.nvidia_memory_mib
+    };
+    vec![GraphicsDevice {
+        id: "nvidia".to_string(),
+        name: "NVIDIA".to_string(),
+        total_mib: machine.nvidia_memory_mib,
+        free_mib: free,
+        kind: DeviceKind::Discrete,
+    }]
+}
+
+fn kind_label(kind: DeviceKind) -> String {
+    match kind {
+        DeviceKind::Discrete => "discrete".to_string(),
+        DeviceKind::Integrated => "integrated".to_string(),
+        DeviceKind::Software => String::new(),
+    }
+}
+
+fn prefer_inventory_device(devices: &[GraphicsDevice]) -> Option<&GraphicsDevice> {
+    devices.iter().max_by_key(|device| {
+        (
+            u8::from(device.kind == DeviceKind::Discrete),
+            device.usable_mib(),
+            device.total_mib,
+        )
+    })
+}
+
+/// Build the VRAM inventory used by start / keep-alive / pack scheduling.
+/// Prefers probed `--list-devices`; falls back to nvidia-smi totals.
+pub fn inventory(machine: &Machine, probed: &[GraphicsDevice]) -> VramInventory {
+    let real: Vec<GraphicsDevice> = probed
+        .iter()
+        .filter(|device| device.kind != DeviceKind::Software)
+        .cloned()
+        .collect();
+    let (devices, source) = if !real.is_empty() {
+        (real, InventorySource::ListDevices)
+    } else {
+        let fallback = nvidia_fallback_devices(machine);
+        if fallback.is_empty() {
+            return VramInventory::empty();
+        }
+        (fallback, InventorySource::NvidiaSmi)
+    };
+    let preferred = prefer_inventory_device(&devices).cloned();
+    match preferred {
+        Some(device) => VramInventory {
+            usable_free_mib: device.usable_mib(),
+            total_mib: device.total_mib,
+            kind: kind_label(device.kind),
+            source,
+            preferred: Some(device),
+            devices,
+        },
+        None => VramInventory::empty(),
+    }
+}
+
+/// Devices for model sizing: prefer probed `--list-devices`, else nvidia-smi.
+fn sizing_devices(machine: &Machine, devices: &[GraphicsDevice]) -> Vec<GraphicsDevice> {
+    inventory(machine, devices).devices
 }
 
 pub fn parse_device_list(text: &str) -> Vec<GraphicsDevice> {
@@ -297,10 +433,7 @@ pub fn model_fits_entirely(device_mib: u64, model_bytes: u64) -> bool {
 }
 
 pub fn recommended_model_id(machine: &Machine, devices: &[GraphicsDevice]) -> &'static str {
-    let real: Vec<&GraphicsDevice> = devices
-        .iter()
-        .filter(|device| device.kind != DeviceKind::Software)
-        .collect();
+    let real = sizing_devices(machine, devices);
     if let Some(discrete) = real
         .iter()
         .filter(|device| device.kind == DeviceKind::Discrete)
@@ -371,14 +504,26 @@ pub fn advise(
         model_bytes
     };
     let recommended = recommended_model_id(machine, devices).to_string();
+    let snap = inventory(machine, devices);
+    // Launch offload still needs a probed device id from `--list-devices`.
+    // nvidia-smi only informs recommendation and the VRAM inventory above.
     let graphics_ready = devices
         .iter()
         .any(|device| device.kind != DeviceKind::Software);
     let preference = parse_run_where(run_where);
     let share_pref = parse_graphics_share(graphics_share);
-    let device = pick_device(devices, model_bytes);
-    let use_graphics =
-        device.is_some() && matches!(preference, RunWhere::Auto | RunWhere::Graphics);
+    let (device, insufficient_free) = pick_device(devices, model_bytes);
+    let wants_graphics = matches!(preference, RunWhere::Auto | RunWhere::Graphics);
+    let use_graphics = device.is_some() && wants_graphics;
+    let processor_reason =
+        if !use_graphics && preference != RunWhere::Processor && insufficient_free {
+            format!(
+            "Not enough free graphics memory (need about {MIN_USEFUL_FREE_MIB} MiB; {} MiB free).",
+            snap.usable_free_mib
+        )
+        } else {
+            String::new()
+        };
     let (args, whole) = if let (true, Some(device)) = (use_graphics, device) {
         let fits = model_fits_entirely(device.usable_mib(), model_bytes);
         let whole = match share_pref {
@@ -396,35 +541,57 @@ pub fn advise(
         graphics_ready,
         use_graphics,
         whole,
+        &processor_reason,
     );
     ComputerAdvice {
         summary,
         recommended_model_id: recommended,
         graphics_ready,
+        vram_total_mib: snap.total_mib,
+        vram_free_mib: snap.usable_free_mib,
+        vram_kind: snap.kind,
+        processor_reason,
         args,
         use_graphics,
     }
 }
 
-fn pick_device(devices: &[GraphicsDevice], model_bytes: u64) -> Option<&GraphicsDevice> {
+/// Pick a probed device with enough free VRAM. Returns `(device, insufficient_free)`.
+/// `insufficient_free` is true when real devices exist but none have useful free memory.
+pub fn pick_device(
+    devices: &[GraphicsDevice],
+    model_bytes: u64,
+) -> (Option<&GraphicsDevice>, bool) {
     let real: Vec<&GraphicsDevice> = devices
         .iter()
         .filter(|device| device.kind != DeviceKind::Software)
         .collect();
+    if real.is_empty() {
+        return (None, false);
+    }
     let fitting: Vec<&GraphicsDevice> = real
         .iter()
         .copied()
         .filter(|device| model_fits_entirely(device.usable_mib(), model_bytes))
         .collect();
     if !fitting.is_empty() {
-        return fitting.into_iter().max_by_key(|device| {
+        let best = fitting.into_iter().max_by_key(|device| {
             (
                 u8::from(device.kind == DeviceKind::Discrete),
                 device.usable_mib(),
             )
         });
+        return (best, false);
     }
-    real.into_iter().max_by_key(|device| device.usable_mib())
+    let partial: Vec<&GraphicsDevice> = real
+        .iter()
+        .copied()
+        .filter(|device| device.usable_mib() >= MIN_USEFUL_FREE_MIB)
+        .collect();
+    if let Some(best) = partial.into_iter().max_by_key(|device| device.usable_mib()) {
+        return (Some(best), false);
+    }
+    (None, true)
 }
 
 fn graphics_args(device: &GraphicsDevice, whole: bool, model_bytes: u64) -> Vec<String> {
@@ -480,6 +647,7 @@ fn summary_sentence(
     graphics_ready: bool,
     use_graphics: bool,
     whole: bool,
+    processor_reason: &str,
 ) -> String {
     if use_graphics {
         return match (preference, whole) {
@@ -495,6 +663,9 @@ fn summary_sentence(
                     .to_string()
             }
         };
+    }
+    if !processor_reason.is_empty() {
+        return format!("{processor_reason} The model runs on the processor.");
     }
     match preference {
         RunWhere::Processor => "The model runs on the processor.".to_string(),
@@ -559,13 +730,16 @@ pub fn detect_machine() -> Machine {
     let (has_intel_graphics, has_amd_graphics, has_nvidia_graphics) = parse_lspci(&pci);
     let nvidia = run_capture(
         Path::new("nvidia-smi"),
-        &["--query-gpu=name,memory.total", "--format=csv,noheader"],
+        &[
+            "--query-gpu=name,memory.total,memory.free",
+            "--format=csv,noheader",
+        ],
         Duration::from_secs(2),
     );
-    let (nvidia_driver_usable, nvidia_memory_mib) = nvidia
+    let (nvidia_driver_usable, nvidia_memory_mib, nvidia_free_mib) = nvidia
         .as_deref()
         .map(parse_nvidia_smi)
-        .unwrap_or((false, 0));
+        .unwrap_or((false, 0, 0));
     Machine {
         physical_cores: physical,
         logical_cpus: logical,
@@ -575,6 +749,7 @@ pub fn detect_machine() -> Machine {
         has_nvidia_graphics,
         nvidia_driver_usable,
         nvidia_memory_mib,
+        nvidia_free_mib,
     }
 }
 
@@ -639,6 +814,7 @@ Available devices:
             has_nvidia_graphics: true,
             nvidia_driver_usable: false,
             nvidia_memory_mib: 0,
+            nvidia_free_mib: 0,
         }
     }
 
@@ -684,9 +860,13 @@ physical id\t: 0
         );
         assert_eq!(
             parse_nvidia_smi("NVIDIA GeForce MX150, 2048 MiB\n"),
-            (true, 2048)
+            (true, 2048, 0)
         );
-        assert_eq!(parse_nvidia_smi(""), (false, 0));
+        assert_eq!(
+            parse_nvidia_smi("NVIDIA GeForce RTX 4070, 12288 MiB, 11000 MiB\n"),
+            (true, 12288, 11000)
+        );
+        assert_eq!(parse_nvidia_smi(""), (false, 0, 0));
         let found = devices();
         assert_eq!(found.len(), 2);
         assert_eq!(found[0].id, "Vulkan0");
@@ -722,6 +902,10 @@ physical id\t: 0
         let advice = advise(&zenbook(), "auto", "auto", LFM3_BYTES, &found);
         assert_eq!(advice.recommended_model_id, "lfm3-1.7b");
         assert!(advice.use_graphics);
+        // Prefer the discrete MX150 inventory over the inflated UHD shared heap.
+        assert_eq!(advice.vram_total_mib, 2304);
+        assert_eq!(advice.vram_free_mib, 2073);
+        assert_eq!(advice.vram_kind, "discrete");
         assert_eq!(
             advice.args,
             vec![
@@ -788,12 +972,15 @@ physical id\t: 0
             has_nvidia_graphics: false,
             nvidia_driver_usable: false,
             nvidia_memory_mib: 0,
+            nvidia_free_mib: 0,
         };
         let devices = parse_device_list("  Vulkan0: Intel(R) Graphics (8192 MiB, 7000 MiB free)\n");
         assert_eq!(devices[0].kind, DeviceKind::Integrated);
         assert_eq!(recommended_model_id(&machine, &devices), "bonsai-4b");
         assert_eq!(lighter_model_id("bonsai-4b"), Some("lfm3-1.7b"));
         let advice = advise(&machine, "auto", "auto", LFM3_BYTES, &devices);
+        assert_eq!(advice.vram_kind, "integrated");
+        assert_eq!(advice.vram_total_mib, 8192);
         assert!(has_flag(&advice.args, "--device", "Vulkan0"));
         assert!(has_flag(&advice.args, "--gpu-layers", "all"));
         assert_plain(&advice.summary);
@@ -810,6 +997,7 @@ physical id\t: 0
             has_nvidia_graphics: true,
             nvidia_driver_usable: true,
             nvidia_memory_mib: 12288,
+            nvidia_free_mib: 11000,
         };
         let devices =
             parse_device_list("  CUDA0: NVIDIA GeForce RTX 4070 (12288 MiB, 11000 MiB free)\n");
@@ -817,8 +1005,57 @@ physical id\t: 0
         assert_eq!(recommended_model_id(&machine, &devices), "bonsai-9b");
         assert_eq!(lighter_model_id("bonsai-9b"), Some("bonsai-4b"));
         let advice = advise(&machine, "auto", "auto", BONSAI_9B_BYTES, &devices);
+        assert_eq!(advice.vram_total_mib, 12288);
+        assert_eq!(advice.vram_kind, "discrete");
         assert!(has_flag(&advice.args, "--device", "CUDA0"));
         assert!(has_flag(&advice.args, "--gpu-layers", "all"));
+    }
+
+    #[test]
+    fn nvidia_smi_sizes_the_model_when_list_devices_is_empty() {
+        let machine = Machine {
+            physical_cores: 8,
+            logical_cpus: 16,
+            memory_bytes: 32 * 1024 * 1024 * 1024,
+            has_intel_graphics: false,
+            has_amd_graphics: false,
+            has_nvidia_graphics: true,
+            nvidia_driver_usable: true,
+            nvidia_memory_mib: 12288,
+            nvidia_free_mib: 11000,
+        };
+        assert_eq!(recommended_model_id(&machine, &[]), "bonsai-9b");
+        let advice = advise(&machine, "auto", "auto", BONSAI_9B_BYTES, &[]);
+        assert_eq!(advice.recommended_model_id, "bonsai-9b");
+        assert_eq!(advice.vram_total_mib, 12288);
+        assert_eq!(advice.vram_free_mib, 11000);
+        assert_eq!(advice.vram_kind, "discrete");
+        // No probed device id → stay on the processor for launch flags.
+        assert!(!advice.graphics_ready);
+        assert!(!advice.use_graphics);
+        assert_eq!(advice.args[1], "none");
+    }
+
+    #[test]
+    fn small_nvidia_without_devices_stays_on_the_fast_model() {
+        let machine = Machine {
+            physical_cores: 4,
+            logical_cpus: 8,
+            memory_bytes: 16 * 1024 * 1024 * 1024,
+            has_intel_graphics: true,
+            has_amd_graphics: false,
+            has_nvidia_graphics: true,
+            nvidia_driver_usable: true,
+            nvidia_memory_mib: 2048,
+            nvidia_free_mib: 1800,
+        };
+        // Same discrete-threshold rule as a probed MX150: do not let shared
+        // system RAM inflate the recommendation when VRAM is only ~2 GB.
+        assert_eq!(recommended_model_id(&machine, &[]), "lfm3-1.7b");
+        let advice = advise(&machine, "auto", "auto", LFM3_BYTES, &[]);
+        assert_eq!(advice.vram_total_mib, 2048);
+        assert_eq!(advice.vram_kind, "discrete");
+        assert!(!advice.use_graphics);
     }
 
     #[test]
@@ -832,6 +1069,7 @@ physical id\t: 0
             has_nvidia_graphics: false,
             nvidia_driver_usable: false,
             nvidia_memory_mib: 0,
+            nvidia_free_mib: 0,
         };
         assert_eq!(recommended_model_id(&machine, &[]), "bonsai-9b");
         let modest = Machine {
@@ -851,5 +1089,53 @@ physical id\t: 0
         assert!(!should_prepare_graphics("processor", true, true));
         assert!(should_prepare_graphics("auto", true, false));
         assert!(!should_prepare_graphics("auto", false, false));
+    }
+
+    #[test]
+    fn inventory_prefers_discrete_free_memory_from_list_devices() {
+        let snap = inventory(&zenbook(), &devices());
+        assert_eq!(snap.source, InventorySource::ListDevices);
+        assert_eq!(snap.kind, "discrete");
+        assert_eq!(snap.total_mib, 2304);
+        assert_eq!(snap.usable_free_mib, 2073);
+        assert_eq!(
+            snap.preferred.as_ref().map(|d| d.id.as_str()),
+            Some("Vulkan1")
+        );
+        assert!(snap.has_free(2000));
+        assert!(!snap.has_free(3000));
+    }
+
+    #[test]
+    fn inventory_falls_back_to_nvidia_smi_when_list_devices_is_empty() {
+        let machine = Machine {
+            nvidia_driver_usable: true,
+            nvidia_memory_mib: 12288,
+            nvidia_free_mib: 11000,
+            ..zenbook()
+        };
+        let snap = inventory(&machine, &[]);
+        assert_eq!(snap.source, InventorySource::NvidiaSmi);
+        assert_eq!(snap.usable_free_mib, 11000);
+        assert_eq!(
+            snap.preferred.as_ref().map(|d| d.id.as_str()),
+            Some("nvidia")
+        );
+    }
+
+    #[test]
+    fn nearly_full_vram_falls_back_to_the_processor_with_a_reason() {
+        let devices =
+            parse_device_list("  CUDA0: NVIDIA GeForce RTX 4070 (12288 MiB, 128 MiB free)\n");
+        let (picked, insufficient) = pick_device(&devices, LFM3_BYTES);
+        assert!(picked.is_none());
+        assert!(insufficient);
+        let advice = advise(&zenbook(), "auto", "auto", LFM3_BYTES, &devices);
+        assert!(!advice.use_graphics);
+        assert_eq!(advice.args[1], "none");
+        assert!(advice.processor_reason.contains("128"));
+        assert!(advice.summary.contains("processor"));
+        assert!(advice.summary.contains("Not enough free graphics memory"));
+        assert_plain(&advice.summary);
     }
 }

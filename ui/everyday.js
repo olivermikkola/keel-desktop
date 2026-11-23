@@ -64,26 +64,63 @@ export function createEveryday(api) {
         try { const path = await invoke("export_thread", { id: thread.id }); if (path) toast(`Saved to ${path}`); }
         catch (error) { body.querySelector("#thread-error").textContent = String(error); }
       };
+      const actions = body.querySelector("#thread-export").parentElement;
+      if (thread.app_preset === "code") {
+        if (thread.keel_session_log) {
+          const showJournal = document.createElement("button");
+          showJournal.type = "button";
+          showJournal.className = "btn";
+          showJournal.textContent = "Show journal";
+          showJournal.onclick = async () => {
+            try {
+              const path = await invoke("reveal_keel_session_log", { sessionId: thread.id });
+              try { await navigator.clipboard.writeText(path); toast(`Opened folder. Path copied: ${path}`); }
+              catch { toast(`Opened journal folder for ${path}`); }
+            } catch (error) {
+              body.querySelector("#thread-error").textContent = String(error);
+            }
+          };
+          const exportJournal = document.createElement("button");
+          exportJournal.type = "button";
+          exportJournal.className = "btn";
+          exportJournal.textContent = "Export journal";
+          exportJournal.onclick = async () => {
+            try {
+              const path = await invoke("export_keel_session_log", { sessionId: thread.id });
+              toast(`Exported journal to ${path}`);
+            } catch (error) {
+              body.querySelector("#thread-error").textContent = String(error);
+            }
+          };
+          actions.append(showJournal, exportJournal);
+        } else {
+          const hint = document.createElement("p");
+          hint.className = "muted";
+          hint.textContent = "Code + Keel CLI creates a JSONL journal you can show or export here.";
+          actions.after(hint);
+        }
+      }
       const runtime = state().bootstrap.runtime;
       if (thread.keel_session_log && thread.workspace_path && runtime.active_model_id) {
         let endpoint;
-        try { endpoint = new URL(runtime.base_url); } catch { return; }
-        if (endpoint.username || endpoint.password || endpoint.search || endpoint.hash) return;
-        const quote = (text) => `'${String(text).replaceAll("'", "'\\''")}'`;
-        const command = `keel run --safety-mode safe --root ${quote(thread.workspace_path)} --resume ${quote(thread.keel_session_log)} --base-url ${quote(runtime.base_url)} --model ${quote(runtime.active_model_id)}`;
-        const terminal = document.createElement("button");
-        terminal.type = "button";
-        terminal.className = "btn";
-        terminal.textContent = "Copy terminal command";
-        terminal.onclick = async () => {
-          try {
-            await navigator.clipboard.writeText(command);
-            toast("Copied. Run this command in your terminal to continue the same Keel session.");
-          } catch {
-            toast("Could not access clipboard.");
-          }
-        };
-        body.querySelector("#thread-export").after(terminal);
+        try { endpoint = new URL(runtime.base_url); } catch { /* skip terminal command */ endpoint = null; }
+        if (endpoint && !endpoint.username && !endpoint.password && !endpoint.search && !endpoint.hash) {
+          const quote = (text) => `'${String(text).replaceAll("'", "'\\''")}'`;
+          const command = `keel run --safety-mode safe --root ${quote(thread.workspace_path)} --resume ${quote(thread.keel_session_log)} --base-url ${quote(runtime.base_url)} --model ${quote(runtime.active_model_id)}`;
+          const terminal = document.createElement("button");
+          terminal.type = "button";
+          terminal.className = "btn";
+          terminal.textContent = "Copy terminal command";
+          terminal.onclick = async () => {
+            try {
+              await navigator.clipboard.writeText(command);
+              toast("Copied. Run this command in your terminal to continue the same Keel session.");
+            } catch {
+              toast("Could not access clipboard.");
+            }
+          };
+          actions.append(terminal);
+        }
       }
     });
   }

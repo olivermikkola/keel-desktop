@@ -9,6 +9,7 @@ Keel Desktop is a cross-platform local AI agent workspace built with **Tauri 2**
 - **You approve, the model asks.** File changes can be staged for diff review (`propose_edit` / `create_file` / `delete_file` / `rename_file`), and shell commands or mutating MCP tools require explicit user approval unless allowed for the session.
 - **Clean public repository.** Never commit secrets, tokens, private host paths, personal config files, or model weights (`.gguf`).
 - **Small, focused modules.** Keep `crates/keel-core` modular and well-tested; avoid duplicating logic between `keel-core`, `src-tauri`, and `ui/`.
+- **`KEEL_HOME` (optional).** When set, Keel CLI journal paths use `$KEEL_HOME/.keel/sessions` instead of `dirs::home_dir()` (useful for tests and portable layouts). On Windows, `dirs` uses Known Folder APIs and ignores `USERPROFILE`/`HOME` overrides.
 
 ## Before opening a PR
 

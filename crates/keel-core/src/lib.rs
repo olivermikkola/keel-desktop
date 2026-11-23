@@ -1,12 +1,16 @@
 pub mod agent;
 pub mod apps;
+pub mod audio;
 pub mod compaction;
+pub mod eval_cases;
 pub mod guard;
 pub mod hardware;
 pub mod harnesses;
 pub mod mcp;
 pub mod model_check;
 pub mod models;
+pub mod packs;
+pub mod remote;
 pub mod runtime;
 pub mod sessions;
 pub mod sql_sandbox;

@@ -21,7 +21,7 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  window.__test.calls.push({cmd,args});
  let result;
  switch(cmd) {
- case 'get_bootstrap_state': result={version:'0.6.0',config:cfg, runtime,models:[{id:'test',name:'Test local model',installed:true,damaged:false,quantization:'Q4',bytes:1000000000,detail:'Fast local model',tier:'fast'},{id:'broken-9b',name:'Damaged 9B',installed:false,damaged:true,damage_reason:'This model file is incomplete or damaged.',quantization:'Q2_0',bytes:2556640128,detail:'Balanced model',tier:'balanced'}].filter(m=>m.id!=='broken-9b'||window.__test.includeDamaged),sessions:sessions.map(s=>({...s})),projects,presets,harnesses:[{id:'keel',name:'Keel Harness'}],code_execution:window.__test.codeExecution || {can_run_commands:true,sandbox:'landlock',notice:null},mcp_servers:[],ocr_available:true,system_ram_gb:16};break;
+ case 'get_bootstrap_state': result={version:'0.6.0',config:cfg, runtime,models:[{id:'test',name:'Test local model',installed:true,damaged:false,quantization:'Q4',bytes:1000000000,detail:'Fast local model',tier:'fast'},{id:'broken-9b',name:'Damaged 9B',installed:false,damaged:true,damage_reason:'This model file is incomplete or damaged.',quantization:'Q2_0',bytes:2556640128,detail:'Balanced model',tier:'balanced'}].filter(m=>m.id!=='broken-9b'||window.__test.includeDamaged),sessions:sessions.map(s=>({...s})),projects,presets,harnesses:[{id:'keel',name:'Keel Harness',available:true},{id:'keel-cli',name:'Keel CLI',available:false}],recommended_code_harness:'keel',code_execution:window.__test.codeExecution || {can_run_commands:true,sandbox:'landlock',notice:null},mcp_servers:[],ocr_available:true,system_ram_gb:16};break;
  case 'refresh_mcp_servers': result=[];break;
  case 'set_workspace_mcp_trust': result=[];break;
  case 'export_html_file': result='/test/export.html';break;
@@ -54,7 +54,7 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  case 'download_catalog_model':window.__test.includeDamaged=false;result=[{id:'test',name:'Test local model',installed:true,damaged:false,quantization:'Q4',bytes:1000000000,detail:'Fast local model',tier:'fast'}];break;
  case 'delete_model':window.__test.includeDamaged=false;result=[{id:'test',name:'Test local model',installed:true,damaged:false,quantization:'Q4',bytes:1000000000,detail:'Fast local model',tier:'fast'}];break;
  case 'pick_model_file':result=null;break;
- case 'set_external_endpoint':cfg.external_base_url=args.baseUrl;cfg.external_model_name=args.modelName || null;runtime={state:'external',active_model_id:null,base_url:args.baseUrl};result=runtime;break;
+ case 'set_external_endpoint':if(!String(args.baseUrl||'').match(/127\.0\.0\.1|localhost|\[::1\]/i) && !args.confirmRemote) throw new Error('This server is not on this computer.');cfg.external_base_url=args.baseUrl;cfg.external_model_name=args.modelName || null;runtime={state:'external',active_model_id:null,base_url:args.baseUrl};result=runtime;break;
  case 'connect_image_server':cfg.image_endpoint=args.endpoint;result=['Local checkpoint'];break;
  case 'read_workspace_png':result=''' + json.dumps(PNG) + r''';break;
  case 'read_workspace_file_raw':result=fileContent[args.relPath] || '# Local document';break;
@@ -82,6 +82,30 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  case 'start_image_job': {
  const job={id:crypto.randomUUID(),request:args.request,workspace_path:args.workspacePath,status:'running',artifact_path:null,created_at:Date.now()/1000};jobs.unshift(job);result=job;
  setTimeout(()=>{job.status='succeeded';job.artifact_path='assets/keel-test.png';files.push(job.artifact_path);emit('keel://image-job',job);},250);break;}
+ case 'list_audio_packs': result=window.__audioPacks || (window.__audioPacks=[
+  {id:'stt-whisper-base',capability:'stt',display_name:'Speech to text · Whisper base (stub)',min_vram_mib:1024,runner_kind:'audio_stt',download_url:null,installed:false,runner_path:null},
+  {id:'tts-local-en',capability:'tts',display_name:'Text to speech · English (stub)',min_vram_mib:512,runner_kind:'audio_tts',download_url:null,installed:false,runner_path:null}
+ ]);break;
+ case 'mark_audio_pack_installed': {
+  const packs=window.__audioPacks || [];
+  const pack=packs.find(p=>p.id===args.packId); if(!pack) throw new Error('Unknown audio pack');
+  pack.installed=true; result=structuredClone(pack); break;
+ }
+ case 'register_audio_pack_runner': {
+  const packs=window.__audioPacks || [];
+  const pack=packs.find(p=>p.id===args.packId); if(!pack) throw new Error('Unknown audio pack');
+  pack.installed=true; pack.runner_path=args.command; result=structuredClone(pack); break;
+ }
+ case 'install_audio_pack_download_stub': {
+  const packs=window.__audioPacks || [];
+  const pack=packs.find(p=>p.id===args.packId); if(!pack) throw new Error('Unknown audio pack');
+  if(!args.url && !pack.download_url) throw new Error('Pack has no download URL yet. Register a local runner path instead, or provide a URL.');
+  pack.installed=true; result=structuredClone(pack); break;
+ }
+ case 'prepare_audio_pack_vram': result={status:'already_free',reason:'smoke',capability_id:'stt-whisper-base',usable_free_mib:0,runtime:{state:'stopped'}};break;
+ case 'prepare_pack_vram': result={status:'already_free',reason:'smoke',capability_id:'demo.capability',usable_free_mib:0,runtime:{state:'stopped'}};break;
+ case 'run_audio_stt': throw new Error('No speech-to-text pack is installed. Download or register an audio pack from Settings before using speech-to-text.');
+ case 'run_audio_tts': throw new Error('No text-to-speech pack is installed. Download or register an audio pack from Settings before using text-to-speech.');
  default: throw new Error('Unexpected command '+cmd);
  }
  return structuredClone(result);
@@ -351,11 +375,14 @@ async def main(port):
         await page.locator('#ws-ext-url').evaluate('(el) => { el.closest("details").open = true; }')
         await page.locator('#ws-ext-url').fill('https://models.example.com/v1')
         await page.locator('#ws-ext-name').fill('shared-qwen')
-        await page.locator('#ws-ext-notice').get_by_text('server you connect here', exact=False).wait_for()
+        await page.locator('#ws-ext-notice').get_by_text('Leaves this computer', exact=False).wait_for()
+        await page.locator('#ws-ext-notice').get_by_text('may incur provider cost', exact=False).wait_for()
+        await page.locator('#ws-ext-remote').check()
         await page.locator('#ws-ext-use').click()
+        await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='set_external_endpoint'&&c.args.confirmRemote===true)")
         await page.locator('#model-pill-label').get_by_text('shared-qwen · Remote', exact=True).wait_for()
         await page.locator('[data-view=chat]').click()
-        await page.locator('#telemetry-left').get_by_text('External model server', exact=False).wait_for()
+        await page.locator('#telemetry-left').get_by_text('Leaves this computer', exact=False).wait_for()
         # Switcher lets you jump back to built-in local AI in one click.
         await page.locator('#model-pill-btn').click()
         await page.locator('#switcher-use-builtin').click()

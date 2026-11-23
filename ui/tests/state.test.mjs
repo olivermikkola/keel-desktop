@@ -129,4 +129,7 @@ test("estimates model RAM fit clearly", () => {
   assert.equal(modelFitLabel(4 * gb, 8), "Tight fit");
   assert.equal(modelFitLabel(8 * gb, 8), "Heavy for your RAM");
   assert.equal(modelFitLabel(0, 16), "");
+  assert.equal(modelFitLabel(2 * gb, 16, 8192), "Fits on graphics");
+  assert.equal(modelFitLabel(4 * gb, 16, 3072), "Tight on graphics");
+  assert.equal(modelFitLabel(8 * gb, 32, 2048), "Fits easily");
 });
