@@ -48,5 +48,5 @@ echo "  2. Manual smokes: Code+CLI approval; remote confirm; VRAM fit; audio try
 echo "  3. git tag v0.6.0 && git push origin v0.6.0"
 echo "     or Actions → Release Desktop Installers (default tag v0.6.0)"
 echo "  4. Actions → Signed macOS candidate on main (needs Apple secrets; see docs/macos-release.md)"
-echo "Still open debt: Diff/--shadow (CLI file_edit protocol); measured eval cells (hardware)."
+echo "Still open debt: runtime Keel CLI must emit file_edit (keel#83) for live Diff; measured eval cells (hardware)."
 exit 0
