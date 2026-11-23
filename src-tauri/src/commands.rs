@@ -4,7 +4,8 @@ use keel_core::agent::{
 use keel_core::apps::{AppPreset, AppPresetInfo};
 use keel_core::harnesses::{
     code_execution_boundary, detect_harnesses, recommended_code_harness, run_external_harness,
-    run_keel_cli_turn, CodeExecutionBoundary, HarnessOption, KeelCliTurn,
+    run_keel_cli_turn, validate_keel_session_log, CodeExecutionBoundary, HarnessOption,
+    KeelCliTurn,
 };
 use keel_core::mcp::{
     inspect_mcp_servers_with_trust, load_global_mcp_config, load_mcp_configs_with_trust,
@@ -330,6 +331,51 @@ pub async fn import_keel_session(
     };
     save_session(&state.data_dir, &session).map_err(|error| error.to_string())?;
     Ok(Some(session))
+}
+
+fn session_keel_log(session: &ChatSession) -> Result<PathBuf, String> {
+    if session.app_preset != AppPreset::Code {
+        return Err("Journal handoff is only available for Code sessions.".into());
+    }
+    let Some(log) = session.keel_session_log.as_ref() else {
+        return Err(
+            "This Code thread has no Keel CLI journal yet. Start a turn with Engine for Code mode set to Keel CLI, or use Open CLI session to import one."
+                .into(),
+        );
+    };
+    validate_keel_session_log(log).map_err(|e| e.to_string())
+}
+
+/// Reveal the Code session's Keel CLI journal in the system file manager.
+#[tauri::command]
+pub async fn reveal_keel_session_log(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<String, String> {
+    use tauri_plugin_opener::OpenerExt;
+    let session = load_session(&state.data_dir, &session_id).map_err(|e| e.to_string())?;
+    let path = session_keel_log(&session)?;
+    let folder = path
+        .parent()
+        .ok_or_else(|| "Journal path has no parent folder".to_string())?;
+    app.opener()
+        .open_path(folder.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Copy the validated Keel CLI journal into `~/.keel/sessions` under a safe name.
+#[tauri::command]
+pub async fn export_keel_session_log(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<String, String> {
+    let session = load_session(&state.data_dir, &session_id).map_err(|e| e.to_string())?;
+    let log = session_keel_log(&session)?;
+    let exported = keel_core::harnesses::export_keel_session_log(&log, &session.id, &session.title)
+        .map_err(|e| e.to_string())?;
+    Ok(exported.to_string_lossy().into_owned())
 }
 
 #[tauri::command]

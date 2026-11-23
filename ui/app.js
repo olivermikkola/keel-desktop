@@ -611,6 +611,33 @@ async function importKeelSession() {
   }
 }
 
+async function revealKeelSessionLog() {
+  const id = appState.session?.id;
+  if (!id) return;
+  try {
+    const path = await invoke("reveal_keel_session_log", { sessionId: id });
+    try {
+      await navigator.clipboard.writeText(path);
+      showToast(`Opened folder. Path copied: ${path}`);
+    } catch {
+      showToast(`Opened journal folder for ${path.split(/[/\\]/).pop() || "session"}`);
+    }
+  } catch (error) {
+    showNotice(String(error));
+  }
+}
+
+async function exportKeelSessionLog() {
+  const id = appState.session?.id;
+  if (!id) return;
+  try {
+    const path = await invoke("export_keel_session_log", { sessionId: id });
+    showToast(`Exported journal to ${path}`);
+  } catch (error) {
+    showNotice(String(error));
+  }
+}
+
 function renderAll() {
   renderSidebar();
   renderHeader();
@@ -1067,6 +1094,10 @@ function renderChat() {
     const status = appState.waking ? '<p class="empty-status" role="status">Waking up your AI. You can type your question now.</p>' : "";
     const openCli = preset.id === "code" && b.config.harness_mode === "keel-cli"
       ? '<button class="btn btn-ghost" id="empty-open-cli-session">Open CLI session</button>' : "";
+    const journalBtns =
+      preset.id === "code" && s.keel_session_log
+        ? '<button class="btn btn-ghost" id="empty-reveal-cli-journal">Show journal</button><button class="btn btn-ghost" id="empty-export-cli-journal">Export journal</button>'
+        : "";
     const boundaryNotice =
       preset.id === "code" && b.code_execution && !b.code_execution.can_run_commands && b.code_execution.notice
         ? `<p id="code-boundary-notice" class="empty-status" role="status">${escapeHtml(b.code_execution.notice)}</p>`
@@ -1077,7 +1108,7 @@ function renderChat() {
         ${project ? `<span class="eyebrow">${escapeHtml(project.name)}</span>` : ""}
         <h1>${escapeHtml(heading)}</h1>
         <p>${escapeHtml(preset.summary)}</p>
-        ${action}${openCli}${status}${boundaryNotice}
+        ${action}${openCli}${journalBtns}${status}${boundaryNotice}
         <div class="starters-grid">${starters}</div>
       </div>
     `;
@@ -1085,6 +1116,8 @@ function renderChat() {
     els.chatScroll.querySelector("#empty-open-folder")?.addEventListener("click", () => openWorkspace());
     els.chatScroll.querySelector("#empty-sample-folder")?.addEventListener("click", () => openWorkspace({ sample: true }));
     els.chatScroll.querySelector("#empty-open-cli-session")?.addEventListener("click", importKeelSession);
+    els.chatScroll.querySelector("#empty-reveal-cli-journal")?.addEventListener("click", () => revealKeelSessionLog());
+    els.chatScroll.querySelector("#empty-export-cli-journal")?.addEventListener("click", () => exportKeelSessionLog());
     els.chatScroll.querySelectorAll("[data-starter]").forEach((btn) => {
       btn.onclick = () => {
         els.promptInput.value = btn.getAttribute("data-starter");

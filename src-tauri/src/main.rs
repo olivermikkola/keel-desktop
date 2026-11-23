@@ -140,6 +140,8 @@ fn main() {
             commands::read_workspace_file_raw,
             commands::create_session,
             commands::import_keel_session,
+            commands::reveal_keel_session_log,
+            commands::export_keel_session_log,
             commands::load_session_cmd,
             commands::delete_session_cmd,
             commands::start_model,

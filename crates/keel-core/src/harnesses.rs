@@ -165,8 +165,81 @@ fn find_on_path(bin: &str) -> Option<PathBuf> {
 
 /// Default Keel CLI journal folder (`~/.keel/sessions`) when it exists.
 pub fn default_keel_sessions_dir() -> Option<std::path::PathBuf> {
-    let sessions = dirs::home_dir()?.join(".keel").join("sessions");
+    let sessions = keel_sessions_dir()?;
     sessions.is_dir().then_some(sessions)
+}
+
+/// Path of the Keel CLI journal folder (`~/.keel/sessions`), whether or not it exists yet.
+pub fn keel_sessions_dir() -> Option<std::path::PathBuf> {
+    Some(dirs::home_dir()?.join(".keel").join("sessions"))
+}
+
+/// Create `~/.keel/sessions` if needed so Desktop can export a journal for the CLI.
+pub fn ensure_keel_sessions_dir() -> Result<PathBuf> {
+    let sessions = keel_sessions_dir().context("Home directory is unavailable")?;
+    std::fs::create_dir_all(&sessions).context("Creating ~/.keel/sessions")?;
+    Ok(sessions)
+}
+
+const MAX_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Confirm a path is a regular Keel journal file before revealing or exporting it.
+pub fn validate_keel_session_log(path: &Path) -> Result<PathBuf> {
+    let path = path
+        .canonicalize()
+        .with_context(|| format!("Cannot find Keel session journal at {}", path.display()))?;
+    let meta = std::fs::metadata(&path).context("Cannot read Keel session journal")?;
+    if !meta.is_file() {
+        bail!("Keel session journal is not a regular file");
+    }
+    if meta.len() > MAX_JOURNAL_BYTES {
+        bail!("Keel session journal is larger than 64 MB");
+    }
+    Ok(path)
+}
+
+/// Build a filesystem-safe basename for an exported Desktop journal copy.
+pub fn safe_journal_export_name(session_id: &str, title: &str) -> String {
+    let id: String = session_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .take(36)
+        .collect();
+    let id = if id.is_empty() {
+        "session".to_string()
+    } else {
+        id
+    };
+    let title_part: String = title
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .take(40)
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    if title_part.is_empty() {
+        format!("keel-desktop-{id}.jsonl")
+    } else {
+        format!("keel-desktop-{id}-{title_part}.jsonl")
+    }
+}
+
+/// Copy a validated journal into `~/.keel/sessions` under a safe name.
+pub fn export_keel_session_log(source: &Path, session_id: &str, title: &str) -> Result<PathBuf> {
+    let source = validate_keel_session_log(source)?;
+    let dest_dir = ensure_keel_sessions_dir()?;
+    let dest = dest_dir.join(safe_journal_export_name(session_id, title));
+    if source == dest {
+        return Ok(dest);
+    }
+    std::fs::copy(&source, &dest).context("Copying Keel session journal")?;
+    Ok(dest)
 }
 
 pub struct KeelCliTurn<'a> {
@@ -186,7 +259,6 @@ const EXIT_GRACE: Duration = Duration::from_secs(5);
 pub fn read_keel_session(path: &Path) -> Result<Vec<UiMessage>> {
     use std::io::{BufRead, Read};
 
-    const MAX_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
     let file = std::fs::File::open(path).context("Cannot open Keel session log")?;
     if !file.metadata()?.is_file() || file.metadata()?.len() > MAX_JOURNAL_BYTES {
         bail!("Select a regular Keel JSONL file smaller than 64 MB");
@@ -908,5 +980,72 @@ mod tests {
             KeelEvent::SentinelVeto { tool_name, reason }
                 if tool_name == "shell" && reason == "blocked"
         ));
+    }
+
+    #[test]
+    fn streaming_protocol_has_no_file_edit_event_for_diff_projection() {
+        // Checklist: do not invent Diff projection until Keel CLI emits a dedicated
+        // file-edit / patch event type. Unknown types stay KeelEvent::Other.
+        let other = parse_keel_event_line(
+            br#"{"type":"file_edit","path":"src/main.rs","diff":"--- a\n+++ b\n"}"#,
+        )
+        .unwrap();
+        assert_eq!(other, KeelEvent::Other);
+        let patch = parse_keel_event_line(br#"{"type":"patch","files":[]}"#).unwrap();
+        assert_eq!(patch, KeelEvent::Other);
+    }
+
+    #[test]
+    fn safe_journal_export_name_strips_path_separators() {
+        let name = safe_journal_export_name("abc/../evil", "Hello World!!/../x");
+        // "!!/../" becomes six '-' chars between world and x.
+        assert_eq!(name, "keel-desktop-abcevil-hello-world------x.jsonl");
+        assert!(!name.contains('/'));
+        assert!(!name.contains('\\'));
+    }
+
+    #[test]
+    fn export_keel_session_log_copies_into_sessions_dir() {
+        let dir = std::env::temp_dir().join(format!("keel_export_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source.jsonl");
+        std::fs::write(
+            &source,
+            r#"{"kind":"user","data":{"text":"hi"}}
+"#,
+        )
+        .unwrap();
+        let validated = validate_keel_session_log(&source).unwrap();
+        assert_eq!(validated, source.canonicalize().unwrap());
+
+        // Point HOME at a temp tree so export does not touch the real ~/.keel.
+        let fake_home = dir.join("home");
+        std::fs::create_dir_all(&fake_home).unwrap();
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", &fake_home);
+        let exported =
+            export_keel_session_log(&source, "sess-1", "My Thread").expect("export should succeed");
+        match prev_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+        assert!(exported.starts_with(fake_home.join(".keel").join("sessions")));
+        assert_eq!(
+            exported.file_name().and_then(|n| n.to_str()),
+            Some("keel-desktop-sess-1-my-thread.jsonl")
+        );
+        assert_eq!(
+            std::fs::read_to_string(&exported).unwrap(),
+            std::fs::read_to_string(&source).unwrap()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_keel_session_log_rejects_missing_paths() {
+        let missing =
+            std::env::temp_dir().join(format!("no-journal-{}.jsonl", uuid::Uuid::new_v4()));
+        let err = validate_keel_session_log(&missing).unwrap_err().to_string();
+        assert!(err.contains("Cannot find"), "unexpected: {err}");
     }
 }
