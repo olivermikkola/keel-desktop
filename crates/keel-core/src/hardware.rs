@@ -515,18 +515,15 @@ pub fn advise(
     let (device, insufficient_free) = pick_device(devices, model_bytes);
     let wants_graphics = matches!(preference, RunWhere::Auto | RunWhere::Graphics);
     let use_graphics = device.is_some() && wants_graphics;
-    let processor_reason = if use_graphics {
-        String::new()
-    } else if preference == RunWhere::Processor {
-        String::new()
-    } else if insufficient_free {
-        format!(
+    let processor_reason =
+        if !use_graphics && preference != RunWhere::Processor && insufficient_free {
+            format!(
             "Not enough free graphics memory (need about {MIN_USEFUL_FREE_MIB} MiB; {} MiB free).",
             snap.usable_free_mib
         )
-    } else {
-        String::new()
-    };
+        } else {
+            String::new()
+        };
     let (args, whole) = if let (true, Some(device)) = (use_graphics, device) {
         let fits = model_fits_entirely(device.usable_mib(), model_bytes);
         let whole = match share_pref {
