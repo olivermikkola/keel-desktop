@@ -11,6 +11,7 @@ fn shared_http_client() -> Result<&'static reqwest::Client> {
         return Ok(c);
     }
     let built = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(10))
         .read_timeout(std::time::Duration::from_secs(180))
         .build()?;
@@ -111,6 +112,8 @@ pub struct TurnParams {
     pub mcp_config: McpConfigFile,
     pub mcp_tools: Vec<McpToolInfo>,
     pub max_steps: usize,
+    /// Optional Bearer token for an explicitly connected remote text provider.
+    pub api_key: Option<String>,
 }
 
 pub struct TurnOutcome {
@@ -258,6 +261,7 @@ where
             &messages,
             &tool_schemas,
             params.enable_thinking,
+            params.api_key.as_deref(),
             &mut emit,
         )
         .await?;
@@ -708,6 +712,7 @@ fn api_messages(messages: &[ChatTurnMessage], include_images: bool) -> Vec<Value
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn stream_completion<E>(
     client: &reqwest::Client,
     endpoint: &str,
@@ -715,6 +720,7 @@ async fn stream_completion<E>(
     messages: &[ChatTurnMessage],
     tools: &[Value],
     enable_thinking: bool,
+    api_key: Option<&str>,
     emit: &mut E,
 ) -> Result<StreamedCompletion>
 where
@@ -735,9 +741,15 @@ where
         body["tool_choice"] = json!("auto");
     }
 
-    let mut resp = client
-        .post(endpoint)
-        .json(&body)
+    let auth = crate::remote::bearer_authorization(api_key);
+    let authenticated = |request: reqwest::RequestBuilder| -> reqwest::RequestBuilder {
+        match &auth {
+            Some(header) => request.header(reqwest::header::AUTHORIZATION, header),
+            None => request,
+        }
+    };
+
+    let mut resp = authenticated(client.post(endpoint).json(&body))
         .send()
         .await
         .map_err(|_| {
@@ -753,7 +765,10 @@ where
             obj.remove("chat_template_kwargs");
             obj.remove("stream_options");
         }
-        if let Ok(retry_resp) = client.post(endpoint).json(&compat_body).send().await {
+        if let Ok(retry_resp) = authenticated(client.post(endpoint).json(&compat_body))
+            .send()
+            .await
+        {
             if retry_resp.status().is_success() {
                 resp = retry_resp;
             }
@@ -771,7 +786,10 @@ where
             obj.remove("chat_template_kwargs");
             obj.remove("stream_options");
         }
-        if let Ok(retry_resp) = client.post(endpoint).json(&text_only).send().await {
+        if let Ok(retry_resp) = authenticated(client.post(endpoint).json(&text_only))
+            .send()
+            .await
+        {
             if retry_resp.status().is_success() {
                 resp = retry_resp;
             }
@@ -1032,6 +1050,7 @@ mod tests {
             mcp_config: McpConfigFile::default(),
             mcp_tools: vec![],
             max_steps: 1,
+            api_key: None,
         };
         let mut allowed = HashSet::new();
         let err = run_agent_turn(

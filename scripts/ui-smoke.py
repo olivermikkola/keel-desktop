@@ -21,7 +21,7 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  window.__test.calls.push({cmd,args});
  let result;
  switch(cmd) {
- case 'get_bootstrap_state': result={version:'0.5.0',config:cfg, runtime,models:[{id:'test',name:'Test local model',installed:true,damaged:false,quantization:'Q4',bytes:1000000000,detail:'Fast local model',tier:'fast'},{id:'broken-9b',name:'Damaged 9B',installed:false,damaged:true,damage_reason:'This model file is incomplete or damaged.',quantization:'Q2_0',bytes:2556640128,detail:'Balanced model',tier:'balanced'}].filter(m=>m.id!=='broken-9b'||window.__test.includeDamaged),sessions:sessions.map(s=>({...s})),projects,presets,harnesses:[{id:'keel',name:'Keel Harness'}],code_execution:window.__test.codeExecution || {can_run_commands:true,sandbox:'landlock',notice:null},mcp_servers:[],ocr_available:true,system_ram_gb:16};break;
+ case 'get_bootstrap_state': result={version:'0.6.0',config:cfg, runtime,models:[{id:'test',name:'Test local model',installed:true,damaged:false,quantization:'Q4',bytes:1000000000,detail:'Fast local model',tier:'fast'},{id:'broken-9b',name:'Damaged 9B',installed:false,damaged:true,damage_reason:'This model file is incomplete or damaged.',quantization:'Q2_0',bytes:2556640128,detail:'Balanced model',tier:'balanced'}].filter(m=>m.id!=='broken-9b'||window.__test.includeDamaged),sessions:sessions.map(s=>({...s})),projects,presets,harnesses:[{id:'keel',name:'Keel Harness',available:true},{id:'keel-cli',name:'Keel CLI',available:false}],code_execution:window.__test.codeExecution || {can_run_commands:true,sandbox:'landlock',notice:null},mcp_servers:[],ocr_available:true,system_ram_gb:16};break;
  case 'refresh_mcp_servers': result=[];break;
  case 'set_workspace_mcp_trust': result=[];break;
  case 'export_html_file': result='/test/export.html';break;
@@ -54,7 +54,7 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  case 'download_catalog_model':window.__test.includeDamaged=false;result=[{id:'test',name:'Test local model',installed:true,damaged:false,quantization:'Q4',bytes:1000000000,detail:'Fast local model',tier:'fast'}];break;
  case 'delete_model':window.__test.includeDamaged=false;result=[{id:'test',name:'Test local model',installed:true,damaged:false,quantization:'Q4',bytes:1000000000,detail:'Fast local model',tier:'fast'}];break;
  case 'pick_model_file':result=null;break;
- case 'set_external_endpoint':cfg.external_base_url=args.baseUrl;cfg.external_model_name=args.modelName || null;runtime={state:'external',active_model_id:null,base_url:args.baseUrl};result=runtime;break;
+ case 'set_external_endpoint':if(!String(args.baseUrl||'').match(/127\.0\.0\.1|localhost|\[::1\]/i) && !args.confirmRemote) throw new Error('This server is not on this computer.');cfg.external_base_url=args.baseUrl;cfg.external_model_name=args.modelName || null;runtime={state:'external',active_model_id:null,base_url:args.baseUrl};result=runtime;break;
  case 'connect_image_server':cfg.image_endpoint=args.endpoint;result=['Local checkpoint'];break;
  case 'read_workspace_png':result=''' + json.dumps(PNG) + r''';break;
  case 'read_workspace_file_raw':result=fileContent[args.relPath] || '# Local document';break;
@@ -82,6 +82,61 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  case 'start_image_job': {
  const job={id:crypto.randomUUID(),request:args.request,workspace_path:args.workspacePath,status:'running',artifact_path:null,created_at:Date.now()/1000};jobs.unshift(job);result=job;
  setTimeout(()=>{job.status='succeeded';job.artifact_path='assets/keel-test.png';files.push(job.artifact_path);emit('keel://image-job',job);},250);break;}
+ case 'list_audio_packs': result=window.__audioPacks || (window.__audioPacks=[
+  {id:'stt-demo-fixture',capability:'stt',display_name:'Speech to text · Demo fixture (checksummed)',min_vram_mib:0,runner_kind:'audio_stt',download_url:'https://example.test/demo-stt.weights',sha256:'b3bbdb816ceaf3dccff5669d4e6fe361cdd92ccac7fc027e1015e204262d883e',file_name:'demo-stt.weights',bytes:43,installed:false,runner_path:null},
+  {id:'stt-whisper-tiny-q5',capability:'stt',display_name:'Speech to text · Whisper tiny q5_1',min_vram_mib:512,runner_kind:'audio_stt',download_url:'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_1.bin',sha256:'818710568da3ca15689e31a743197b520007872ff9576237bda97bd1b469c3d7',file_name:'ggml-tiny-q5_1.bin',bytes:32152673,installed:false,runner_path:null},
+  {id:'stt-whisper-base',capability:'stt',display_name:'Speech to text · Whisper base (unpinned)',min_vram_mib:1024,runner_kind:'audio_stt',download_url:'keel-pack:unpinned/stt-whisper-base',sha256:null,file_name:null,bytes:0,installed:false,runner_path:null},
+  {id:'tts-local-en',capability:'tts',display_name:'Text to speech · English (stub)',min_vram_mib:512,runner_kind:'audio_tts',download_url:null,sha256:null,file_name:null,bytes:0,installed:false,runner_path:null}
+ ]);break;
+ case 'register_audio_pack_runner': {
+  const packs=window.__audioPacks || [];
+  const pack=packs.find(p=>p.id===args.packId); if(!pack) throw new Error('Unknown audio pack');
+  pack.installed=true; pack.runner_path=args.command; result=structuredClone(pack); break;
+ }
+ case 'register_whisper_cpp_runner': {
+  const packs=window.__audioPacks || [];
+  const pack=packs.find(p=>p.id===args.packId); if(!pack) throw new Error('Unknown audio pack');
+  if(!args.model && !pack.installed) throw new Error('Download this pack’s model or provide a local model file.');
+  pack.installed=true; pack.runner_path=args.command; result=structuredClone(pack); break;
+ }
+ case 'download_audio_pack': {
+  const packs=window.__audioPacks || [];
+  const pack=packs.find(p=>p.id===args.packId); if(!pack) throw new Error('Unknown audio pack');
+  if(!pack.sha256 || !pack.download_url || String(pack.download_url).startsWith('keel-pack:unpinned/')) throw new Error("Pack download is not pinned yet (need http(s) URL + sha256 + file_name).");
+  pack.installed=true; result=structuredClone(pack); break;
+ }
+ case 'remove_audio_pack': {
+  const packs=window.__audioPacks || [];
+  const pack=packs.find(p=>p.id===args.packId); if(!pack) throw new Error('Unknown audio pack');
+  pack.installed=false; pack.runner_path=null; result=null; break;
+ }
+ case 'list_audio_artifacts': result=window.__audioArtifacts || (window.__audioArtifacts=[]); break;
+ case 'clear_audio_artifacts': window.__audioArtifacts=[]; result=null; break;
+ case 'prepare_audio_pack_vram': result={status:'already_free',reason:'smoke',capability_id:'stt-whisper-base',usable_free_mib:0,runtime:{state:'stopped'}};break;
+ case 'prepare_pack_vram': result={status:'already_free',reason:'smoke',capability_id:'demo.capability',usable_free_mib:0,runtime:{state:'stopped'}};break;
+ case 'pick_audio_file': result=window.__test?.cancelAudioPicker ? null : '/test/clip.wav'; break;
+ case 'register_piper_runner': {
+  const packs=window.__audioPacks || [];
+  const pack=packs.find(p=>p.id===args.packId); if(!pack) throw new Error('Unknown audio pack');
+  if(!args.model) throw new Error('Provide a Piper ONNX model path.');
+  pack.installed=true; pack.runner_path=args.command; result=structuredClone(pack); break;
+ }
+ case 'run_audio_stt': {
+  const packs=window.__audioPacks || [];
+  if(!packs.some(p=>p.capability==='stt'&&p.installed&&p.runner_path)) throw new Error('No local runner is registered for speech-to-text.');
+  const text='Hello from smoke STT.';
+  window.__audioArtifacts = window.__audioArtifacts || [];
+  window.__audioArtifacts.unshift({kind:'stt_transcript',path:'/test/data/audio-artifacts/smoke-stt.txt',created_at:Date.now()/1000,text_preview:text});
+  result=text; break;
+ }
+ case 'run_audio_tts': {
+  const packs=window.__audioPacks || [];
+  if(!packs.some(p=>p.capability==='tts'&&p.installed&&p.runner_path)) throw new Error('No local runner is registered for text-to-speech.');
+  const out='/test/data/audio-try/try-tts.wav';
+  window.__audioArtifacts = window.__audioArtifacts || [];
+  window.__audioArtifacts.unshift({kind:'tts_output',path:out,created_at:Date.now()/1000,text_preview:args.text||''});
+  result=out; break;
+ }
  default: throw new Error('Unexpected command '+cmd);
  }
  return structuredClone(result);
@@ -235,6 +290,29 @@ async def main(port):
         assert await page.evaluate("document.documentElement.dataset.tone === 'paper'")
         await page.locator('[data-tone-pick="ink"]').click()
         assert await page.evaluate("document.documentElement.dataset.tone === 'ink'")
+        # Downloaded weights need a runner. Registering one enables the native contract.
+        whisper = page.locator('[data-audio-pack="stt-whisper-tiny-q5"]')
+        await whisper.locator('[data-audio-download]').click()
+        await whisper.locator('[data-audio-remove]').wait_for()
+        await page.locator('#audio-try-stt').click()
+        await page.locator('#audio-try-status').get_by_text('No local runner is registered', exact=False).wait_for()
+        prompts = iter(("whisper-cli", ""))
+        async def answer_whisper_prompt(dialog):
+            await dialog.accept(next(prompts))
+        page.on('dialog', answer_whisper_prompt)
+        await whisper.locator('[data-audio-whisper]').click()
+        await whisper.get_by_text('Runner configured', exact=False).wait_for()
+        page.remove_listener('dialog', answer_whisper_prompt)
+        tts = page.locator('[data-audio-pack="tts-local-en"]')
+        page.once('dialog', lambda dialog: dialog.accept('fixture-tts'))
+        await tts.locator('[data-audio-runner]').click()
+        await tts.get_by_text('Runner configured', exact=False).wait_for()
+        await page.locator('#audio-try-stt').click()
+        await page.locator('#audio-try-status').get_by_text('STT ok:', exact=False).wait_for()
+        await page.locator('#audio-try-tts').click()
+        await page.locator('#audio-try-status').get_by_text('TTS ok', exact=False).wait_for()
+        await page.screenshot(path=str(OUTPUT / 'audio-runners.png'))
+        await page.locator('#audio-artifacts-list').get_by_text('smoke-stt.txt', exact=False).wait_for()
         await page.locator('#modal-close-btn').click()
         await page.locator('#prompt-input').fill('Hello Keel')
         await page.locator('#send-btn').click()
@@ -351,11 +429,15 @@ async def main(port):
         await page.locator('#ws-ext-url').evaluate('(el) => { el.closest("details").open = true; }')
         await page.locator('#ws-ext-url').fill('https://models.example.com/v1')
         await page.locator('#ws-ext-name').fill('shared-qwen')
-        await page.locator('#ws-ext-notice').get_by_text('server you connect here', exact=False).wait_for()
+        await page.locator('#ws-ext-key').fill('sk-smoke-remote')
+        await page.locator('#ws-ext-notice').get_by_text('Leaves this computer', exact=False).wait_for()
+        await page.locator('#ws-ext-notice').get_by_text('may incur provider cost', exact=False).wait_for()
+        await page.locator('#ws-ext-remote').check()
         await page.locator('#ws-ext-use').click()
-        await page.locator('#model-pill-label').get_by_text('shared-qwen · Remote', exact=True).wait_for()
+        await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='set_external_endpoint'&&c.args.confirmRemote===true&&c.args.apiKey==='sk-smoke-remote')")
+        await page.locator('#model-pill-label').get_by_text('shared-qwen · Leaves this computer · may incur provider cost', exact=True).wait_for()
         await page.locator('[data-view=chat]').click()
-        await page.locator('#telemetry-left').get_by_text('External model server', exact=False).wait_for()
+        await page.locator('#telemetry-left').get_by_text('Leaves this computer', exact=False).wait_for()
         # Switcher lets you jump back to built-in local AI in one click.
         await page.locator('#model-pill-btn').click()
         await page.locator('#switcher-use-builtin').click()

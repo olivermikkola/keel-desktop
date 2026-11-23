@@ -1,6 +1,13 @@
 import { createEveryday } from "./everyday.js";
 import { createImageWorkspace } from "./images.js";
-import { assistantStatus, friendlyRuntimeError, friendlySetupError, isFirstRun, modelLocation, modelTierLabel, modelToWake, serverDataNotice, speedSettingsCopy, answerTimePhrase, modelCheckIntro } from "./onboarding.js";
+import {
+  AUDIO_TRY_STT_INPUT_HELP,
+  AUDIO_TRY_TTS_INPUT_HELP,
+  AUDIO_TRY_TTS_SAMPLE,
+  formatAudioTrySttSuccess,
+  formatAudioTryTtsSuccess,
+} from "./audio.js";
+import { assistantStatus, connectedExternalLocation, friendlyRuntimeError, friendlySetupError, isFirstRun, isRemoteModelServer, modelLocation, modelTierLabel, modelToWake, serverDataNotice, speedSettingsCopy, answerTimePhrase, modelCheckIntro } from "./onboarding.js";
 import { MODES, modeForPreset, isRuntimeLive, promptBlockReason } from "./modes.js";
 import { escapeHtml, renderMarkdown } from "./markdown.js";
 import {
@@ -611,6 +618,33 @@ async function importKeelSession() {
   }
 }
 
+async function revealKeelSessionLog() {
+  const id = appState.session?.id;
+  if (!id) return;
+  try {
+    const path = await invoke("reveal_keel_session_log", { sessionId: id });
+    try {
+      await navigator.clipboard.writeText(path);
+      showToast(`Opened folder. Path copied: ${path}`);
+    } catch {
+      showToast(`Opened journal folder for ${path.split(/[/\\]/).pop() || "session"}`);
+    }
+  } catch (error) {
+    showNotice(String(error));
+  }
+}
+
+async function exportKeelSessionLog() {
+  const id = appState.session?.id;
+  if (!id) return;
+  try {
+    const path = await invoke("export_keel_session_log", { sessionId: id });
+    showToast(`Exported journal to ${path}`);
+  } catch (error) {
+    showNotice(String(error));
+  }
+}
+
 function renderAll() {
   renderSidebar();
   renderHeader();
@@ -723,10 +757,9 @@ function renderSidebar() {
   const activeModel = b.models.find((m) => m.id === (rt.active_model_id || b.config.selected_model_id));
   const setup = welcome.status();
   const status = assistantStatus({ runtime: rt, waking: appState.waking, setup });
-  const sidebarLocation = modelLocation(rt);
   const runningLabel =
     rt.state === "external"
-      ? `${b.config.external_model_name || sidebarLocation}${sidebarLocation === "External model server" ? " · Remote" : ""}`
+      ? externalConnectedLabel(b, rt)
       : rt.state === "running" ? activeModel?.name || "Local model" : status.key === "setup" ? "Setting up your AI" : "No model loaded";
   const isLive = isRuntimeLive(rt);
   const fill = status.key === "setup" ? ` style="width:${Math.round(setup.fraction * 100)}%"` : "";
@@ -759,12 +792,12 @@ function renderHeader() {
     (m) => m.id === (rt.active_model_id || b.config.selected_model_id),
   );
   const setup = welcome.status();
-  const location = modelLocation(rt);
+  const location = rt.state === "external" ? connectedExternalLocation(rt) : modelLocation(rt);
   els.modelPillBtn.title = isRuntimeLive(rt) ? `${location} · Click to switch AI` : "Click to choose or start your AI";
   els.modelPillBtn.setAttribute("aria-expanded", String(appState.modelSwitcherOpen));
   els.modelPillLabel.textContent = setup.busy || setup.paused ? assistantStatus({ runtime: rt, setup }).label : isBusy ? "Waking up your AI…" : rt.state === "stopped" ? (b.models.some((m) => m.installed && !m.damaged) ? "Start your AI" : b.models.some((m) => m.damaged) ? "Repair your AI" : "Set up your AI") : rt.state === "error" ? "Model needs attention" :
     rt.state === "external"
-      ? `${b.config.external_model_name || location}${location === "External model server" ? " · Remote" : ""}`
+      ? externalConnectedLabel(b, rt)
       : selected
         ? selected.name
         : b.config.selected_model_id || "Select model";
@@ -918,6 +951,18 @@ async function removeLocalModel(modelId) {
   );
 }
 
+/** Connected external pill/sidebar label: remote keeps cost language; loopback stays local-only. */
+function externalConnectedLabel(b, rt) {
+  const location = connectedExternalLocation({
+    state: "external",
+    base_url: rt?.base_url || b.config.external_base_url || "",
+  });
+  const name = b.config.external_model_name;
+  const remote = isRemoteModelServer(rt?.base_url || b.config.external_base_url || "");
+  if (remote) return name ? `${name} · ${location}` : location;
+  return name || location;
+}
+
 function tierLabel(model) {
   const b = appState.bootstrap;
   const failed = b?.model_checks?.[model.id]?.passed === false;
@@ -946,13 +991,14 @@ function renderModelSwitcher() {
 
   let html = "";
   if (rt.state === "external") {
-    const extName = b.config.external_model_name || modelLocation(rt);
+    const extUrl = rt.base_url || b.config.external_base_url || "";
+    const extName = b.config.external_model_name || connectedExternalLocation({ state: "external", base_url: extUrl });
     html += `
       <div class="switcher-section-label">CONNECTED APP</div>
       <div class="switcher-item active">
         <span class="switcher-item-main">
           <strong>${escapeHtml(extName)}</strong>
-          <span class="switcher-item-sub">${escapeHtml(modelLocation(rt))}</span>
+          <span class="switcher-item-sub">${escapeHtml(serverDataNotice(extUrl))}</span>
         </span>
         <span class="switcher-check">✓</span>
       </div>
@@ -1067,8 +1113,12 @@ function renderChat() {
     const status = appState.waking ? '<p class="empty-status" role="status">Waking up your AI. You can type your question now.</p>' : "";
     const openCli = preset.id === "code" && b.config.harness_mode === "keel-cli"
       ? '<button class="btn btn-ghost" id="empty-open-cli-session">Open CLI session</button>' : "";
+    const journalBtns =
+      preset.id === "code" && s.keel_session_log
+        ? '<button class="btn btn-ghost" id="empty-reveal-cli-journal">Show journal</button><button class="btn btn-ghost" id="empty-export-cli-journal">Export journal</button>'
+        : "";
     const boundaryNotice =
-      preset.id === "code" && b.code_execution && !b.code_execution.can_run_commands && b.code_execution.notice
+      preset.id === "code" && b.code_execution?.notice
         ? `<p id="code-boundary-notice" class="empty-status" role="status">${escapeHtml(b.code_execution.notice)}</p>`
         : "";
     const heading = preset.id === "chat" && !project ? "What can I help with?" : preset.title;
@@ -1077,7 +1127,7 @@ function renderChat() {
         ${project ? `<span class="eyebrow">${escapeHtml(project.name)}</span>` : ""}
         <h1>${escapeHtml(heading)}</h1>
         <p>${escapeHtml(preset.summary)}</p>
-        ${action}${openCli}${status}${boundaryNotice}
+        ${action}${openCli}${journalBtns}${status}${boundaryNotice}
         <div class="starters-grid">${starters}</div>
       </div>
     `;
@@ -1085,6 +1135,8 @@ function renderChat() {
     els.chatScroll.querySelector("#empty-open-folder")?.addEventListener("click", () => openWorkspace());
     els.chatScroll.querySelector("#empty-sample-folder")?.addEventListener("click", () => openWorkspace({ sample: true }));
     els.chatScroll.querySelector("#empty-open-cli-session")?.addEventListener("click", importKeelSession);
+    els.chatScroll.querySelector("#empty-reveal-cli-journal")?.addEventListener("click", () => revealKeelSessionLog());
+    els.chatScroll.querySelector("#empty-export-cli-journal")?.addEventListener("click", () => exportKeelSessionLog());
     els.chatScroll.querySelectorAll("[data-starter]").forEach((btn) => {
       btn.onclick = () => {
         els.promptInput.value = btn.getAttribute("data-starter");
@@ -1643,7 +1695,9 @@ function renderModelsWorkspace() {
       const tier = tierLabel(m);
       const badgeClass = m.damaged ? "model-badge warn" : isRunning ? "model-badge live" : "model-badge";
       const badgeText = m.damaged ? "Needs repair" : isRunning ? "In use" : tier;
-      const fit = !m.damaged ? modelFitLabel(m.bytes, b.system_ram_gb) : "";
+      const fit = !m.damaged
+        ? modelFitLabel(m.bytes, b.system_ram_gb, b.computer?.vram_total_mib || 0)
+        : "";
       const subText = m.damaged
         ? m.damage_reason || "This download looks incomplete or damaged."
         : `${m.detail} · ${formatBytes(m.bytes)}${fit ? ` · ${fit}` : ""}`;
@@ -1751,6 +1805,13 @@ function renderModelsWorkspace() {
           <input id="ws-ext-name" class="input" style="max-width:160px" value="${escapeHtml(b.config.external_model_name || "")}" placeholder="Model name (optional)" />
           <button id="ws-ext-use" class="btn btn-primary btn-sm">Connect</button>
         </div>
+        <div class="row" style="margin-top:6px">
+          <input id="ws-ext-key" class="input grow mono" type="password" autocomplete="off" placeholder="API key (optional)" />
+        </div>
+        <label class="row" style="margin-top:6px;align-items:flex-start;gap:8px;font-size:12.5px;color:var(--muted)">
+          <input id="ws-ext-remote" type="checkbox" style="margin-top:2px" />
+          <span>This server is not on this computer</span>
+        </label>
         <p class="muted" id="ws-ext-notice">${serverDataNotice(b.config.external_base_url || "")}</p>
         <div class="row">
           <button id="ws-local-pick" type="button" class="btn btn-sm">Choose file…</button>
@@ -1777,7 +1838,13 @@ function renderModelsWorkspace() {
       <div class="card">
         <div class="row" style="font-size:12px;color:var(--accent)">
           <span class="status-dot ${rt.state}"></span>
-          <span>${isRunningLocal || isRunningExternal ? modelLocation(rt) : "Off"}</span>
+          <span>${
+            isRunningExternal
+              ? escapeHtml(serverDataNotice(rt.base_url || b.config.external_base_url || ""))
+              : isRunningLocal
+                ? escapeHtml(modelLocation(rt))
+                : "Off"
+          }</span>
         </div>
         <div class="row" style="margin-top:4px">
           ${
@@ -1845,6 +1912,8 @@ function renderModelsWorkspace() {
       const urlInput = document.getElementById("ws-ext-url");
       urlInput.value = btn.getAttribute("data-ext-preset");
       document.getElementById("ws-ext-notice").textContent = serverDataNotice(urlInput.value);
+      const remote = document.getElementById("ws-ext-remote");
+      if (remote) remote.checked = isRemoteModelServer(urlInput.value);
     };
   });
 
@@ -1924,10 +1993,16 @@ function renderModelsWorkspace() {
   };
   document.getElementById("ws-ext-use").onclick = async () => {
     try {
+      const url = document.getElementById("ws-ext-url").value;
+      const keyInput = document.getElementById("ws-ext-key");
+      const apiKey = keyInput?.value ?? "";
       await invoke("set_external_endpoint", {
-        baseUrl: document.getElementById("ws-ext-url").value,
+        baseUrl: url,
         modelName: document.getElementById("ws-ext-name").value || null,
+        confirmRemote: !!document.getElementById("ws-ext-remote")?.checked,
+        apiKey: apiKey.length ? apiKey : null,
       });
+      if (keyInput) keyInput.value = "";
       await refreshBootstrap();
       renderAll();
       showToast("Connected.");
@@ -1937,6 +2012,8 @@ function renderModelsWorkspace() {
   };
   document.getElementById("ws-ext-url").oninput = (event) => {
     document.getElementById("ws-ext-notice").textContent = serverDataNotice(event.target.value);
+    const remote = document.getElementById("ws-ext-remote");
+    if (remote && isRemoteModelServer(event.target.value)) remote.checked = true;
   };
 }
 
@@ -2415,6 +2492,393 @@ function openCustomizeModal() {
     };
     body.appendChild(checkCard);
 
+    const packsCard = document.createElement("div");
+    packsCard.className = "card";
+    packsCard.innerHTML = `
+      <strong>Capability packs</strong>
+      <p class="muted">Optional local packs (speech and demos). Downloads are checksummed and stored on this computer.</p>
+      <div id="capability-packs-list"><p class="muted">Loading…</p></div>
+    `;
+    body.appendChild(packsCard);
+    const renderPacksList = async () => {
+      const slot = packsCard.querySelector("#capability-packs-list");
+      try {
+        const packs = await invoke("list_capability_packs");
+        if (!packs?.length) {
+          slot.innerHTML = `<p class="muted">No capability packs listed yet.</p>`;
+          return;
+        }
+        slot.innerHTML = packs
+          .map((pack) => {
+            const id = escapeHtml(pack.capability_id || "");
+            const name = escapeHtml(pack.display_name || pack.capability_id || "Pack");
+            const detail = escapeHtml(pack.detail || "");
+            const vram =
+              pack.min_vram_mib > 0
+                ? `${Number(pack.min_vram_mib).toLocaleString()} MiB graphics`
+                : "No graphics required";
+            const status = pack.installed ? "Installed" : "Not installed";
+            const canDownload = Boolean(pack.download_url) && !pack.installed;
+            const actions = pack.installed
+              ? `<button type="button" class="btn btn-ghost btn-sm" data-remove-pack="${id}">Remove</button>`
+              : canDownload
+                ? `<button type="button" class="btn btn-primary btn-sm" data-download-pack="${id}">Download</button>`
+                : `<button type="button" class="btn btn-ghost btn-sm" disabled title="Download URL not pinned yet">Coming soon</button>`;
+            return `<div class="row" style="align-items:flex-start;gap:0.75rem;margin:0.65rem 0;">
+              <div class="grow">
+                <div><strong>${name}</strong></div>
+                <div class="muted">${detail}</div>
+                <div class="muted">${escapeHtml(status)} · ${escapeHtml(vram)}</div>
+              </div>
+              <div>${actions}</div>
+            </div>`;
+          })
+          .join("");
+        slot.querySelectorAll("[data-download-pack]").forEach((btn) => {
+          btn.onclick = async () => {
+            const packId = btn.getAttribute("data-download-pack");
+            btn.disabled = true;
+            btn.textContent = "Downloading…";
+            try {
+              await invoke("download_capability_pack", { capabilityId: packId });
+              showToast("Pack downloaded.");
+              await renderPacksList();
+            } catch (err) {
+              showToast(friendlyRuntimeError(err));
+              btn.disabled = false;
+              btn.textContent = "Download";
+            }
+          };
+        });
+        slot.querySelectorAll("[data-remove-pack]").forEach((btn) => {
+          btn.onclick = () => {
+            const packId = btn.getAttribute("data-remove-pack");
+            confirmAction(
+              "Remove pack?",
+              "This deletes the pack files from this computer. You can download again later.",
+              "Remove pack",
+              async () => {
+                try {
+                  await invoke("remove_capability_pack", { capabilityId: packId });
+                  showToast("Pack removed.");
+                  await renderPacksList();
+                } catch (err) {
+                  showToast(friendlyRuntimeError(err));
+                }
+              },
+            );
+          };
+        });
+      } catch (err) {
+        slot.innerHTML = `<p class="muted">${escapeHtml(friendlyRuntimeError(err))}</p>`;
+      }
+    };
+    renderPacksList();
+
+    const audioCard = document.createElement("div");
+    audioCard.className = "card";
+    audioCard.innerHTML = `
+      <strong>Speech packs</strong>
+      <p class="muted">Download Whisper or Piper model files, then register the matching local runner. You can also register a runner for a model you already have.</p>
+      <div id="audio-packs-list"><p class="muted">Loading…</p></div>
+      <strong style="display:block;margin-top:14px">Try STT / TTS</strong>
+      <p class="muted">${escapeHtml(AUDIO_TRY_STT_INPUT_HELP)} ${escapeHtml(AUDIO_TRY_TTS_INPUT_HELP)} Register a local runner before trying speech to text or text to speech.</p>
+      <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
+        <button type="button" class="btn btn-sm btn-ghost" id="audio-try-stt">Try STT</button>
+        <button type="button" class="btn btn-sm btn-ghost" id="audio-try-tts">Try TTS</button>
+      </div>
+      <p id="audio-try-status" class="muted" role="status" style="margin-top:8px"></p>
+      <strong style="display:block;margin-top:14px">Recent audio artifacts</strong>
+      <p class="muted">Local transcripts and WAV files from successful runs.</p>
+      <div id="audio-artifacts-list"><p class="muted">Loading…</p></div>
+      <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
+        <button type="button" class="btn btn-sm btn-ghost" id="audio-artifacts-refresh">Refresh</button>
+        <button type="button" class="btn btn-sm btn-ghost" id="audio-artifacts-clear">Clear</button>
+      </div>
+    `;
+    body.appendChild(audioCard);
+
+    const audioTryStatus = audioCard.querySelector("#audio-try-status");
+    const setAudioTryStatus = (message, { ok = false } = {}) => {
+      audioTryStatus.textContent = message || "";
+      audioTryStatus.style.color = ok ? "var(--ok, inherit)" : "";
+    };
+    const wireAudioTryControls = () => {
+      audioCard.querySelector("#audio-try-stt").addEventListener("click", async () => {
+        const btn = audioCard.querySelector("#audio-try-stt");
+        btn.disabled = true;
+        setAudioTryStatus("Choose a local audio clip…");
+        try {
+          const picked = await invoke("pick_audio_file");
+          if (!picked) {
+            setAudioTryStatus("Try STT cancelled — no file selected.");
+            return;
+          }
+          setAudioTryStatus(`Running STT on ${picked}…`);
+          const transcript = await invoke("run_audio_stt", { audioPath: picked });
+          const ok = formatAudioTrySttSuccess(transcript);
+          setAudioTryStatus(ok, { ok: true });
+          showToast(ok);
+          await renderAudioArtifacts();
+        } catch (err) {
+          // Preserve core pack/runner messages (do not rewrite into model-runtime copy).
+          const msg = String(err ?? "").replace(/^Error:\s*/i, "").trim() || "STT failed.";
+          setAudioTryStatus(msg);
+          showToast(msg);
+        } finally {
+          btn.disabled = false;
+        }
+      });
+      audioCard.querySelector("#audio-try-tts").addEventListener("click", async () => {
+        const btn = audioCard.querySelector("#audio-try-tts");
+        btn.disabled = true;
+        setAudioTryStatus(`Running TTS (“${AUDIO_TRY_TTS_SAMPLE}”)…`);
+        try {
+          const outputPath = await invoke("run_audio_tts", {
+            text: AUDIO_TRY_TTS_SAMPLE,
+            outputPath: null,
+          });
+          const ok = formatAudioTryTtsSuccess(outputPath);
+          setAudioTryStatus(ok, { ok: true });
+          showToast(ok);
+          await renderAudioArtifacts();
+        } catch (err) {
+          const msg = String(err ?? "").replace(/^Error:\s*/i, "").trim() || "TTS failed.";
+          setAudioTryStatus(msg);
+          showToast(msg);
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    };
+
+    const renderAudioArtifacts = async () => {
+      const slot = audioCard.querySelector("#audio-artifacts-list");
+      try {
+        const artifacts = await invoke("list_audio_artifacts");
+        if (!artifacts?.length) {
+          slot.innerHTML = `<p class="muted">No audio artifacts yet. Run STT or TTS to create one.</p>`;
+          return;
+        }
+        const recent = artifacts.slice(0, 12);
+        slot.innerHTML = recent
+          .map((art) => {
+            const kind =
+              art.kind === "stt_transcript"
+                ? "STT transcript"
+                : art.kind === "tts_output"
+                  ? "TTS output"
+                  : String(art.kind || "Artifact");
+            const preview = art.text_preview
+              ? `<div class="muted" style="font-size:12px">${escapeHtml(art.text_preview)}</div>`
+              : "";
+            return `
+              <div class="row" style="align-items:flex-start;gap:10px;margin-bottom:8px">
+                <div class="grow">
+                  <div class="muted" style="font-size:12px">${escapeHtml(kind)}</div>
+                  <div class="mono" style="font-size:12px;word-break:break-all">${escapeHtml(art.path || "")}</div>
+                  ${preview}
+                </div>
+              </div>
+            `;
+          })
+          .join("");
+      } catch (err) {
+        slot.innerHTML = `<p class="muted">${escapeHtml(friendlyRuntimeError(err))}</p>`;
+      }
+    };
+    audioCard.querySelector("#audio-artifacts-refresh").addEventListener("click", () => {
+      renderAudioArtifacts();
+    });
+    audioCard.querySelector("#audio-artifacts-clear").addEventListener("click", async () => {
+      if (!window.confirm("Clear all local audio artifacts from disk?")) return;
+      try {
+        await invoke("clear_audio_artifacts");
+        showToast("Audio artifacts cleared.");
+        await renderAudioArtifacts();
+      } catch (err) {
+        showToast(friendlyRuntimeError(err));
+      }
+    });
+    renderAudioArtifacts();
+    wireAudioTryControls();
+    const renderAudioPacks = async () => {
+      const slot = audioCard.querySelector("#audio-packs-list");
+      try {
+        const packs = await invoke("list_audio_packs");
+        if (!packs?.length) {
+          slot.innerHTML = `<p class="muted">No audio packs listed yet.</p>`;
+          return;
+        }
+        slot.innerHTML = packs
+          .filter((pack) => pack.id !== "stt-demo-fixture")
+          .map((pack) => {
+            const kind =
+              pack.capability === "stt"
+                ? "Speech to text"
+                : pack.capability === "tts"
+                  ? "Text to speech"
+                  : String(pack.capability || "Audio");
+            const status = pack.runner_path
+              ? `Runner configured · ${pack.runner_path}`
+              : "Runner required";
+            const downloadable = Boolean(
+              pack.sha256 && pack.download_url && !String(pack.download_url).startsWith("keel-pack:unpinned/"),
+            );
+            const id = escapeHtml(pack.id);
+            return `
+              <div class="row" style="align-items:flex-start;gap:10px;margin-bottom:10px" data-audio-pack="${id}">
+                <div class="grow">
+                  <div>${escapeHtml(pack.display_name || pack.id)}</div>
+                  <div class="muted" style="font-size:12px">${escapeHtml(kind)} · ${escapeHtml(status)}</div>
+                </div>
+                <div class="row" style="gap:6px;flex-wrap:wrap;justify-content:flex-end">
+                  ${
+                    pack.installed
+                      ? `<button type="button" class="btn btn-sm btn-ghost" data-audio-remove="${id}">Remove</button>`
+                      : downloadable
+                        ? `<button type="button" class="btn btn-sm btn-ghost" data-audio-download="${id}">Download model</button>`
+                        : ""
+                  }
+                  <button type="button" class="btn btn-sm btn-ghost" data-audio-runner="${id}">Register runner…</button>
+                  ${
+                    pack.capability === "stt"
+                      ? `<button type="button" class="btn btn-sm btn-ghost" data-audio-whisper="${id}">Whisper.cpp…</button>`
+                      : pack.capability === "tts"
+                        ? `<button type="button" class="btn btn-sm btn-ghost" data-audio-piper="${id}">Piper…</button>`
+                        : ""
+                  }
+                </div>
+              </div>
+            `;
+          })
+          .join("");
+
+        slot.querySelectorAll("[data-audio-download]").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            btn.disabled = true;
+            try {
+              await invoke("download_audio_pack", { packId: btn.getAttribute("data-audio-download") });
+              showToast("Audio pack downloaded.");
+              await renderAudioPacks();
+            } catch (err) {
+              showToast(friendlyRuntimeError(err));
+              btn.disabled = false;
+            }
+          });
+        });
+        slot.querySelectorAll("[data-audio-remove]").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            if (!window.confirm("Remove this installed audio pack from disk?")) return;
+            btn.disabled = true;
+            try {
+              await invoke("remove_audio_pack", { packId: btn.getAttribute("data-audio-remove") });
+              showToast("Audio pack removed.");
+              await renderAudioPacks();
+            } catch (err) {
+              showToast(friendlyRuntimeError(err));
+              btn.disabled = false;
+            }
+          });
+        });
+        slot.querySelectorAll("[data-audio-runner]").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const packId = btn.getAttribute("data-audio-runner");
+            const command = window.prompt(
+              "Local binary or script for this pack (absolute path or PATH name).\nSTT: command <audio_path> → transcript on stdout.\nTTS: command --text <text> --output <path>.\nFor Whisper.cpp / Piper use those dedicated buttons instead.",
+              "",
+            );
+            if (command == null) return;
+            const trimmed = command.trim();
+            if (!trimmed) {
+              showToast("Provide a runner path.");
+              return;
+            }
+            btn.disabled = true;
+            try {
+              await invoke("register_audio_pack_runner", { packId, command: trimmed });
+              showToast("Runner registered.");
+              await renderAudioPacks();
+            } catch (err) {
+              showToast(friendlyRuntimeError(err));
+              btn.disabled = false;
+            }
+          });
+        });
+        slot.querySelectorAll("[data-audio-whisper]").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const packId = btn.getAttribute("data-audio-whisper");
+            const command = window.prompt(
+              "Whisper.cpp binary (absolute path or PATH name, e.g. whisper-cli).\nInvokes: command …args… -m <model> -f <audio_path> → transcript on stdout.",
+              "whisper-cli",
+            );
+            if (command == null) return;
+            const trimmedCmd = command.trim();
+            if (!trimmedCmd) {
+              showToast("Provide a Whisper.cpp binary.");
+              return;
+            }
+            const model = window.prompt(
+              "Path to a local Whisper model file. Leave blank to use the model downloaded for this pack.",
+              "",
+            );
+            if (model == null) return;
+            const trimmedModel = model.trim();
+            btn.disabled = true;
+            try {
+              await invoke("register_whisper_cpp_runner", {
+                packId,
+                command: trimmedCmd,
+                model: trimmedModel,
+              });
+              showToast("Whisper.cpp runner registered.");
+              await renderAudioPacks();
+            } catch (err) {
+              showToast(friendlyRuntimeError(err));
+              btn.disabled = false;
+            }
+          });
+        });
+        slot.querySelectorAll("[data-audio-piper]").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const packId = btn.getAttribute("data-audio-piper");
+            const command = window.prompt(
+              "Piper binary (absolute path or PATH name, e.g. piper).\nInvokes: command …args… --model <onnx> -f <path> with text on stdin.",
+              "piper",
+            );
+            if (command == null) return;
+            const trimmedCmd = command.trim();
+            if (!trimmedCmd) {
+              showToast("Provide a Piper binary.");
+              return;
+            }
+            const model = window.prompt(
+              "Path to a local Piper ONNX voice with its .onnx.json file. Leave blank to use the voice downloaded for this pack.",
+              "",
+            );
+            if (model == null) return;
+            const trimmedModel = model.trim();
+            btn.disabled = true;
+            try {
+              await invoke("register_piper_runner", {
+                packId,
+                command: trimmedCmd,
+                model: trimmedModel,
+              });
+              showToast("Piper runner registered.");
+              await renderAudioPacks();
+            } catch (err) {
+              showToast(friendlyRuntimeError(err));
+              btn.disabled = false;
+            }
+          });
+        });
+      } catch (err) {
+        slot.innerHTML = `<p class="muted">${escapeHtml(friendlyRuntimeError(err))}</p>`;
+      }
+    };
+    renderAudioPacks();
+
     const ap = appState.appearance;
     const appearanceCard = document.createElement("div");
     appearanceCard.className = "card";
@@ -2497,11 +2961,15 @@ function openCustomizeModal() {
     body.appendChild(appearanceCard);
 
     const harnessOptions = b.harnesses
-      .map(
-        (h) =>
-          `<option value="${escapeHtml(h.id)}" ${h.id === b.config.harness_mode ? "selected" : ""}>${escapeHtml(h.name)}${h.available ? "" : " (not installed)"}</option>`,
-      )
+      .map((h) => {
+        const recommended = h.id === "keel" ? " — default" : "";
+        const missing = h.available ? "" : " (not installed)";
+        return `<option value="${escapeHtml(h.id)}" ${h.id === b.config.harness_mode ? "selected" : ""}>${escapeHtml(h.name)}${recommended}${missing}</option>`;
+      })
       .join("");
+    const harnessHint = b.config.harness_mode === "keel-cli"
+      ? `<p class="muted">Code uses the Keel CLI. Finish the current turn before resuming the same journal in a terminal.</p>`
+      : `<p class="muted">Select Keel CLI to share Code journals with a current CLI installed on PATH.</p>`;
     const card = document.createElement("div");
     card.className = "card";
     card.innerHTML = `
@@ -2520,6 +2988,7 @@ function openCustomizeModal() {
           </select>
           <label><strong>Engine for Code mode</strong></label>
           <select id="cust-harness" class="select-field">${harnessOptions}</select>
+          ${harnessHint}
           <label><strong>Custom local engine path</strong></label>
           <input id="cust-llama" class="input mono" value="${escapeHtml(b.config.llama_server_path || "")}" placeholder="Leave blank to use Keel's built-in engine" />
         </div>

@@ -176,33 +176,45 @@ pub fn completion_text(body: &Value) -> String {
 }
 
 pub async fn run_model_check(base_url: &str, model_id: &str) -> Result<ModelCheckReport> {
+    run_model_check_with_auth(base_url, model_id, None).await
+}
+
+/// Same as [`run_model_check`], optionally sending `Authorization: Bearer <key>`
+/// for an explicitly connected remote text provider.
+pub async fn run_model_check_with_auth(
+    base_url: &str,
+    model_id: &str,
+    api_key: Option<&str>,
+) -> Result<ModelCheckReport> {
     let started = Instant::now();
     let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(45))
         .build()
         .context("Could not start the model check")?;
     let mut items = Vec::with_capacity(3);
     for case in cases() {
-        let graded = match ask_model(&client, base_url, model_id, case.system, case.user).await {
-            Ok(answer) => {
-                let passed = (case.grade)(&answer);
-                ModelCheckItem {
-                    name: case.name.to_string(),
-                    passed,
-                    detail: (if passed {
-                        case.pass_detail
-                    } else {
-                        case.fail_detail
-                    })
-                    .to_string(),
+        let graded =
+            match ask_model(&client, base_url, model_id, case.system, case.user, api_key).await {
+                Ok(answer) => {
+                    let passed = (case.grade)(&answer);
+                    ModelCheckItem {
+                        name: case.name.to_string(),
+                        passed,
+                        detail: (if passed {
+                            case.pass_detail
+                        } else {
+                            case.fail_detail
+                        })
+                        .to_string(),
+                    }
                 }
-            }
-            Err(_) => ModelCheckItem {
-                name: case.name.to_string(),
-                passed: false,
-                detail: "This question didn't finish.".to_string(),
-            },
-        };
+                Err(_) => ModelCheckItem {
+                    name: case.name.to_string(),
+                    passed: false,
+                    detail: "This question didn't finish.".to_string(),
+                },
+            };
         items.push(graded);
     }
     Ok(finish_report(model_id, items, started.elapsed()))
@@ -239,6 +251,7 @@ async fn ask_model(
     model_id: &str,
     system: &str,
     user: &str,
+    api_key: Option<&str>,
 ) -> Result<String> {
     let endpoint = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let body = json!({
@@ -252,7 +265,7 @@ async fn ask_model(
         "max_tokens": 80,
         "chat_template_kwargs": { "enable_thinking": false }
     });
-    let response = post_completion(client, &endpoint, &body).await?;
+    let response = post_completion(client, &endpoint, &body, api_key).await?;
     let text = completion_text(&response);
     if text.is_empty() {
         anyhow::bail!("The model returned an empty answer");
@@ -260,10 +273,26 @@ async fn ask_model(
     Ok(text)
 }
 
-async fn post_completion(client: &reqwest::Client, endpoint: &str, body: &Value) -> Result<Value> {
-    let first = client
-        .post(endpoint)
-        .json(body)
+fn authorized_post(
+    client: &reqwest::Client,
+    endpoint: &str,
+    body: &Value,
+    api_key: Option<&str>,
+) -> reqwest::RequestBuilder {
+    let mut req = client.post(endpoint).json(body);
+    if let Some(auth) = crate::remote::bearer_authorization(api_key) {
+        req = req.header(reqwest::header::AUTHORIZATION, auth);
+    }
+    req
+}
+
+async fn post_completion(
+    client: &reqwest::Client,
+    endpoint: &str,
+    body: &Value,
+    api_key: Option<&str>,
+) -> Result<Value> {
+    let first = authorized_post(client, endpoint, body, api_key)
         .send()
         .await
         .context("The model didn't answer")?;
@@ -273,9 +302,7 @@ async fn post_completion(client: &reqwest::Client, endpoint: &str, body: &Value)
         if let Some(obj) = plain.as_object_mut() {
             obj.remove("chat_template_kwargs");
         }
-        let retry = client
-            .post(endpoint)
-            .json(&plain)
+        let retry = authorized_post(client, endpoint, &plain, api_key)
             .send()
             .await
             .context("The model didn't answer")?;

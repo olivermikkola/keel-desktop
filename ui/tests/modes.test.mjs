@@ -23,8 +23,11 @@ test("Chat works without a folder, Work and Code require one, and stopped models
   assert.ok(!isRuntimeLive({ state: "stopped" }));
 });
 
-test("capability library does not advertise unfinished audio or video backends as available", () => {
+test("capability library marks Settings audio packs/try-run available and leaves video planned", () => {
   assert.equal(CAPABILITIES.find((c) => c.id === "images").state, "available");
-  assert.equal(CAPABILITIES.find((c) => c.id === "audio").state, "planned");
+  const audio = CAPABILITIES.find((c) => c.id === "audio");
+  assert.equal(audio.state, "available");
+  assert.match(audio.detail, /Try STT|Try TTS|Settings packs/i);
+  assert.match(audio.detail, /Not a chat-mode audio product/i);
   assert.equal(CAPABILITIES.find((c) => c.id === "video").state, "planned");
 });

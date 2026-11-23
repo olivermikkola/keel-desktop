@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assistantStatus, createProgressTracker, formatEta, formatSpeed, friendlyRuntimeError, friendlySetupError, isFirstRun, modelLocation, modelTierLabel, modelToWake, serverDataNotice, speedSettingsCopy, answerTimePhrase, modelCheckIntro, stepStates } from "../onboarding.js";
+import { assistantStatus, connectedExternalLocation, createProgressTracker, formatEta, formatSpeed, friendlyRuntimeError, friendlySetupError, isFirstRun, isRemoteModelServer, modelLocation, modelTierLabel, modelToWake, serverDataNotice, speedSettingsCopy, answerTimePhrase, modelCheckIntro, stepStates } from "../onboarding.js";
 
 const MB = 1024 * 1024;
 
@@ -104,10 +104,26 @@ test("modelLocation and serverDataNotice distinguish on-device, local server, an
   assert.equal(modelLocation({ state: "external", base_url: "http://127.0.0.1:11434/v1" }), "Local model server");
   assert.equal(modelLocation({ state: "external", base_url: "http://localhost:8080/v1" }), "Local model server");
   assert.equal(modelLocation({ state: "external", base_url: "http://[::1]:8080/v1" }), "Local model server");
-  assert.equal(modelLocation({ state: "external", base_url: "https://models.example.com/v1" }), "External model server");
-  assert.equal(modelLocation({ state: "external", base_url: "not-a-url" }), "External model server");
+  assert.equal(modelLocation({ state: "external", base_url: "https://models.example.com/v1" }), "Leaves this computer");
+  assert.equal(modelLocation({ state: "external", base_url: "not-a-url" }), "Leaves this computer");
+  assert.equal(isRemoteModelServer("https://models.example.com/v1"), true);
+  assert.equal(isRemoteModelServer("http://127.0.0.1:11434/v1"), false);
   assert.match(serverDataNotice("http://127.0.0.1:11434/v1"), /on this computer/);
-  assert.match(serverDataNotice("https://models.example.com/v1"), /server you connect here/);
+  assert.match(serverDataNotice("https://models.example.com/v1"), /Leaves this computer/);
+  assert.match(serverDataNotice("https://models.example.com/v1"), /may incur provider cost/);
+});
+
+test("connectedExternalLocation keeps cost warning for remote connected state, not loopback", () => {
+  const remote = { state: "external", base_url: "https://models.example.com/v1" };
+  const loopback = { state: "external", base_url: "http://127.0.0.1:11434/v1" };
+  assert.match(connectedExternalLocation(remote), /may incur provider cost/);
+  assert.match(connectedExternalLocation(remote), /Leaves this computer/);
+  assert.equal(connectedExternalLocation(loopback), "Local model server");
+  assert.doesNotMatch(connectedExternalLocation(loopback), /may incur provider cost/);
+  // serverDataNotice stays the verbose connect-form source; connected chrome shares its cost phrase.
+  assert.match(serverDataNotice(remote.base_url), /may incur provider cost/);
+  assert.doesNotMatch(serverDataNotice(loopback.base_url), /may incur provider cost/);
+  assert.equal(connectedExternalLocation({ state: "running", base_url: "http://127.0.0.1:18180/v1" }), "On this computer");
 });
 
 test("friendlyRuntimeError strips raw HTTP endpoints, ports, and engine jargon", () => {

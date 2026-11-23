@@ -2,6 +2,7 @@ use keel_core::agent::{
     run_agent_turn, AgentEvent, ApprovalDecision, EndpointUnreachable, TurnParams,
 };
 use keel_core::apps::{AppPreset, AppPresetInfo};
+use keel_core::audio::{self, AudioArtifact, AudioPackManifest};
 use keel_core::harnesses::{
     code_execution_boundary, detect_harnesses, run_external_harness, run_keel_cli_turn,
     CodeExecutionBoundary, HarnessOption, KeelCliTurn,
@@ -17,8 +18,7 @@ use keel_core::models::{
     list_models, models_dir, parse_huggingface_gguf_url, CatalogModel,
 };
 use keel_core::runtime::{
-    check_runner_starts, find_llama_server, probe_openai_models, ModelLaunch, RuntimeManager,
-    RuntimeStatus,
+    check_runner_starts, find_llama_server, ModelLaunch, RuntimeManager, RuntimeStatus,
 };
 use keel_core::sessions::{
     delete_session, list_sessions, load_session, save_config, save_session, ChatSession,
@@ -35,6 +35,13 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::{oneshot, watch, Mutex};
 use tokio::task::AbortHandle;
+
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Test spy: increments when the real keep-alive unload path runs.
+#[cfg(test)]
+static PREPARE_PACK_VRAM_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 pub struct AppState {
     pub images: keel_core::images::ImageService,
@@ -282,46 +289,63 @@ pub async fn import_keel_session(
     let root =
         validate_workspace_root(Path::new(&workspace_path)).map_err(|error| error.to_string())?;
     let selected = tokio::task::spawn_blocking(move || {
-        app.dialog()
+        let mut picker = app
+            .dialog()
             .file()
             .set_title("Open a Keel CLI session")
-            .add_filter("Keel session logs", &["jsonl"])
-            .blocking_pick_file()
+            .add_filter("Keel session logs", &["jsonl"]);
+        // Prefer the CLI's default journal folder when it exists (~/.keel/sessions).
+        if let Some(sessions) = keel_core::harnesses::default_keel_sessions_dir() {
+            picker = picker.set_directory(sessions);
+        }
+        picker.blocking_pick_file()
     })
     .await
     .map_err(|error| error.to_string())?;
     let Some(file) = selected else {
         return Ok(None);
     };
-    let path = file
-        .into_path()
-        .map_err(|error| error.to_string())?
-        .canonicalize()
+    let path = file.into_path().map_err(|error| error.to_string())?;
+    let session = keel_core::harnesses::chat_session_from_keel_journal(&path, &root)
         .map_err(|error| error.to_string())?;
-    let messages =
-        keel_core::harnesses::read_keel_session(&path).map_err(|error| error.to_string())?;
-    let title = messages
-        .iter()
-        .find(|message| message.role == "user")
-        .map(|message| message.content.chars().take(48).collect())
-        .unwrap_or_else(|| "Keel CLI session".to_string());
-    let session = ChatSession {
-        id: uuid::Uuid::new_v4().to_string(),
-        title,
-        project_id: None,
-        pinned: false,
-        app_preset: AppPreset::Code,
-        workspace_path: Some(root.to_string_lossy().into_owned()),
-        keel_session_log: Some(path),
-        code_checkout: None,
-        applied_code_patch: None,
-        last_code_test: None,
-        messages,
-        staged_edits: Vec::new(),
-        updated_at: now_epoch(),
-    };
     save_session(&state.data_dir, &session).map_err(|error| error.to_string())?;
     Ok(Some(session))
+}
+
+fn session_keel_log(session: &ChatSession) -> Result<PathBuf, String> {
+    keel_core::harnesses::require_code_session_journal(session).map_err(|e| e.to_string())
+}
+
+/// Reveal the Code session's Keel CLI journal in the system file manager.
+#[tauri::command]
+pub async fn reveal_keel_session_log(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<String, String> {
+    use tauri_plugin_opener::OpenerExt;
+    let session = load_session(&state.data_dir, &session_id).map_err(|e| e.to_string())?;
+    let path = session_keel_log(&session)?;
+    let folder = path
+        .parent()
+        .ok_or_else(|| "Journal path has no parent folder".to_string())?;
+    app.opener()
+        .open_path(folder.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Copy the validated Keel CLI journal into `~/.keel/sessions` under a safe name.
+#[tauri::command]
+pub async fn export_keel_session_log(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<String, String> {
+    let session = load_session(&state.data_dir, &session_id).map_err(|e| e.to_string())?;
+    let log = session_keel_log(&session)?;
+    let exported = keel_core::harnesses::export_keel_session_log(&log, &session.id, &session.title)
+        .map_err(|e| e.to_string())?;
+    Ok(exported.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -441,8 +465,9 @@ async fn cached_advice(state: &AppState, model_bytes: u64) -> keel_core::hardwar
     let devices = keel_core::setup::installed_graphics_runtime(&state.data_dir)
         .map(|bin| keel_core::hardware::probe_devices(&bin))
         .unwrap_or_default();
+    let machine = keel_core::hardware::detect_machine();
     let advice = keel_core::hardware::advise(
-        &keel_core::hardware::detect_machine(),
+        &machine,
         &cfg.run_where,
         &cfg.graphics_share,
         model_bytes,
@@ -539,6 +564,8 @@ fn launch_for<'a>(
 
 /// Keeps the managed runner when the model and the graphics-or-processor choice
 /// have not changed. The next message does not pay for another load.
+/// Pack starts should call [`prepare_pack_vram`] first so a VRAM-hungry pack can
+/// stop this keep-alive via `plan_pack_vram` / `should_stop_keep_alive_for_pack`.
 async fn loaded_model_can_stay(state: &AppState) -> Option<RuntimeStatus> {
     let cfg = state.config.lock().await.clone();
     if cfg.external_base_url.is_some() {
@@ -622,11 +649,17 @@ async fn auto_start_local_model(
         let Some(path_str) = cand.local_path.as_deref() else {
             continue;
         };
-        let configured_ctx = state.config.lock().await.context_window;
+        let mut cfg_now = state.config.lock().await;
+        let mut rt = state.runtime.lock().await;
+        if rt.status().state == "external" {
+            return Ok(rt.status());
+        }
         let ram_gb = keel_core::setup::system_ram_gb();
-        let ctx_size =
-            keel_core::setup::effective_context_size(cand.context_size, configured_ctx, ram_gb);
-        let cfg_now = state.config.lock().await.clone();
+        let ctx_size = keel_core::setup::effective_context_size(
+            cand.context_size,
+            cfg_now.context_window,
+            ram_gb,
+        );
         let advice = keel_core::hardware::advise(
             &keel_core::hardware::detect_machine(),
             &cfg_now.run_where,
@@ -634,9 +667,8 @@ async fn auto_start_local_model(
             cand.bytes,
             &prepared.devices,
         );
-        let started = {
-            let mut rt = state.runtime.lock().await;
-            rt.start_model(launch_for(
+        let started = rt
+            .start_model(launch_for(
                 &cand.id,
                 Path::new(path_str),
                 ctx_size,
@@ -644,8 +676,7 @@ async fn auto_start_local_model(
                 &advice,
                 &cfg_now,
             ))
-            .await
-        };
+            .await;
         match started {
             Ok(status) => {
                 if cand.id != preferred_id {
@@ -670,11 +701,11 @@ async fn auto_start_local_model(
                         );
                     }
                 }
-                let mut cfg = state.config.lock().await;
-                cfg.selected_model_id = cand.id;
-                cfg.external_base_url = None;
-                cfg.external_model_name = None;
-                save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
+                cfg_now.selected_model_id = cand.id;
+                cfg_now.external_base_url = None;
+                cfg_now.external_model_name = None;
+                let _ = keel_core::remote::clear_external_api_key(&state.data_dir);
+                save_config(&state.config_dir, &cfg_now).map_err(|e| e.to_string())?;
                 return Ok(status);
             }
             Err(error) => {
@@ -731,9 +762,10 @@ pub async fn start_model(
         cfg_snapshot.context_window,
         ram_gb,
     );
-    let status = {
-        let mut rt = state.runtime.lock().await;
-        rt.start_model(launch_for(
+    let mut cfg = state.config.lock().await;
+    let mut rt = state.runtime.lock().await;
+    let status = rt
+        .start_model(launch_for(
             &model.id,
             Path::new(&path_str),
             ctx_size,
@@ -742,13 +774,11 @@ pub async fn start_model(
             &cfg_snapshot,
         ))
         .await
-        .map_err(|e| e.to_string())?
-    };
-
-    let mut cfg = state.config.lock().await;
+        .map_err(|e| e.to_string())?;
     cfg.selected_model_id = model.id;
     cfg.external_base_url = None;
     cfg.external_model_name = None;
+    let _ = keel_core::remote::clear_external_api_key(&state.data_dir);
     save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
     Ok(status)
 }
@@ -781,12 +811,19 @@ pub async fn check_current_model(
         .ok_or_else(|| {
             "Your AI isn't ready yet. Start it in Models, then try the check again.".to_string()
         })?;
-    let report = model_check::run_model_check(&status.base_url, &model_id)
-        .await
-        .map_err(|_| {
-            "This model didn't answer the check. Make sure your AI is running and try again."
-                .to_string()
-        })?;
+    // External endpoints may require the stored Bearer key; local keep-alive does not.
+    let api_key = if status.state == "external" {
+        keel_core::remote::load_external_api_key(&state.data_dir, &status.base_url)
+    } else {
+        None
+    };
+    let report =
+        model_check::run_model_check_with_auth(&status.base_url, &model_id, api_key.as_deref())
+            .await
+            .map_err(|_| {
+                "This model didn't answer the check. Make sure your AI is running and try again."
+                    .to_string()
+            })?;
     if report
         .items
         .iter()
@@ -811,7 +848,138 @@ pub async fn stop_runtime(state: State<'_, AppState>) -> Result<RuntimeStatus, S
     cfg.external_base_url = None;
     cfg.external_model_name = None;
     save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
+    keel_core::remote::clear_external_api_key(&state.data_dir).map_err(|e| e.to_string())?;
     Ok(rt.status())
+}
+
+/// Result of probing VRAM and optionally stopping keep-alive for a pack.
+#[derive(Debug, Clone, Serialize)]
+pub struct PackVramResult {
+    /// `unloaded` | `already_free` | `processor_fallback`
+    pub status: String,
+    pub reason: String,
+    pub capability_id: String,
+    pub usable_free_mib: u64,
+    pub runtime: RuntimeStatus,
+}
+
+fn fresh_vram_inventory(state: &AppState) -> keel_core::hardware::VramInventory {
+    let devices = keel_core::setup::installed_graphics_runtime(&state.data_dir)
+        .map(|bin| keel_core::hardware::probe_devices(&bin))
+        .unwrap_or_default();
+    let machine = keel_core::hardware::detect_machine();
+    keel_core::hardware::inventory(&machine, &devices)
+}
+
+/// Probe current VRAM and stop keep-alive when a pack needs the graphics memory.
+async fn prepare_pack_vram_for_manifest(
+    state: &AppState,
+    pack: keel_core::packs::PackManifest,
+) -> Result<PackVramResult, String> {
+    #[cfg(test)]
+    PREPARE_PACK_VRAM_CALLS.fetch_add(1, Ordering::SeqCst);
+    let inventory = fresh_vram_inventory(state);
+
+    let mut rt = state.runtime.lock().await;
+    let plan = keel_core::runtime::plan_pack_vram(&inventory, &pack, rt.loaded_launch());
+    if plan.stop_keep_alive {
+        // Same managed-runner stop as stop_runtime; leave external endpoint alone.
+        rt.stop().await;
+        drop(rt);
+        *state.placement_cache.lock().await = None;
+        let mut rt = state.runtime.lock().await;
+        return Ok(PackVramResult {
+            status: "unloaded".into(),
+            reason: plan.reason,
+            capability_id: pack.capability_id,
+            usable_free_mib: inventory.usable_free_mib,
+            runtime: rt.status(),
+        });
+    }
+    let status = match plan.status {
+        keel_core::runtime::PackVramStatus::Unloaded => "unloaded",
+        keel_core::runtime::PackVramStatus::AlreadyFree => "already_free",
+        keel_core::runtime::PackVramStatus::ProcessorFallback => "processor_fallback",
+    };
+    Ok(PackVramResult {
+        status: status.to_string(),
+        reason: plan.reason,
+        capability_id: pack.capability_id,
+        usable_free_mib: inventory.usable_free_mib,
+        runtime: rt.status(),
+    })
+}
+
+/// Probe current VRAM and stop keep-alive when a pack needs the graphics memory.
+///
+/// Returns `unloaded` when the managed runner was stopped, `already_free` when
+/// the pack can use graphics without unloading, or `processor_fallback` when
+/// the pack should run on the processor.
+#[tauri::command]
+pub async fn prepare_pack_vram(
+    state: State<'_, AppState>,
+    capability_id: String,
+    min_vram_mib: u64,
+    runner_kind: Option<String>,
+) -> Result<PackVramResult, String> {
+    let kind = match runner_kind.as_deref() {
+        Some(raw) => keel_core::packs::parse_runner_kind(raw)?,
+        None => keel_core::packs::RunnerKind::Text,
+    };
+    let pack = keel_core::packs::PackManifest::new(capability_id.trim(), min_vram_mib, kind);
+    prepare_pack_vram_for_manifest(&state, pack).await
+}
+
+/// List capability packs with on-disk install status under the data directory.
+#[tauri::command]
+pub async fn list_capability_packs(
+    state: State<'_, AppState>,
+) -> Result<Vec<keel_core::packs::CapabilityPack>, String> {
+    let data_dir = state.data_dir.clone();
+    tokio::task::spawn_blocking(move || keel_core::packs::list_capability_packs(&data_dir))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Download a checksummed catalog pack into `{data_dir}/packs/<id>/`.
+#[tauri::command]
+pub async fn download_capability_pack(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    capability_id: String,
+) -> Result<Vec<keel_core::packs::CapabilityPack>, String> {
+    let _download = state
+        .download_lock
+        .try_lock()
+        .map_err(|_| "Another download is running")?;
+    let data_dir = state.data_dir.clone();
+    let id = capability_id.trim().to_string();
+    keel_core::packs::download_capability_pack(&data_dir, &id, |prog| {
+        let _ = app.emit("keel://download-progress", prog);
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(keel_core::packs::list_capability_packs(&data_dir))
+}
+
+/// Remove an installed capability pack from disk.
+#[tauri::command]
+pub async fn remove_capability_pack(
+    state: State<'_, AppState>,
+    capability_id: String,
+) -> Result<Vec<keel_core::packs::CapabilityPack>, String> {
+    let _download = state
+        .download_lock
+        .try_lock()
+        .map_err(|_| "Wait for the current download to finish before removing a pack")?;
+    let data_dir = state.data_dir.clone();
+    let id = capability_id.trim().to_string();
+    tokio::task::spawn_blocking(move || {
+        keel_core::packs::remove_capability_pack(&data_dir, &id).map_err(|e| e.to_string())?;
+        Ok(keel_core::packs::list_capability_packs(&data_dir))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -819,30 +987,58 @@ pub async fn set_external_endpoint(
     state: State<'_, AppState>,
     base_url: String,
     model_name: Option<String>,
+    confirm_remote: Option<bool>,
+    api_key: Option<String>,
 ) -> Result<RuntimeStatus, String> {
-    if keel_core::runtime::is_default_managed_loopback(&base_url) {
-        return Err(
-            "That address is Keel's own built-in AI engine. Pick a downloaded model in Models instead, or connect Ollama (11434) or LM Studio (1234)."
-                .to_string(),
-        );
+    let base_url = base_url.trim().trim_end_matches('/');
+    keel_core::remote::validate_external_connect(base_url, confirm_remote.unwrap_or(false))
+        .map_err(|e| e.to_string())?;
+    let mut cfg = state.config.lock().await;
+    let key_for_request = match api_key.as_deref().map(str::trim) {
+        Some("") => None,
+        Some(key) => Some(key.to_string()),
+        None => keel_core::remote::load_external_api_key(&state.data_dir, base_url),
+    };
+    if key_for_request.is_some() {
+        keel_core::remote::validate_external_key_transport(base_url).map_err(|e| e.to_string())?;
     }
-    let probed = probe_openai_models(&base_url).await.map_err(|_| {
-        "Couldn't connect. Make sure Ollama or LM Studio is open and running, then try again."
-            .to_string()
-    })?;
+    let probed =
+        keel_core::runtime::probe_openai_models_with_auth(base_url, key_for_request.as_deref())
+            .await
+            .map_err(|_| {
+                if keel_core::runtime::is_loopback_url(base_url) {
+                    "Couldn't connect. Make sure Ollama or LM Studio is open and running, then try again."
+                        .to_string()
+                } else {
+                    "Couldn't connect to that server. Check the address, API key, and that you confirmed a remote server."
+                        .to_string()
+                }
+            })?;
     let chosen = model_name
         .filter(|s| !s.trim().is_empty())
         .or_else(|| probed.into_iter().next())
         .unwrap_or_else(|| "default".to_string());
 
-    let mut cfg = state.config.lock().await;
     let mut rt = state.runtime.lock().await;
-    rt.set_external_url(&base_url, Some(chosen.clone()));
+    let mut updated = cfg.clone();
+    updated.external_base_url = Some(base_url.to_string());
+    updated.external_model_name = Some(chosen.clone());
+    let previous_url = cfg.external_base_url.as_deref().unwrap_or_default();
+    let previous_key = keel_core::remote::load_external_api_key(&state.data_dir, previous_url);
+    keel_core::remote::save_external_api_key(&state.data_dir, base_url, key_for_request.as_deref())
+        .map_err(|e| e.to_string())?;
+    if let Err(error) = save_config(&state.config_dir, &updated) {
+        keel_core::remote::save_external_api_key(
+            &state.data_dir,
+            previous_url,
+            previous_key.as_deref(),
+        )
+        .map_err(|restore| format!("{error}. Could not restore the previous API key: {restore}"))?;
+        return Err(error.to_string());
+    }
+    *cfg = updated;
+    rt.set_external_url(base_url, Some(chosen));
     let status = rt.status();
-
-    cfg.external_base_url = Some(base_url.trim_end_matches('/').to_string());
-    cfg.external_model_name = Some(chosen);
-    save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
     Ok(status)
 }
 
@@ -914,6 +1110,28 @@ pub async fn pick_model_file(app: AppHandle) -> Result<Option<String>, String> {
             .file()
             .set_title("Choose a local AI model file")
             .add_filter("Local AI models", &["gguf"])
+            .blocking_pick_file()
+            .map(|selection| {
+                selection
+                    .into_path()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .map_err(|error| error.to_string())
+            })
+            .transpose()
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Pick a local audio clip for Settings → Try STT (no download).
+#[tauri::command]
+pub async fn pick_audio_file(app: AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    tokio::task::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_title("Choose a local audio clip for speech-to-text")
+            .add_filter("Audio", &["wav", "mp3", "flac", "ogg", "m4a"])
             .blocking_pick_file()
             .map(|selection| {
                 selection
@@ -1252,6 +1470,11 @@ pub async fn send_message(
     let mut final_session = session.clone();
 
     for attempt in 0..2 {
+        let external_api_key = if rt_status.state == "external" {
+            keel_core::remote::load_external_api_key(&state.data_dir, &base_url)
+        } else {
+            None
+        };
         let params = TurnParams {
             base_url: base_url.clone(),
             model_name: model_name.clone(),
@@ -1265,6 +1488,7 @@ pub async fn send_message(
             mcp_config: mcp_cfg.clone(),
             mcp_tools: mcp_tools.clone(),
             max_steps: 12,
+            api_key: external_api_key,
         };
 
         let mut recorder =
@@ -2050,4 +2274,383 @@ pub async fn publish_code_changes(
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())
+}
+
+/// List STT/TTS packs. `installed` / `runner_path` reflect on-disk state under the data dir.
+#[tauri::command]
+pub async fn list_audio_packs(
+    state: State<'_, AppState>,
+) -> Result<Vec<AudioPackManifest>, String> {
+    Ok(audio::list_audio_packs_resolved(&state.data_dir))
+}
+
+/// List recent STT transcripts / TTS wav copies under `{data_dir}/audio-artifacts/`.
+#[tauri::command]
+pub async fn list_audio_artifacts(
+    state: State<'_, AppState>,
+) -> Result<Vec<AudioArtifact>, String> {
+    Ok(audio::list_audio_artifacts(&state.data_dir))
+}
+
+/// Remove all files under `{data_dir}/audio-artifacts/`.
+#[tauri::command]
+pub async fn clear_audio_artifacts(state: State<'_, AppState>) -> Result<(), String> {
+    let data_dir = state.data_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        audio::clear_audio_artifacts(&data_dir).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Register a local binary/script as the pack runner and mark it installed.
+#[tauri::command]
+pub async fn register_audio_pack_runner(
+    state: State<'_, AppState>,
+    pack_id: String,
+    command: String,
+    args: Option<Vec<String>>,
+) -> Result<AudioPackManifest, String> {
+    let data_dir = state.data_dir.clone();
+    let extra = args.unwrap_or_default();
+    tokio::task::spawn_blocking(move || {
+        audio::register_audio_pack_runner(&data_dir, &pack_id, &command, &extra)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Register a Whisper.cpp runner (`-m <model> -f <audio>`) and mark the pack installed.
+///
+/// Requires an existing ggml model file on disk; does not download weights.
+#[tauri::command]
+pub async fn register_whisper_cpp_runner(
+    state: State<'_, AppState>,
+    pack_id: String,
+    command: String,
+    model: String,
+    args: Option<Vec<String>>,
+) -> Result<AudioPackManifest, String> {
+    let data_dir = state.data_dir.clone();
+    let extra = args.unwrap_or_default();
+    tokio::task::spawn_blocking(move || {
+        audio::register_whisper_cpp_runner(&data_dir, &pack_id, &command, &model, &extra)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Register a Piper TTS runner (stdin text; `--model` / `-f`) and mark installed.
+///
+/// Requires an existing ONNX voice (+ sibling `.onnx.json`) on disk.
+#[tauri::command]
+pub async fn register_piper_runner(
+    state: State<'_, AppState>,
+    pack_id: String,
+    command: String,
+    model: String,
+    args: Option<Vec<String>>,
+) -> Result<AudioPackManifest, String> {
+    let data_dir = state.data_dir.clone();
+    let extra = args.unwrap_or_default();
+    tokio::task::spawn_blocking(move || {
+        audio::register_piper_runner(&data_dir, &pack_id, &command, &model, &extra)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Download a checksum-pinned audio pack (refuses unpinned Whisper placeholders).
+#[tauri::command]
+pub async fn download_audio_pack(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    pack_id: String,
+) -> Result<AudioPackManifest, String> {
+    let _download = state
+        .download_lock
+        .try_lock()
+        .map_err(|_| "Another download is running")?;
+    let data_dir = state.data_dir.clone();
+    let id = pack_id.trim().to_string();
+    audio::download_audio_pack(&data_dir, &id, |prog| {
+        let _ = app.emit("keel://download-progress", prog);
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Remove an installed audio pack directory.
+#[tauri::command]
+pub async fn remove_audio_pack(state: State<'_, AppState>, pack_id: String) -> Result<(), String> {
+    let _download = state
+        .download_lock
+        .try_lock()
+        .map_err(|_| "Wait for the current download to finish before removing a pack")?;
+    let data_dir = state.data_dir.clone();
+    let id = pack_id.trim().to_string();
+    tokio::task::spawn_blocking(move || {
+        audio::remove_audio_pack(&data_dir, &id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Prepare VRAM for an audio catalog pack (real keep-alive unload via [`prepare_pack_vram_for_manifest`]).
+#[tauri::command]
+pub async fn prepare_audio_pack_vram(
+    state: State<'_, AppState>,
+    pack_id: String,
+) -> Result<PackVramResult, String> {
+    let pack = audio::find_audio_pack(&pack_id)
+        .ok_or_else(|| format!("Unknown audio pack id '{pack_id}'."))?;
+    prepare_pack_vram_for_manifest(&state, pack.to_pack_manifest()).await
+}
+
+/// Resolve the runner once so scheduling and execution use the same pack.
+async fn prepare_audio_runner(
+    state: &AppState,
+    capability: audio::AudioCapability,
+) -> Result<(AudioPackManifest, audio::AudioRunnerConfig), String> {
+    let data_dir = state.data_dir.clone();
+    let (pack, runner) = tokio::task::spawn_blocking(move || {
+        audio::resolve_audio_runner(&data_dir, capability).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    prepare_pack_vram_for_manifest(state, pack.to_pack_manifest()).await?;
+    Ok((pack, runner))
+}
+
+async fn run_audio_stt_prepared(state: &AppState, audio_path: String) -> Result<String, String> {
+    let (pack, runner) = prepare_audio_runner(state, audio::AudioCapability::Stt).await?;
+    let data_dir = state.data_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        audio::run_stt_with_runner(&data_dir, Path::new(&audio_path), &pack, runner)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Use a new output file for each try so one run cannot reuse another run's WAV.
+async fn run_audio_tts_prepared(
+    state: &AppState,
+    text: String,
+    output_path: Option<String>,
+) -> Result<String, String> {
+    let (pack, runner) = prepare_audio_runner(state, audio::AudioCapability::Tts).await?;
+    let data_dir = state.data_dir.clone();
+    let resolved = output_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            data_dir
+                .join("audio-try")
+                .join(format!("{}.wav", uuid::Uuid::new_v4()))
+        });
+    let out_display = resolved.to_string_lossy().into_owned();
+    tokio::task::spawn_blocking(move || {
+        audio::run_tts_with_runner(&data_dir, &text, &resolved, &pack, runner)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(out_display)
+}
+
+/// Speech-to-text entry. Surfaces not-installed / missing-runner errors as strings.
+///
+/// Calls real [`prepare_pack_vram_for_manifest`] first so a VRAM-hungry STT pack
+/// can unload keep-alive before the local runner starts.
+#[tauri::command]
+pub async fn run_audio_stt(
+    state: State<'_, AppState>,
+    audio_path: String,
+) -> Result<String, String> {
+    run_audio_stt_prepared(&state, audio_path).await
+}
+
+/// Text-to-speech entry. Surfaces not-installed / missing-runner errors as strings.
+///
+/// Calls real [`prepare_pack_vram_for_manifest`] first so a VRAM-hungry TTS pack
+/// can unload keep-alive before the local runner starts.
+///
+/// Omit or blank `output_path` to write a new WAV under `{data_dir}/audio-try/`
+/// (Settings → Try TTS). Returns the path used.
+#[tauri::command]
+pub async fn run_audio_tts(
+    state: State<'_, AppState>,
+    text: String,
+    output_path: Option<String>,
+) -> Result<String, String> {
+    run_audio_tts_prepared(&state, text, output_path).await
+}
+
+#[cfg(test)]
+mod audio_prepare_pack_vram_wiring {
+    use super::*;
+    use keel_core::sessions::DesktopConfig;
+    use std::fs;
+
+    /// Serialize spy-counter assertions; Tokio runs these tests in parallel.
+    static WIRING_TEST_LOCK: Mutex<()> = Mutex::const_new(());
+
+    fn temp_root(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "keel-audio-vram-{}-{}-{}",
+            label,
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn test_app_state(root: &Path) -> AppState {
+        let data_dir = root.join("data");
+        let config_dir = root.join("config");
+        fs::create_dir_all(&data_dir).unwrap();
+        fs::create_dir_all(&config_dir).unwrap();
+        AppState {
+            images: keel_core::images::ImageService::new(&data_dir).expect("image service"),
+            turn_lock: Arc::new(Mutex::new(())),
+            config_dir,
+            data_dir,
+            config: Arc::new(Mutex::new(DesktopConfig::default())),
+            runtime: Arc::new(Mutex::new(RuntimeManager::new(19191))),
+            approvals: Arc::new(Mutex::new(HashMap::new())),
+            always_allowed: Arc::new(Mutex::new(HashMap::new())),
+            active_abort: Arc::new(Mutex::new(None)),
+            download_lock: Mutex::new(()),
+            setup_pause: Mutex::new(None),
+            active_cli_stop: Mutex::new(None),
+            placement_cache: Mutex::new(None),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_audio_stt_calls_real_prepare_pack_vram_without_gpu() {
+        let _guard = WIRING_TEST_LOCK.lock().await;
+        let root = temp_root("stt");
+        let state = test_app_state(&root);
+        audio::register_audio_pack_runner(
+            &state.data_dir,
+            "stt-whisper-base",
+            "unused-stt-fixture",
+            &[],
+        )
+        .unwrap();
+
+        let before = PREPARE_PACK_VRAM_CALLS.load(Ordering::SeqCst);
+        // The fixture runner is registered and the input file is absent.
+        let err = run_audio_stt_prepared(&state, root.join("missing.wav").display().to_string())
+            .await
+            .expect_err("STT should fail after prepare without an audio file");
+        let after = PREPARE_PACK_VRAM_CALLS.load(Ordering::SeqCst);
+
+        assert_eq!(
+            after,
+            before + 1,
+            "run_audio_stt must invoke real prepare_pack_vram_for_manifest before the runner"
+        );
+        assert!(
+            err.contains("Audio file not found"),
+            "expected runner/audio failure after prepare, got: {err}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn run_audio_tts_calls_real_prepare_pack_vram_without_gpu() {
+        let _guard = WIRING_TEST_LOCK.lock().await;
+        let root = temp_root("tts");
+        let state = test_app_state(&root);
+        audio::register_audio_pack_runner(
+            &state.data_dir,
+            "tts-local-en",
+            "unused-tts-fixture",
+            &[],
+        )
+        .unwrap();
+
+        let before = PREPARE_PACK_VRAM_CALLS.load(Ordering::SeqCst);
+        let err = run_audio_tts_prepared(
+            &state,
+            String::new(),
+            Some(root.join("out.wav").display().to_string()),
+        )
+        .await
+        .expect_err("TTS should fail after prepare for empty text");
+        let after = PREPARE_PACK_VRAM_CALLS.load(Ordering::SeqCst);
+
+        assert_eq!(
+            after,
+            before + 1,
+            "run_audio_tts must invoke real prepare_pack_vram_for_manifest before the runner"
+        );
+        assert!(
+            err.contains("Provide text"),
+            "expected empty-input failure after prepare, got: {err}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn audio_start_skips_prepare_pack_vram_when_pack_is_not_installed() {
+        let _guard = WIRING_TEST_LOCK.lock().await;
+        let root = temp_root("skip");
+        let state = test_app_state(&root);
+
+        let before = PREPARE_PACK_VRAM_CALLS.load(Ordering::SeqCst);
+        let stt_err = run_audio_stt_prepared(&state, root.join("x.wav").display().to_string())
+            .await
+            .expect_err("STT without pack");
+        let tts_err = run_audio_tts_prepared(
+            &state,
+            "hi".into(),
+            Some(root.join("o.wav").display().to_string()),
+        )
+        .await
+        .expect_err("TTS without pack");
+        let after = PREPARE_PACK_VRAM_CALLS.load(Ordering::SeqCst);
+
+        assert_eq!(
+            after, before,
+            "prepare_pack_vram must not run when no audio pack is installed"
+        );
+        assert!(stt_err.contains("installed"), "got: {stt_err}");
+        assert!(tts_err.contains("installed"), "got: {tts_err}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tauri_audio_commands_delegate_to_prepared_helpers() {
+        // Lock the public entrypoints to the helpers the spy tests cover.
+        let src = include_str!("commands.rs");
+        let stt = src
+            .split("pub async fn run_audio_stt(")
+            .nth(1)
+            .and_then(|rest| rest.split("pub async fn run_audio_tts(").next())
+            .expect("run_audio_stt");
+        let tts = src
+            .split("pub async fn run_audio_tts(")
+            .nth(1)
+            .and_then(|rest| rest.split("#[cfg(test)]").next())
+            .expect("run_audio_tts");
+        assert!(
+            stt.contains("run_audio_stt_prepared"),
+            "run_audio_stt must call run_audio_stt_prepared"
+        );
+        assert!(
+            tts.contains("run_audio_tts_prepared"),
+            "run_audio_tts must call run_audio_tts_prepared"
+        );
+    }
 }

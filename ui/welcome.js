@@ -2,7 +2,7 @@
 // progress view while the assistant downloads, and never blocks the rest of the app.
 import { escapeHtml } from "./markdown.js";
 import { formatBytes } from "./state.js";
-import { createProgressTracker, formatEta, formatSpeed, friendlyRuntimeError, friendlySetupError, serverDataNotice, stepStates } from "./onboarding.js";
+import { createProgressTracker, formatEta, formatSpeed, friendlyRuntimeError, friendlySetupError, isRemoteModelServer, serverDataNotice, stepStates } from "./onboarding.js";
 
 export function createWelcome(api) {
   const { invoke, root, toast } = api;
@@ -156,6 +156,12 @@ export function createWelcome(api) {
       <input id="setup-url" class="input mono" value="http://127.0.0.1:11434/v1" />
       <label class="welcome-label" for="setup-model">Model name (optional)</label>
       <input id="setup-model" class="input" placeholder="Use the first available model" />
+      <label class="welcome-label" for="setup-key">API key (optional)</label>
+      <input id="setup-key" class="input mono" type="password" autocomplete="off" placeholder="Only if your server requires one" />
+      <label class="row" style="margin-top:8px;align-items:flex-start;gap:8px;font-size:13px;color:var(--muted)">
+        <input id="setup-remote" type="checkbox" style="margin-top:2px" />
+        <span>This server is not on this computer</span>
+      </label>
       <p class="welcome-sub" id="welcome-server-notice">${serverDataNotice("http://127.0.0.1:11434/v1")}</p>
       <p id="welcome-existing-error" class="welcome-error" role="alert"></p>
       <div class="welcome-desktop-actions">
@@ -168,15 +174,25 @@ export function createWelcome(api) {
         const input = body.querySelector("#setup-url");
         input.value = btn.dataset.presetUrl;
         body.querySelector("#welcome-server-notice").textContent = serverDataNotice(input.value);
+        const remote = body.querySelector("#setup-remote");
+        if (remote) remote.checked = isRemoteModelServer(input.value);
       };
     });
     body.querySelector("#setup-url").oninput = (event) => {
       body.querySelector("#welcome-server-notice").textContent = serverDataNotice(event.target.value);
+      const remote = body.querySelector("#setup-remote");
+      if (remote && isRemoteModelServer(event.target.value)) remote.checked = true;
     };
     body.querySelector("#setup-connect").onclick = async (event) => {
       event.target.disabled = true;
       try {
-        await invoke("set_external_endpoint", { baseUrl: body.querySelector("#setup-url").value, modelName: body.querySelector("#setup-model").value || null });
+        const key = body.querySelector("#setup-key")?.value || "";
+        await invoke("set_external_endpoint", {
+          baseUrl: body.querySelector("#setup-url").value,
+          modelName: body.querySelector("#setup-model").value || null,
+          confirmRemote: !!body.querySelector("#setup-remote")?.checked,
+          apiKey: key.length ? key : null,
+        });
         api.markDone();
         hide();
         await api.refresh();
