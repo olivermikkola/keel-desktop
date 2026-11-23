@@ -1,6 +1,6 @@
 import { createEveryday } from "./everyday.js";
 import { createImageWorkspace } from "./images.js";
-import { assistantStatus, friendlyRuntimeError, friendlySetupError, isFirstRun, modelLocation, modelTierLabel, modelToWake, serverDataNotice, speedSettingsCopy, answerTimePhrase, modelCheckIntro } from "./onboarding.js";
+import { assistantStatus, friendlyRuntimeError, friendlySetupError, isFirstRun, isRemoteModelServer, modelLocation, modelTierLabel, modelToWake, serverDataNotice, speedSettingsCopy, answerTimePhrase, modelCheckIntro } from "./onboarding.js";
 import { MODES, modeForPreset, isRuntimeLive, promptBlockReason } from "./modes.js";
 import { escapeHtml, renderMarkdown } from "./markdown.js";
 import {
@@ -726,7 +726,7 @@ function renderSidebar() {
   const sidebarLocation = modelLocation(rt);
   const runningLabel =
     rt.state === "external"
-      ? `${b.config.external_model_name || sidebarLocation}${sidebarLocation === "External model server" ? " · Remote" : ""}`
+      ? `${b.config.external_model_name || sidebarLocation}${sidebarLocation === "Leaves this computer" ? " · Remote" : ""}`
       : rt.state === "running" ? activeModel?.name || "Local model" : status.key === "setup" ? "Setting up your AI" : "No model loaded";
   const isLive = isRuntimeLive(rt);
   const fill = status.key === "setup" ? ` style="width:${Math.round(setup.fraction * 100)}%"` : "";
@@ -764,7 +764,7 @@ function renderHeader() {
   els.modelPillBtn.setAttribute("aria-expanded", String(appState.modelSwitcherOpen));
   els.modelPillLabel.textContent = setup.busy || setup.paused ? assistantStatus({ runtime: rt, setup }).label : isBusy ? "Waking up your AI…" : rt.state === "stopped" ? (b.models.some((m) => m.installed && !m.damaged) ? "Start your AI" : b.models.some((m) => m.damaged) ? "Repair your AI" : "Set up your AI") : rt.state === "error" ? "Model needs attention" :
     rt.state === "external"
-      ? `${b.config.external_model_name || location}${location === "External model server" ? " · Remote" : ""}`
+      ? `${b.config.external_model_name || location}${location === "Leaves this computer" ? " · Remote" : ""}`
       : selected
         ? selected.name
         : b.config.selected_model_id || "Select model";
@@ -1751,6 +1751,13 @@ function renderModelsWorkspace() {
           <input id="ws-ext-name" class="input" style="max-width:160px" value="${escapeHtml(b.config.external_model_name || "")}" placeholder="Model name (optional)" />
           <button id="ws-ext-use" class="btn btn-primary btn-sm">Connect</button>
         </div>
+        <div class="row" style="margin-top:6px">
+          <input id="ws-ext-key" class="input grow mono" type="password" autocomplete="off" placeholder="API key (optional)" />
+        </div>
+        <label class="row" style="margin-top:6px;align-items:flex-start;gap:8px;font-size:12.5px;color:var(--muted)">
+          <input id="ws-ext-remote" type="checkbox" style="margin-top:2px" />
+          <span>This server is not on this computer</span>
+        </label>
         <p class="muted" id="ws-ext-notice">${serverDataNotice(b.config.external_base_url || "")}</p>
         <div class="row">
           <button id="ws-local-pick" type="button" class="btn btn-sm">Choose file…</button>
@@ -1845,6 +1852,8 @@ function renderModelsWorkspace() {
       const urlInput = document.getElementById("ws-ext-url");
       urlInput.value = btn.getAttribute("data-ext-preset");
       document.getElementById("ws-ext-notice").textContent = serverDataNotice(urlInput.value);
+      const remote = document.getElementById("ws-ext-remote");
+      if (remote) remote.checked = isRemoteModelServer(urlInput.value);
     };
   });
 
@@ -1924,10 +1933,16 @@ function renderModelsWorkspace() {
   };
   document.getElementById("ws-ext-use").onclick = async () => {
     try {
+      const url = document.getElementById("ws-ext-url").value;
+      const keyInput = document.getElementById("ws-ext-key");
+      const apiKey = keyInput?.value ?? "";
       await invoke("set_external_endpoint", {
-        baseUrl: document.getElementById("ws-ext-url").value,
+        baseUrl: url,
         modelName: document.getElementById("ws-ext-name").value || null,
+        confirmRemote: !!document.getElementById("ws-ext-remote")?.checked,
+        apiKey: apiKey.length ? apiKey : null,
       });
+      if (keyInput) keyInput.value = "";
       await refreshBootstrap();
       renderAll();
       showToast("Connected.");
@@ -1937,6 +1952,8 @@ function renderModelsWorkspace() {
   };
   document.getElementById("ws-ext-url").oninput = (event) => {
     document.getElementById("ws-ext-notice").textContent = serverDataNotice(event.target.value);
+    const remote = document.getElementById("ws-ext-remote");
+    if (remote && isRemoteModelServer(event.target.value)) remote.checked = true;
   };
 }
 
