@@ -26,6 +26,16 @@ pub struct DesktopConfig {
     /// Preferred context window in tokens (`0` = automatic RAM-aware default).
     #[serde(default)]
     pub context_window: u32,
+    /// Where the model runs: `auto`, `graphics`, or `processor`.
+    #[serde(default = "default_auto_choice")]
+    pub run_where: String,
+    /// How much of the model sits on the graphics chip: `auto`, `full`, or `partial`.
+    #[serde(default = "default_auto_choice")]
+    pub graphics_share: String,
+}
+
+fn default_auto_choice() -> String {
+    "auto".to_string()
 }
 
 impl Default for DesktopConfig {
@@ -44,6 +54,8 @@ impl Default for DesktopConfig {
             recent_workspaces: Vec::new(),
             trusted_mcp_workspaces: Vec::new(),
             context_window: 0,
+            run_where: default_auto_choice(),
+            graphics_share: default_auto_choice(),
         }
     }
 }
@@ -292,6 +304,26 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].title, "Test");
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn older_config_keeps_the_selected_model_and_defaults_speed_choices() {
+        let dir = std::env::temp_dir().join(format!("keel_cfg_old_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("config.json"),
+            r#"{"selected_model_id":"lfm3-1.7b","external_base_url":null,"external_model_name":null,"llama_server_path":"/kept/llama-server","custom_instructions":"","auto_apply_edits":false,"harness_mode":"keel","custom_model_paths":{},"recent_workspaces":[]}"#,
+        )
+        .unwrap();
+        let loaded = load_config(&dir);
+        assert_eq!(loaded.selected_model_id, "lfm3-1.7b");
+        assert_eq!(loaded.run_where, "auto");
+        assert_eq!(loaded.graphics_share, "auto");
+        assert_eq!(
+            loaded.llama_server_path.as_deref(),
+            Some("/kept/llama-server")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

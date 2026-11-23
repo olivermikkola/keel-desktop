@@ -25,6 +25,12 @@
       "sha256": "a9b243a3bc4ca172010e96c64062fc02afd1dc4f8b699716f813ae6845ada4c6",
       "bytes": 23457554
     },
+    "linux-x86_64-vulkan": {
+      "name": "llama-b12428-bin-ubuntu-vulkan-x64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12428/llama-b12428-bin-ubuntu-vulkan-x64.tar.gz",
+      "sha256": "7694190faaaef1d66c692c21f43fd4305374d7a8156274e6a1a7ee7637d3efdc",
+      "bytes": 36387242
+    },
     "windows-aarch64": {
       "name": "llama-b12428-bin-win-cpu-arm64.zip",
       "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12428/llama-b12428-bin-win-cpu-arm64.zip",

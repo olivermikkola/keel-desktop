@@ -2,6 +2,7 @@ pub mod agent;
 pub mod apps;
 pub mod compaction;
 pub mod guard;
+pub mod hardware;
 pub mod harnesses;
 pub mod mcp;
 pub mod models;
