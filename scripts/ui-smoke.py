@@ -83,8 +83,9 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  const job={id:crypto.randomUUID(),request:args.request,workspace_path:args.workspacePath,status:'running',artifact_path:null,created_at:Date.now()/1000};jobs.unshift(job);result=job;
  setTimeout(()=>{job.status='succeeded';job.artifact_path='assets/keel-test.png';files.push(job.artifact_path);emit('keel://image-job',job);},250);break;}
  case 'list_audio_packs': result=window.__audioPacks || (window.__audioPacks=[
-  {id:'stt-whisper-base',capability:'stt',display_name:'Speech to text · Whisper base (stub)',min_vram_mib:1024,runner_kind:'audio_stt',download_url:'keel-pack:unpinned/stt-whisper-base',installed:false,runner_path:null},
-  {id:'tts-local-en',capability:'tts',display_name:'Text to speech · English (stub)',min_vram_mib:512,runner_kind:'audio_tts',download_url:null,installed:false,runner_path:null}
+  {id:'stt-demo-fixture',capability:'stt',display_name:'Speech to text · Demo fixture (checksummed)',min_vram_mib:0,runner_kind:'audio_stt',download_url:'https://example.test/demo-stt.weights',sha256:'b3bbdb816ceaf3dccff5669d4e6fe361cdd92ccac7fc027e1015e204262d883e',file_name:'demo-stt.weights',bytes:43,installed:false,runner_path:null},
+  {id:'stt-whisper-base',capability:'stt',display_name:'Speech to text · Whisper base (stub)',min_vram_mib:1024,runner_kind:'audio_stt',download_url:'keel-pack:unpinned/stt-whisper-base',sha256:null,file_name:null,bytes:0,installed:false,runner_path:null},
+  {id:'tts-local-en',capability:'tts',display_name:'Text to speech · English (stub)',min_vram_mib:512,runner_kind:'audio_tts',download_url:null,sha256:null,file_name:null,bytes:0,installed:false,runner_path:null}
  ]);break;
  case 'mark_audio_pack_installed': {
   const packs=window.__audioPacks || [];
@@ -109,6 +110,17 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
   if(!resolved) throw new Error('Pack has no download URL yet. Register a local runner path instead, or provide a URL.');
   if(String(resolved).startsWith('keel-pack:unpinned/') || String(resolved).includes('#unpinned')) throw new Error("Pack download is not pinned yet (no checksummed artifact URL). Register a local or Whisper.cpp runner, or provide a real http(s) URL / archive path.");
   pack.installed=true; result=structuredClone(pack); break;
+ }
+ case 'download_audio_pack': {
+  const packs=window.__audioPacks || [];
+  const pack=packs.find(p=>p.id===args.packId); if(!pack) throw new Error('Unknown audio pack');
+  if(!pack.sha256 || !pack.download_url || String(pack.download_url).startsWith('keel-pack:unpinned/')) throw new Error("Pack download is not pinned yet (need http(s) URL + sha256 + file_name).");
+  pack.installed=true; result=structuredClone(pack); break;
+ }
+ case 'remove_audio_pack': {
+  const packs=window.__audioPacks || [];
+  const pack=packs.find(p=>p.id===args.packId); if(!pack) throw new Error('Unknown audio pack');
+  pack.installed=false; pack.runner_path=null; result=null; break;
  }
  case 'prepare_audio_pack_vram': result={status:'already_free',reason:'smoke',capability_id:'stt-whisper-base',usable_free_mib:0,runtime:{state:'stopped'}};break;
  case 'prepare_pack_vram': result={status:'already_free',reason:'smoke',capability_id:'demo.capability',usable_free_mib:0,runtime:{state:'stopped'}};break;
