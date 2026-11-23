@@ -182,6 +182,7 @@ fn main() {
             commands::list_audio_packs,
             commands::mark_audio_pack_installed,
             commands::register_audio_pack_runner,
+            commands::register_whisper_cpp_runner,
             commands::install_audio_pack_download_stub,
             commands::prepare_audio_pack_vram,
             commands::run_audio_stt,
