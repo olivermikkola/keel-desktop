@@ -17,8 +17,7 @@ use keel_core::models::{
     list_models, models_dir, parse_huggingface_gguf_url, CatalogModel,
 };
 use keel_core::runtime::{
-    check_runner_starts, find_llama_server, probe_openai_models, ModelLaunch, RuntimeManager,
-    RuntimeStatus,
+    check_runner_starts, find_llama_server, ModelLaunch, RuntimeManager, RuntimeStatus,
 };
 use keel_core::sessions::{
     delete_session, list_sessions, load_session, save_config, save_session, ChatSession,
@@ -674,6 +673,7 @@ async fn auto_start_local_model(
                 cfg.selected_model_id = cand.id;
                 cfg.external_base_url = None;
                 cfg.external_model_name = None;
+                let _ = keel_core::remote::clear_external_api_key(&state.data_dir);
                 save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
                 return Ok(status);
             }
@@ -749,6 +749,7 @@ pub async fn start_model(
     cfg.selected_model_id = model.id;
     cfg.external_base_url = None;
     cfg.external_model_name = None;
+    let _ = keel_core::remote::clear_external_api_key(&state.data_dir);
     save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
     Ok(status)
 }
@@ -811,6 +812,7 @@ pub async fn stop_runtime(state: State<'_, AppState>) -> Result<RuntimeStatus, S
     cfg.external_base_url = None;
     cfg.external_model_name = None;
     save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
+    keel_core::remote::clear_external_api_key(&state.data_dir).map_err(|e| e.to_string())?;
     Ok(rt.status())
 }
 
@@ -819,21 +821,43 @@ pub async fn set_external_endpoint(
     state: State<'_, AppState>,
     base_url: String,
     model_name: Option<String>,
+    confirm_remote: Option<bool>,
+    api_key: Option<String>,
 ) -> Result<RuntimeStatus, String> {
-    if keel_core::runtime::is_default_managed_loopback(&base_url) {
-        return Err(
-            "That address is Keel's own built-in AI engine. Pick a downloaded model in Models instead, or connect Ollama (11434) or LM Studio (1234)."
-                .to_string(),
-        );
-    }
-    let probed = probe_openai_models(&base_url).await.map_err(|_| {
-        "Couldn't connect. Make sure Ollama or LM Studio is open and running, then try again."
-            .to_string()
-    })?;
+    let confirm_remote = confirm_remote.unwrap_or(false);
+    keel_core::remote::validate_external_connect(&base_url, confirm_remote)
+        .map_err(|e| e.to_string())?;
+    // None keeps any previously saved key; Some("") clears; Some(value) replaces.
+    let key_for_request = match api_key.as_deref().map(str::trim) {
+        Some("") => None,
+        Some(key) => Some(key.to_string()),
+        None => keel_core::remote::load_external_api_key(&state.data_dir),
+    };
+    let probed =
+        keel_core::runtime::probe_openai_models_with_auth(&base_url, key_for_request.as_deref())
+            .await
+            .map_err(|_| {
+                if keel_core::runtime::is_loopback_url(&base_url) {
+                    "Couldn't connect. Make sure Ollama or LM Studio is open and running, then try again."
+                        .to_string()
+                } else {
+                    "Couldn't connect to that server. Check the address, API key, and that you confirmed a remote server."
+                        .to_string()
+                }
+            })?;
     let chosen = model_name
         .filter(|s| !s.trim().is_empty())
         .or_else(|| probed.into_iter().next())
         .unwrap_or_else(|| "default".to_string());
+
+    match api_key.as_deref().map(str::trim) {
+        None => {}
+        Some("") => {
+            keel_core::remote::clear_external_api_key(&state.data_dir).map_err(|e| e.to_string())?
+        }
+        Some(key) => keel_core::remote::save_external_api_key(&state.data_dir, Some(key))
+            .map_err(|e| e.to_string())?,
+    }
 
     let mut cfg = state.config.lock().await;
     let mut rt = state.runtime.lock().await;
@@ -848,6 +872,7 @@ pub async fn set_external_endpoint(
 
 #[tauri::command]
 pub async fn clear_external_endpoint(state: State<'_, AppState>) -> Result<RuntimeStatus, String> {
+    let _ = keel_core::remote::clear_external_api_key(&state.data_dir);
     stop_runtime(state).await
 }
 
@@ -1252,6 +1277,11 @@ pub async fn send_message(
     let mut final_session = session.clone();
 
     for attempt in 0..2 {
+        let external_api_key = if rt_status.state == "external" {
+            keel_core::remote::load_external_api_key(&state.data_dir)
+        } else {
+            None
+        };
         let params = TurnParams {
             base_url: base_url.clone(),
             model_name: model_name.clone(),
@@ -1265,6 +1295,7 @@ pub async fn send_message(
             mcp_config: mcp_cfg.clone(),
             mcp_tools: mcp_tools.clone(),
             max_steps: 12,
+            api_key: external_api_key,
         };
 
         let mut recorder =

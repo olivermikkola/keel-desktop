@@ -89,6 +89,7 @@ async fn main() -> Result<()> {
             mcp_config: McpConfigFile::default(),
             mcp_tools: Vec::new(),
             max_steps: 8,
+            api_key: None,
         },
         &mut allowed,
         |ev| match ev {

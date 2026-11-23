@@ -89,6 +89,7 @@ async fn main() -> Result<()> {
                         mcp_config: McpConfigFile::default(),
                         mcp_tools: vec![],
                         max_steps: 6,
+                        api_key: None,
                     },
                     &mut HashSet::new(),
                     |event| {
