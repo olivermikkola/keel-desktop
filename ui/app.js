@@ -82,6 +82,7 @@ const els = {
   viewLibrary: document.getElementById("view-library"),
   viewConnectors: document.getElementById("view-connectors"),
   chatScroll: document.getElementById("chat-scroll"),
+  noticeSlot: document.getElementById("notice-slot"),
   approvalSlot: document.getElementById("approval-slot"),
   promptInput: document.getElementById("prompt-input"),
   composerWsChip: document.getElementById("composer-ws-chip"),
@@ -119,15 +120,29 @@ const everyday = createEveryday({
     if (appState.streaming) return;
     appState.activeProjectId = id;
     appState.searchResults = null;
+    const searchInput = document.getElementById("thread-search");
+    if (searchInput) searchInput.value = "";
     const project = appState.bootstrap.projects?.find((p) => p.id === id);
     if (project?.workspace_path) appState.workspacePath = project.workspace_path;
     await createNewSession("chat");
   },
   openArtifact: async (item) => {
+    const preset = item.kind === "html" ? "websites" : item.kind === "csv" ? "sheets" : item.kind === "md" ? "docs" : "general";
+    const previewKinds = new Set(["html", "htm", "csv", "md", "png", "jpg", "jpeg", "webp"]);
     appState.workspacePath = item.workspace_path;
     appState.activeProjectId = item.project_id;
-    await createNewSession(item.kind === "html" ? "websites" : item.kind === "csv" ? "sheets" : item.kind === "md" ? "docs" : "general");
-    appState.viewerFile = item.path; appState.viewerOpen = true; appState.viewerTab = "preview"; renderAll();
+    const existing = (appState.bootstrap?.sessions || []).find(
+      (s) => s.workspace_path === item.workspace_path && modeForPreset(s.app_preset) === "work",
+    );
+    if (existing) {
+      await loadSession(existing.id);
+    } else {
+      await createNewSession(preset);
+    }
+    appState.viewerFile = item.path;
+    appState.viewerOpen = true;
+    appState.viewerTab = previewKinds.has((item.kind || "").toLowerCase()) ? "preview" : "code";
+    renderAll();
   },
 });
 
@@ -404,6 +419,14 @@ async function init() {
       if (fill) {
         fill.style.width = `${p.done ? 100 : pct}%`;
       }
+      if (p.model_id?.startsWith("local:")) {
+        const hfProg = document.getElementById("ws-hf-progress");
+        if (hfProg) {
+          hfProg.textContent = p.done
+            ? "Downloaded"
+            : `Downloading: ${formatBytes(p.downloaded_bytes)}${pct ? ` (${pct}%)` : ""}`;
+        }
+      }
     });
   }
 
@@ -475,12 +498,21 @@ async function createNewSession(preset = "chat", workspacePath = appState.worksp
   renderAll();
 }
 
+function activeWorkspacePath() {
+  if (appState.session?.app_preset === "code" && appState.session?.code_checkout?.isolated) {
+    return appState.session.code_checkout.isolated;
+  }
+  return appState.workspacePath;
+}
+
 async function loadSession(id) {
   if (appState.streaming) return;
   saveDraft();
   appState.session = await invoke("load_session_cmd", { id });
   appState.activeProjectId = appState.session.project_id || null;
   appState.searchResults = null;
+  const searchInput = document.getElementById("thread-search");
+  if (searchInput) searchInput.value = "";
   appState.workspacePath = appState.session.workspace_path || null;
   await refreshWorkspaceFiles();
   appState.activeView = modeForPreset(appState.session.app_preset);
@@ -492,13 +524,14 @@ async function loadSession(id) {
 }
 
 async function refreshWorkspaceFiles() {
-  if (!appState.workspacePath) {
+  const ws = activeWorkspacePath();
+  if (!ws) {
     appState.workspaceFiles = [];
     return;
   }
   try {
     appState.workspaceFiles = await invoke("list_workspace_files_cmd", {
-      workspacePath: appState.workspacePath,
+      workspacePath: ws,
     });
     renderViewerOptions();
   } catch {
@@ -615,6 +648,8 @@ function renderSidebar() {
   projectsList.querySelectorAll("[data-project]").forEach((button) => { button.onclick = async () => {
     if (appState.streaming) return;
     appState.activeProjectId = button.dataset.project || null; appState.searchResults = null;
+    const searchInput = document.getElementById("thread-search");
+    if (searchInput) searchInput.value = "";
     const recent = b.sessions.find((session) => (session.project_id || null) === appState.activeProjectId);
     if (recent) await loadSession(recent.id);
     else {
@@ -643,7 +678,10 @@ function renderSidebar() {
       if (appState.streaming) return;
       const remaining = await invoke("delete_session_cmd", { id: s.id });
       if (appState.session?.id === s.id) {
-        if (remaining.length > 0) {
+        const sameProject = remaining.find((item) => (item.project_id || null) === appState.activeProjectId);
+        if (sameProject) {
+          await loadSession(sameProject.id);
+        } else if (!appState.activeProjectId && remaining.length > 0) {
           await loadSession(remaining[0].id);
         } else {
           await createNewSession("chat");
@@ -797,22 +835,49 @@ async function downloadCatalogModel(modelId, { repair = false } = {}) {
   }
 }
 
+function confirmAction(title, message, confirmLabel, onConfirm) {
+  openModal(title, (body) => {
+    body.innerHTML = `
+      <p>${escapeHtml(message)}</p>
+      <div class="row" style="justify-content:flex-end;margin-top:8px">
+        <button id="confirm-cancel-btn" type="button" class="btn btn-ghost btn-sm">Cancel</button>
+        <button id="confirm-ok-btn" type="button" class="btn btn-rust btn-sm">${escapeHtml(confirmLabel)}</button>
+      </div>
+    `;
+    body.querySelector("#confirm-cancel-btn").onclick = closeModal;
+    body.querySelector("#confirm-ok-btn").onclick = async () => {
+      closeModal();
+      await onConfirm();
+    };
+  });
+}
+
 async function removeLocalModel(modelId) {
   if (appState.busyModelId) return;
-  appState.busyModelId = modelId;
-  appState.busyModelAction = "removing";
-  renderModelsWorkspace();
-  try {
-    await invoke("delete_model", { modelId });
-    await refreshBootstrap();
-    showToast("Model removed from this computer.");
-  } catch (err) {
-    showToast(friendlyRuntimeError(err));
-  } finally {
-    appState.busyModelId = null;
-    appState.busyModelAction = null;
-    renderAll();
-  }
+  const model = appState.bootstrap?.models?.find((m) => m.id === modelId);
+  const label = model ? `${model.name} (${formatBytes(model.bytes)})` : modelId;
+  confirmAction(
+    "Remove model from this computer?",
+    `This deletes ${label} from disk. You can download it again later.`,
+    "Remove model",
+    async () => {
+      if (appState.busyModelId) return;
+      appState.busyModelId = modelId;
+      appState.busyModelAction = "removing";
+      renderModelsWorkspace();
+      try {
+        await invoke("delete_model", { modelId });
+        await refreshBootstrap();
+        showToast("Model removed from this computer.");
+      } catch (err) {
+        showToast(friendlyRuntimeError(err));
+      } finally {
+        appState.busyModelId = null;
+        appState.busyModelAction = null;
+        renderAll();
+      }
+    },
+  );
 }
 
 function renderModelSwitcher() {
@@ -987,17 +1052,7 @@ function renderChat() {
   }
 
   if (appState.streaming) {
-    const toolsHtml = appState.streamingTools.map(renderToolOrEditHtml).join("");
-    const thinkingHtml = appState.streamingThinking
-      ? `<details class="thinking-box" data-details-id="live-thought"><summary>Thinking</summary><pre class="mono">${escapeHtml(appState.streamingThinking)}</pre></details>`
-      : "";
-    html += `
-      <div class="msg assistant">
-        ${thinkingHtml}
-        ${toolsHtml}
-        <div class="bubble markdown-body">${renderMarkdown(appState.streamingText || "Working...")}</div>
-      </div>
-    `;
+    html += `<div id="streaming-msg" class="msg assistant">${renderStreamingInnerHtml()}</div>`;
   }
 
   els.chatScroll.innerHTML = html;
@@ -1005,28 +1060,86 @@ function renderChat() {
   els.chatScroll.scrollTop = shouldStick ? els.chatScroll.scrollHeight : oldTop;
 }
 
+let streamingRafId = null;
+let streamingStartedAt = 0;
+
+function renderStreamingInnerHtml() {
+  const toolsHtml = appState.streamingTools.map(renderToolOrEditHtml).join("");
+  const elapsed = streamingStartedAt ? Math.max(1, Math.round((Date.now() - streamingStartedAt) / 1000)) : 0;
+  const thinkingSummary = appState.streamingText
+    ? "Thinking"
+    : `Thinking…${elapsed ? ` (${elapsed}s)` : ""}`;
+  const thinkingHtml = appState.streamingThinking
+    ? `<details class="thinking-box" data-details-id="live-thought"><summary>${thinkingSummary}</summary><pre class="mono">${escapeHtml(appState.streamingThinking)}</pre></details>`
+    : "";
+  const bodyContent = appState.streamingText
+    ? renderMarkdown(appState.streamingText)
+    : appState.streamingThinking
+      ? `<p class="muted">Reasoning locally…</p>`
+      : renderMarkdown("Working...");
+  return `${thinkingHtml}${toolsHtml}<div class="bubble markdown-body">${bodyContent}</div>`;
+}
+
+function updateStreamingNode() {
+  streamingRafId = null;
+  if (!appState.streaming) return;
+  const node = document.getElementById("streaming-msg");
+  if (!node) {
+    renderChat();
+    return;
+  }
+  const shouldStick = els.chatScroll.scrollHeight - els.chatScroll.scrollTop - els.chatScroll.clientHeight < 100;
+  const oldTop = els.chatScroll.scrollTop;
+  const details = new Map([...node.querySelectorAll("details[data-details-id]")].map((d) => [d.dataset.detailsId, d.open]));
+  node.innerHTML = renderStreamingInnerHtml();
+  node.querySelectorAll("details[data-details-id]").forEach((d) => { if (details.has(d.dataset.detailsId)) d.open = details.get(d.dataset.detailsId); });
+  els.chatScroll.scrollTop = shouldStick ? els.chatScroll.scrollHeight : oldTop;
+}
+
+function scheduleStreamingUpdate() {
+  if (streamingRafId !== null) return;
+  if (typeof requestAnimationFrame === "function") {
+    streamingRafId = requestAnimationFrame(updateStreamingNode);
+  } else {
+    updateStreamingNode();
+  }
+}
+
 function renderMessageHtml(msg) {
   const documents = (msg.attachments || []).map((doc) => `<button class="attachment-chip" data-message-source="${escapeHtml(doc.id)}">▤ ${escapeHtml(doc.name)}</button>`).join("");
   const disabled = appState.streaming ? "disabled" : "";
   if (msg.role === "user") {
-    return `<div class="msg user" data-message-id="${escapeHtml(msg.id)}">${documents ? `<div class="message-sources">${documents}</div>` : ""}<div class="bubble">${escapeHtml(msg.content)}</div><div class="message-actions"><button class="text-action" data-edit-message="${escapeHtml(msg.id)}" ${disabled}>Edit</button></div></div>`;
+    const editBtn = msg.unsent
+      ? ""
+      : `<div class="message-actions"><button class="text-action" data-edit-message="${escapeHtml(msg.id)}" ${disabled}>Edit</button></div>`;
+    return `<div class="msg user" data-message-id="${escapeHtml(msg.id)}">${documents ? `<div class="message-sources">${documents}</div>` : ""}<div class="bubble">${escapeHtml(msg.content)}</div>${editBtn}</div>`;
   }
   const thinkingHtml = msg.thinking
     ? `<details class="thinking-box" data-details-id="thinking-${escapeHtml(msg.id)}"><summary>Thinking</summary><pre class="mono">${escapeHtml(msg.thinking)}</pre></details>` : "";
   const toolsHtml = (msg.tool_calls || []).map(renderToolOrEditHtml).join("");
   const lastUser = [...appState.session.messages].reverse().find((m) => m.role === "user");
-  const canRetry = msg === appState.session.messages[appState.session.messages.length - 1] && !(msg.tool_calls?.length) && lastUser;
+  const canRetry = !msg.unsent && msg === appState.session.messages[appState.session.messages.length - 1] && !(msg.tool_calls?.length) && lastUser && !lastUser.unsent;
+  const retrySendBtn = msg.unsent
+    ? `<button class="text-action" data-retry-unsent ${disabled}>Retry send</button>`
+    : "";
   return `<div class="msg assistant" data-message-id="${escapeHtml(msg.id)}">${thinkingHtml}${toolsHtml}<div class="bubble markdown-body">${renderMarkdown(msg.content)}</div>
     ${msg.status === "failed" ? '<span class="reply-status">Reply interrupted · partial answer kept</span>' : ""}
-    <div class="message-actions"><button class="text-action" data-copy-message="${escapeHtml(msg.id)}">Copy</button>${canRetry ? `<button class="text-action" data-retry-message="${escapeHtml(lastUser.id)}" ${disabled}>Try again</button>` : ""}</div></div>`;
+    <div class="message-actions"><button class="text-action" data-copy-message="${escapeHtml(msg.id)}">Copy</button>${retrySendBtn}${canRetry ? `<button class="text-action" data-retry-message="${escapeHtml(lastUser.id)}" ${disabled}>Try again</button>` : ""}</div></div>`;
 }
 
 function handleAgentEvent(ev) {
   if (!ev || !ev.type) return;
   if (ev.type === "thinking_delta") {
     appState.streamingThinking += ev.text;
+    scheduleStreamingUpdate();
+    return;
   } else if (ev.type === "content_delta") {
     appState.streamingText += ev.text;
+    scheduleStreamingUpdate();
+    return;
+  } else if (ev.type === "compacted") {
+    if (ev.note) showToast(ev.note);
+    return;
   } else if (ev.type === "tool_call_start") {
     appState.streamingTools.push({
       name: ev.name,
@@ -1055,9 +1168,11 @@ function handleAgentEvent(ev) {
     els.telemetryLeft.textContent = "Waiting for approval";
     renderApprovalCard(ev);
   } else if (ev.type === "turn_finished") {
-    els.telemetryLeft.textContent = `${modelLocation(appState.bootstrap.runtime)} · Finished`;
+    const tps = Number(ev.tokens_per_sec) > 0 ? ` · ${ev.tokens_per_sec.toFixed(1)} tok/s` : "";
+    const toks = Number(ev.completion_tokens) > 0 ? ` · ${ev.completion_tokens} tokens` : "";
+    els.telemetryLeft.textContent = `${modelLocation(appState.bootstrap.runtime)}${tps}${toks || " · Finished"}`;
   }
-  renderChat();
+  updateStreamingNode();
   if (["staged_edit_added", "turn_finished"].includes(ev.type)) {
     if (!appState.viewerOpen && ev.type === "staged_edit_added") {
       appState.viewerOpen = true;
@@ -1106,6 +1221,7 @@ async function sendCurrentPrompt() {
     else waitForAssistant();
     return;
   }
+  clearNotice();
   els.approvalSlot.innerHTML = "";
 
   const documents = appState.pendingDocuments;
@@ -1114,6 +1230,8 @@ async function sendCurrentPrompt() {
   saveDraft();
   renderAttachmentChips();
   autoSizePromptInput();
+  // Remove any previous failed-to-send placeholder pair before appending the fresh attempt.
+  appState.session.messages = appState.session.messages.filter((m) => !m.unsent);
   appState.session.messages.push({
     id: `local-${Date.now()}`,
     role: "user",
@@ -1121,10 +1239,12 @@ async function sendCurrentPrompt() {
     attachments: documents,
     thinking: null,
     tool_calls: [],
+    unsent: true,
     created_at: Math.floor(Date.now() / 1000),
   });
 
   appState.streaming = true;
+  streamingStartedAt = Date.now();
   appState.streamingText = "";
   appState.streamingThinking = "";
   appState.streamingTools = [];
@@ -1159,10 +1279,16 @@ async function sendCurrentPrompt() {
       content: friendlyRuntimeError(err),
       thinking: null,
       tool_calls: [],
+      unsent: true,
       created_at: Math.floor(Date.now() / 1000),
     });
   } finally {
     appState.streaming = false;
+    streamingStartedAt = 0;
+    if (streamingRafId !== null && typeof cancelAnimationFrame === "function") {
+      cancelAnimationFrame(streamingRafId);
+      streamingRafId = null;
+    }
     els.sendBtn.classList.remove("hidden");
     els.stopBtn.classList.add("hidden");
     els.approvalSlot.innerHTML = "";
@@ -1210,27 +1336,31 @@ async function loadViewerContent() {
     return;
   }
 
-  if (!appState.workspacePath || !appState.viewerFile) {
+  const ws = activeWorkspacePath();
+  if (!ws || !appState.viewerFile) {
     renderViewer(els.viewerContent, null, "");
     return;
   }
   try {
     if (appState.viewerFile.toLowerCase().endsWith(".png")) {
-      const src = await invoke("read_workspace_png", { workspacePath: appState.workspacePath, relPath: appState.viewerFile });
-      els.viewerContent.innerHTML = `<img class="generated-image" alt="Workspace image" src="${src}" />`;
+      const src = await invoke("read_workspace_png", { workspacePath: ws, relPath: appState.viewerFile });
+      if (typeof src === "string" && src.startsWith("data:image/")) {
+        els.viewerContent.innerHTML = `<img class="generated-image" alt="${escapeHtml(appState.viewerFile)}" src="${escapeHtml(src)}" />`;
+      } else {
+        els.viewerContent.innerHTML = `<div class="viewer-empty">Could not preview this image.</div>`;
+      }
       return;
     }
     let content = await invoke("read_workspace_file_raw", {
-      workspacePath: appState.workspacePath,
+      workspacePath: ws,
       relPath: appState.viewerFile,
     });
     if (appState.viewerTab === "code") {
       renderCodeView(els.viewerContent, appState.viewerFile, content);
     } else {
       if (/\.html?$/i.test(appState.viewerFile)) {
-        const workspace = appState.workspacePath;
         content = await inlineWorkspaceImages(content, appState.viewerFile, (relPath) =>
-          invoke("read_workspace_png", { workspacePath: workspace, relPath }));
+          invoke("read_workspace_png", { workspacePath: ws, relPath }));
       }
       renderViewer(els.viewerContent, appState.viewerFile, content);
     }
@@ -1358,16 +1488,24 @@ async function renderCodeWorktreePane(container, activeEdit) {
         event.target.disabled = false;
       }
     });
-    card.querySelector("#code-worktree-remove").onclick = async (event) => {
-      event.target.disabled = true;
-      try {
-        appState.session = await invoke("remove_code_worktree", { sessionId: session.id });
-        showToast("Isolated checkout removed.");
-        await loadViewerContent();
-      } catch (err) {
-        showNotice(String(err));
-        event.target.disabled = false;
-      }
+    card.querySelector("#code-worktree-remove").onclick = (event) => {
+      confirmAction(
+        "Discard isolated checkout?",
+        "This removes the temporary Git worktree and any unapplied changes inside it. Your original repository folder is not touched.",
+        "Discard checkout",
+        async () => {
+          event.target.disabled = true;
+          try {
+            appState.session = await invoke("remove_code_worktree", { sessionId: session.id });
+            showToast("Isolated checkout removed.");
+            await refreshWorkspaceFiles();
+            await loadViewerContent();
+          } catch (err) {
+            showNotice(String(err));
+            event.target.disabled = false;
+          }
+        },
+      );
     };
   }
 
@@ -1420,6 +1558,15 @@ function renderModelsWorkspace() {
         const label = isThisBusy && appState.busyModelAction === "downloading" ? "Downloading…" : "Download";
         actionHtml = `<button class="pill-action-get" data-dl-model="${escapeHtml(m.id)}" ${anyBusy ? "disabled" : ""}>${label}</button>`;
       }
+      const prog = appState.downloadProgress[m.id];
+      const progPct = prog?.total_bytes ? Math.round((prog.downloaded_bytes / prog.total_bytes) * 100) : 0;
+      const progLabel =
+        isDownloading && prog
+          ? prog.done
+            ? "Downloaded"
+            : `${formatBytes(prog.downloaded_bytes)}${progPct ? ` (${progPct}%)` : ""}`
+          : "";
+      const progWidth = isDownloading && prog ? (prog.done ? 100 : progPct) : 0;
       return `
         <div class="model-clean-row ${isSelected ? "active" : ""} ${m.damaged ? "damaged" : ""}" data-select-model="${escapeHtml(m.id)}">
           <div class="grow">
@@ -1429,11 +1576,11 @@ function renderModelsWorkspace() {
             </div>
             <div class="model-clean-sub">
               ${escapeHtml(subText)}
-              <span id="dl-prog-${escapeHtml(m.id)}" style="color:var(--accent);margin-left:6px"></span>
+              <span id="dl-prog-${escapeHtml(m.id)}" style="color:var(--accent);margin-left:6px">${escapeHtml(progLabel)}</span>
             </div>
             ${
               isDownloading
-                ? `<div class="model-dl-track"><div id="dl-bar-${escapeHtml(m.id)}" class="model-dl-fill" style="width:0%"></div></div>`
+                ? `<div class="model-dl-track"><div id="dl-bar-${escapeHtml(m.id)}" class="model-dl-fill" style="width:${progWidth}%"></div></div>`
                 : ""
             }
           </div>
@@ -1493,8 +1640,9 @@ function renderModelsWorkspace() {
         </div>
         <div class="row">
           <input id="ws-hf-url" class="input grow" placeholder="Or paste a direct Hugging Face model link" />
-          <button id="ws-hf-dl" class="btn btn-sm">Download</button>
+          <button id="ws-hf-dl" class="btn btn-sm" ${anyBusy ? "disabled" : ""}>${appState.busyModelId === "hf-custom" ? "Downloading…" : "Download"}</button>
         </div>
+        <p id="ws-hf-progress" class="muted" style="margin:4px 0 0;min-height:16px"></p>
       </details>
     </div>
 
@@ -1536,11 +1684,13 @@ function renderModelsWorkspace() {
   if (modelsSetupBtn) modelsSetupBtn.onclick = () => welcome.show();
   const searchIn = document.getElementById("models-search-in");
   searchIn.oninput = () => {
+    const start = searchIn.selectionStart ?? searchIn.value.length;
+    const end = searchIn.selectionEnd ?? start;
     appState.modelSearchQuery = searchIn.value;
     renderModelsWorkspace();
     const reFocus = document.getElementById("models-search-in");
     reFocus?.focus();
-    reFocus?.setSelectionRange(reFocus.value.length, reFocus.value.length);
+    reFocus?.setSelectionRange(start, end);
   };
   els.viewModels.querySelectorAll("[data-mfilter]").forEach((btn) => {
     btn.onclick = () => {
@@ -1605,13 +1755,25 @@ function renderModelsWorkspace() {
   });
 
   document.getElementById("ws-hf-dl").onclick = async () => {
+    if (appState.busyModelId) return;
+    const url = document.getElementById("ws-hf-url").value.trim();
+    if (!url) { showToast("Paste a Hugging Face .gguf link first."); return; }
+    appState.busyModelId = "hf-custom";
+    appState.busyModelAction = "downloading";
+    const btn = document.getElementById("ws-hf-dl");
+    if (btn) { btn.disabled = true; btn.textContent = "Downloading…"; }
+    const progEl = document.getElementById("ws-hf-progress");
+    if (progEl) progEl.textContent = "Starting download…";
     try {
-      await invoke("download_huggingface_gguf", { url: document.getElementById("ws-hf-url").value });
+      await invoke("download_huggingface_gguf", { url });
       await refreshBootstrap();
-      renderAll();
       showToast("Model downloaded.");
     } catch (err) {
       showToast(friendlyRuntimeError(err));
+    } finally {
+      appState.busyModelId = null;
+      appState.busyModelAction = null;
+      renderAll();
     }
   };
   document.getElementById("ws-local-pick").onclick = async () => {
@@ -1865,7 +2027,9 @@ function renderConnectorsWorkspace() {
 
 let modalReturnFocus;
 function openModal(title, builder) {
-  modalReturnFocus = document.activeElement;
+  if (els.modalBackdrop.classList.contains("hidden")) {
+    modalReturnFocus = document.activeElement;
+  }
   els.modalTitle.textContent = title;
   els.modalBody.innerHTML = "";
   builder(els.modalBody);
@@ -1876,6 +2040,7 @@ function openModal(title, builder) {
 function closeModal() {
   els.modalBackdrop.classList.add("hidden");
   if (modalReturnFocus?.isConnected) modalReturnFocus.focus();
+  modalReturnFocus = null;
 }
 
 async function openPublishModal() {
@@ -1948,19 +2113,26 @@ async function openPublishModal() {
 
 function openDiffsModal() {
   const edits = appState.session?.staged_edits ?? [];
+  const pendingCount = edits.filter((e) => e.status === "pending").length;
   openModal("Workspace File Changes", (body) => {
     const top = document.createElement("div");
     top.className = "row";
     top.innerHTML = `
       <span class="grow" style="color:var(--muted)">Review proposed edits before writing them to disk.</span>
-      <button id="apply-all-btn" class="btn btn-primary btn-sm">Approve all</button>
+      <button id="apply-all-btn" class="btn btn-primary btn-sm" ${pendingCount === 0 ? "disabled" : ""}>Approve all${pendingCount ? ` (${pendingCount})` : ""}</button>
     `;
     body.appendChild(top);
-    top.querySelector("#apply-all-btn").onclick = async () => {
-      appState.session = await invoke("apply_all_staged_edits", { sessionId: appState.session.id });
-      await refreshWorkspaceFiles();
-      renderAll();
-      openDiffsModal();
+    top.querySelector("#apply-all-btn").onclick = async (ev) => {
+      ev.target.disabled = true;
+      try {
+        appState.session = await invoke("apply_all_staged_edits", { sessionId: appState.session.id });
+        await refreshWorkspaceFiles();
+        renderAll();
+        openDiffsModal();
+      } catch (err) {
+        showToast(friendlyRuntimeError(err));
+        ev.target.disabled = false;
+      }
     };
 
     if (edits.length === 0) {
@@ -1990,24 +2162,36 @@ function openDiffsModal() {
         discBtn.className = "btn btn-ghost btn-sm";
         discBtn.textContent = "Reject";
         discBtn.onclick = async () => {
-          appState.session = await invoke("discard_staged_edit_cmd", {
-            sessionId: appState.session.id,
-            editId: edit.id,
-          });
-          renderAll();
-          openDiffsModal();
+          discBtn.disabled = true;
+          try {
+            appState.session = await invoke("discard_staged_edit_cmd", {
+              sessionId: appState.session.id,
+              editId: edit.id,
+            });
+            renderAll();
+            openDiffsModal();
+          } catch (err) {
+            showToast(friendlyRuntimeError(err));
+            discBtn.disabled = false;
+          }
         };
         const applyBtn = document.createElement("button");
         applyBtn.className = "btn btn-primary btn-sm";
         applyBtn.textContent = "Approve";
         applyBtn.onclick = async () => {
-          appState.session = await invoke("apply_staged_edit_cmd", {
-            sessionId: appState.session.id,
-            editId: edit.id,
-          });
-          await refreshWorkspaceFiles();
-          renderAll();
-          openDiffsModal();
+          applyBtn.disabled = true;
+          try {
+            appState.session = await invoke("apply_staged_edit_cmd", {
+              sessionId: appState.session.id,
+              editId: edit.id,
+            });
+            await refreshWorkspaceFiles();
+            renderAll();
+            openDiffsModal();
+          } catch (err) {
+            showToast(friendlyRuntimeError(err));
+            applyBtn.disabled = false;
+          }
         };
         actions.appendChild(discBtn);
         actions.appendChild(applyBtn);
@@ -2058,22 +2242,31 @@ function openCustomizeModal() {
       <div class="seg-group">${textButtons}</div>
     `;
 
+    const syncAppearanceButtons = () => {
+      const cur = appState.appearance;
+      appearanceCard.querySelectorAll("[data-accent-pick]").forEach((b) => b.classList.toggle("active", b.getAttribute("data-accent-pick") === cur.accent));
+      appearanceCard.querySelectorAll("[data-tone-pick]").forEach((b) => b.classList.toggle("active", b.getAttribute("data-tone-pick") === cur.tone));
+      appearanceCard.querySelectorAll("[data-density-pick]").forEach((b) => b.classList.toggle("active", b.getAttribute("data-density-pick") === cur.density));
+      appearanceCard.querySelectorAll("[data-sidebar-pick]").forEach((b) => b.classList.toggle("active", (b.getAttribute("data-sidebar-pick") === "true") === cur.sidebar));
+      appearanceCard.querySelectorAll("[data-size-pick]").forEach((b) => b.classList.toggle("active", b.getAttribute("data-size-pick") === cur.textSize));
+    };
+
     appearanceCard.querySelectorAll("[data-accent-pick]").forEach((btn) => {
       btn.onclick = () => {
         applyAppearance({ ...appState.appearance, accent: btn.getAttribute("data-accent-pick") });
-        openCustomizeModal();
+        syncAppearanceButtons();
       };
     });
     appearanceCard.querySelectorAll("[data-tone-pick]").forEach((btn) => {
       btn.onclick = () => {
         applyAppearance({ ...appState.appearance, tone: btn.getAttribute("data-tone-pick") });
-        openCustomizeModal();
+        syncAppearanceButtons();
       };
     });
     appearanceCard.querySelectorAll("[data-density-pick]").forEach((btn) => {
       btn.onclick = () => {
         applyAppearance({ ...appState.appearance, density: btn.getAttribute("data-density-pick") });
-        openCustomizeModal();
+        syncAppearanceButtons();
       };
     });
     appearanceCard.querySelectorAll("[data-sidebar-pick]").forEach((btn) => {
@@ -2082,13 +2275,13 @@ function openCustomizeModal() {
           ...appState.appearance,
           sidebar: btn.getAttribute("data-sidebar-pick") === "true",
         });
-        openCustomizeModal();
+        syncAppearanceButtons();
       };
     });
     appearanceCard.querySelectorAll("[data-size-pick]").forEach((btn) => {
       btn.onclick = () => {
         applyAppearance({ ...appState.appearance, textSize: btn.getAttribute("data-size-pick") });
-        openCustomizeModal();
+        syncAppearanceButtons();
       };
     });
     body.appendChild(appearanceCard);
@@ -2155,8 +2348,14 @@ function showToast(message) {
   toastTimer = setTimeout(() => toast.classList.add("hidden"), 8000);
 }
 
+function clearNotice() {
+  if (els.noticeSlot) els.noticeSlot.innerHTML = "";
+}
+
 function showNotice(message) {
-  els.approvalSlot.innerHTML = `<div class="approval-card" role="status">${escapeHtml(message)}</div>`;
+  const slot = els.noticeSlot || els.approvalSlot;
+  slot.innerHTML = `<div class="approval-card notice-card" role="status"><span class="notice-text">${escapeHtml(message)}</span><button type="button" class="icon-btn notice-dismiss" aria-label="Dismiss notice">&times;</button></div>`;
+  slot.querySelector(".notice-dismiss")?.addEventListener("click", clearNotice);
 }
 
 function autoSizePromptInput() {
@@ -2237,6 +2436,9 @@ function wireUi() {
   els.diffsPillBtn.onclick = openDiffsModal;
   els.publishPrBtn.onclick = openPublishModal;
   document.getElementById("modal-close-btn").onclick = closeModal;
+  els.modalBackdrop.addEventListener("click", (event) => {
+    if (event.target === els.modalBackdrop) closeModal();
+  });
 
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && welcome.isOpen()) welcome.handleEscape();
@@ -2244,20 +2446,49 @@ function wireUi() {
 
   els.chatScroll.addEventListener("click", async (e) => {
     const copyCode = e.target.closest("[data-copy-code]");
-    if (copyCode) { await navigator.clipboard.writeText(copyCode.closest(".code-block").querySelector("code").textContent); copyCode.textContent = "Copied"; return; }
+    if (copyCode) {
+      try {
+        await navigator.clipboard.writeText(copyCode.closest(".code-block").querySelector("code").textContent);
+        copyCode.textContent = "Copied";
+        setTimeout(() => { if (copyCode.isConnected) copyCode.textContent = "Copy code"; }, 1800);
+      } catch {
+        showToast("Could not access clipboard.");
+      }
+      return;
+    }
     const copyMessage = e.target.closest("[data-copy-message]");
-    if (copyMessage) { const msg = appState.session.messages.find((m) => m.id === copyMessage.dataset.copyMessage); await navigator.clipboard.writeText(msg.content); copyMessage.textContent = "Copied"; return; }
+    if (copyMessage) {
+      const msg = appState.session.messages.find((m) => m.id === copyMessage.dataset.copyMessage);
+      try {
+        await navigator.clipboard.writeText(msg?.content || "");
+        copyMessage.textContent = "Copied";
+        setTimeout(() => { if (copyMessage.isConnected) copyMessage.textContent = "Copy"; }, 1800);
+      } catch {
+        showToast("Could not access clipboard.");
+      }
+      return;
+    }
+    const retryUnsent = e.target.closest("[data-retry-unsent]");
+    if (retryUnsent && !appState.streaming) {
+      await sendCurrentPrompt();
+      return;
+    }
     const source = e.target.closest("[data-message-source]");
     if (source) { const doc = appState.session.messages.flatMap((m) => m.attachments || []).find((d) => d.id === source.dataset.messageSource); if (doc) everyday.previewSource(doc); return; }
     const editMessage = e.target.closest("[data-edit-message], [data-retry-message]");
     if (editMessage && !appState.streaming) {
       const id = editMessage.dataset.editMessage || editMessage.dataset.retryMessage;
       const message = appState.session.messages.find((m) => m.id === id);
-      const fork = await invoke("fork_thread", { id: appState.session.id, beforeMessageId: id });
-      await refreshBootstrap(); await loadSession(fork.id);
-      els.promptInput.value = message.content; appState.pendingDocuments = message.attachments || []; saveDraft(); renderAttachmentChips(); autoSizePromptInput();
-      showToast("Editing a copy. Your original conversation is kept.");
-      if (editMessage.dataset.retryMessage) await sendCurrentPrompt(); else els.promptInput.focus();
+      if (!message || message.unsent) return;
+      try {
+        const fork = await invoke("fork_thread", { id: appState.session.id, beforeMessageId: id });
+        await refreshBootstrap(); await loadSession(fork.id);
+        els.promptInput.value = message.content; appState.pendingDocuments = message.attachments || []; saveDraft(); renderAttachmentChips(); autoSizePromptInput();
+        showToast("Editing a copy. Your original conversation is kept.");
+        if (editMessage.dataset.retryMessage) await sendCurrentPrompt(); else els.promptInput.focus();
+      } catch (err) {
+        showToast(friendlyRuntimeError(err));
+      }
       return;
     }
     const approveBtn = e.target.closest("[data-edit-approve]");
@@ -2269,19 +2500,31 @@ function wireUi() {
 
     if (approveBtn) {
       const editId = approveBtn.getAttribute("data-edit-approve");
-      appState.session = await invoke("apply_staged_edit_cmd", {
-        sessionId: appState.session.id,
-        editId,
-      });
-      await refreshWorkspaceFiles();
-      renderAll();
+      approveBtn.disabled = true;
+      try {
+        appState.session = await invoke("apply_staged_edit_cmd", {
+          sessionId: appState.session.id,
+          editId,
+        });
+        await refreshWorkspaceFiles();
+        renderAll();
+      } catch (err) {
+        showToast(friendlyRuntimeError(err));
+        approveBtn.disabled = false;
+      }
     } else if (rejectBtn) {
       const editId = rejectBtn.getAttribute("data-edit-reject");
-      appState.session = await invoke("discard_staged_edit_cmd", {
-        sessionId: appState.session.id,
-        editId,
-      });
-      renderAll();
+      rejectBtn.disabled = true;
+      try {
+        appState.session = await invoke("discard_staged_edit_cmd", {
+          sessionId: appState.session.id,
+          editId,
+        });
+        renderAll();
+      } catch (err) {
+        showToast(friendlyRuntimeError(err));
+        rejectBtn.disabled = false;
+      }
     }
   });
 

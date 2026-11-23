@@ -43,7 +43,7 @@ export function createImageWorkspace({ invoke, getWorkspace, getEndpoint, refres
           <label>Steps<input id="image-steps" class="input" type="number" min="1" max="50" value="${escapeHtml(state.steps)}" /></label></div>
           <button id="image-folder" class="btn btn-sm">${workspace ? "Change output folder" : "Choose output folder"}</button>
           <p class="muted mono">${escapeHtml(workspace || "No folder selected")}</p>
-          <button id="image-generate" class="btn btn-primary" ${!connected || !workspace || running || state.busy ? "disabled" : ""}>${running ? "Generating…" : "Generate image"}</button>
+          <button id="image-generate" class="btn btn-primary" ${!connected || !workspace || running || state.busy || !state.prompt.trim() ? "disabled" : ""}>${running ? "Generating…" : "Generate image"}</button>
           <p class="muted">${!connected ? "Connect a server to get started. " : ""}One image at a time. PNGs save to assets/ in your folder. Larger sizes need more memory; choose a size supported by your checkpoint.</p>
         </section>
         <section class="image-results" aria-live="polite">
@@ -61,7 +61,13 @@ export function createImageWorkspace({ invoke, getWorkspace, getEndpoint, refres
 
     container.querySelector("#tool-models").onclick = openModels;
     for (const [id, key] of [["image-endpoint", "endpoint"], ["image-prompt", "prompt"], ["image-negative", "negative"], ["image-size", "size"], ["image-steps", "steps"], ["image-checkpoint", "checkpoint"]]) {
-      container.querySelector(`#${id}`).oninput = (event) => { state[key] = event.target.value; };
+      container.querySelector(`#${id}`).oninput = (event) => {
+        state[key] = event.target.value;
+        if (key === "prompt") {
+          const genBtn = container.querySelector("#image-generate");
+          if (genBtn) genBtn.disabled = !connected || !workspace || running || state.busy || !state.prompt.trim();
+        }
+      };
     }
     container.querySelector("#image-connect").onclick = async () => {
       state.busy = true;
@@ -95,19 +101,24 @@ export function createImageWorkspace({ invoke, getWorkspace, getEndpoint, refres
     });
     container.querySelectorAll("[data-copy-path]").forEach((button) => {
       button.onclick = async () => {
-        try { await navigator.clipboard.writeText(button.dataset.copyPath); button.textContent = "Copied"; }
+        try {
+          await navigator.clipboard.writeText(button.dataset.copyPath);
+          button.textContent = "Copied";
+          setTimeout(() => { if (button.isConnected) button.textContent = "Copy asset path"; }, 1800);
+        }
         catch { notice(`Asset path: ${button.dataset.copyPath}`); }
       };
     });
     const version = ++requestVersion;
+    const escAttr = (val) => (typeof CSS !== "undefined" && CSS.escape ? CSS.escape(val) : String(val).replace(/["\\]/g, "\\$&"));
     for (const job of state.jobs.filter((j) => j.artifact_path)) {
       invoke("read_workspace_png", { workspacePath: job.workspace_path, relPath: job.artifact_path }).then((src) => {
         if (version !== requestVersion) return;
-        const image = container.querySelector(`[data-image-job="${job.id}"]`);
+        const image = container.querySelector(`[data-image-job="${escAttr(job.id)}"]`);
         if (image) image.src = src;
       }).catch(() => {
         if (version !== requestVersion) return;
-        const image = container.querySelector(`[data-image-job="${job.id}"]`);
+        const image = container.querySelector(`[data-image-job="${escAttr(job.id)}"]`);
         if (image) image.alt = "Image unavailable. Its workspace may have moved.";
       });
     }

@@ -45,6 +45,21 @@ export function renderDiffView(container, edit) {
   `;
 }
 
+const CODE_EXTENSIONS = new Set([
+  "rs", "py", "js", "mjs", "cjs", "ts", "tsx", "jsx", "json", "toml",
+  "yaml", "yml", "css", "scss", "sh", "bash", "zsh", "sql", "xml",
+  "c", "cc", "cpp", "h", "hpp", "go", "java", "kt", "swift", "rb", "php",
+]);
+
+function injectPrintBridge(html) {
+  const bridge =
+    `<script>window.addEventListener("message",function(e){if(e&&e.data&&e.data.keelPrint){window.print();}});</script>`;
+  if (/<\/body>/i.test(html)) {
+    return html.replace(/<\/body>/i, `${bridge}</body>`);
+  }
+  return `${html}\n${bridge}`;
+}
+
 export function renderViewer(container, fileName, content) {
   if (!fileName) {
     container.innerHTML = `<div class="viewer-empty">No previewable file found in this workspace yet. Ask Keel to create one, or pick a file from the dropdown above.</div>`;
@@ -52,28 +67,49 @@ export function renderViewer(container, fileName, content) {
   }
 
   const lower = fileName.toLowerCase();
+  const ext = lower.includes(".") ? lower.split(".").pop() : "";
   if (lower.endsWith(".html") || lower.endsWith(".htm")) {
     container.innerHTML = "";
     const bar = document.createElement("div");
     bar.className = "viewer-toolbar";
-    bar.innerHTML = `<span class="mono">${escapeHtml(fileName)}</span>`;
+    bar.innerHTML = `<span class="mono grow">${escapeHtml(fileName)}</span>`;
+    const downloadBtn = document.createElement("button");
+    downloadBtn.className = "btn btn-ghost btn-sm";
+    downloadBtn.type = "button";
+    downloadBtn.textContent = "Export HTML";
+    downloadBtn.addEventListener("click", () => {
+      const blob = new Blob([content], { type: "text/html;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName.split("/").pop() || "preview.html";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
     const printBtn = document.createElement("button");
     printBtn.className = "btn btn-ghost btn-sm";
+    printBtn.type = "button";
     printBtn.textContent = "Print / PDF";
     const frame = document.createElement("iframe");
     frame.className = "viewer-iframe";
     frame.setAttribute("sandbox", "allow-scripts allow-modals");
-    frame.srcdoc = content;
+    frame.srcdoc = injectPrintBridge(content);
     printBtn.addEventListener("click", () => {
       try {
-        frame.contentWindow?.print();
+        frame.contentWindow?.postMessage({ keelPrint: true }, "*");
       } catch {
-        // Ignore sandbox print denial on unsupported platforms.
+        // Fallback if iframe is not ready.
       }
     });
+    bar.appendChild(downloadBtn);
     bar.appendChild(printBtn);
     container.appendChild(bar);
     container.appendChild(frame);
+    return;
+  }
+
+  if (CODE_EXTENSIONS.has(ext)) {
+    renderCodeView(container, fileName, content);
     return;
   }
 

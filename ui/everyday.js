@@ -21,7 +21,10 @@ export function createEveryday(api) {
         };
         body.querySelector("#project-delete")?.addEventListener("click", () => {
           read(); body.querySelector("#project-error").innerHTML = 'Remove this project? Its conversations and files will be kept. <button id="confirm-project-delete" class="text-action">Remove project</button>';
-          body.querySelector("#confirm-project-delete").onclick = async () => { await invoke("delete_project", { id }); if (state().activeProjectId === id) state().activeProjectId = null; await refresh(); render(); closeModal(); };
+          body.querySelector("#confirm-project-delete").onclick = async () => {
+            try { await invoke("delete_project", { id }); if (state().activeProjectId === id) state().activeProjectId = null; await refresh(); render(); closeModal(); }
+            catch (error) { body.querySelector("#project-error").textContent = String(error); }
+          };
         });
       };
       draw();
@@ -30,20 +33,36 @@ export function createEveryday(api) {
 
   function preferences(initial = null) {
     modal("What should Keel remember?", (body) => {
-      body.innerHTML = `<p>Save preferences or facts you want available across conversations. You control this text. Keel saves a preference only when you edit it here or explicitly ask “Remember that …”.</p><label for="personal-context">Saved preferences</label><textarea id="personal-context" class="input" rows="9" maxlength="4000" placeholder="I prefer concise answers. I’m learning Finnish. My meals should be vegetarian…">${safe(initial ?? state().bootstrap.config.personal_context ?? "")}</textarea><p class="muted">Saved on this computer. Included in future conversations with your AI. Clear the text and save to forget it.</p><button id="memory-save" class="btn btn-primary">Save preferences</button>`;
-      body.querySelector("#memory-save").onclick = async () => { await invoke("save_personal_context", { text: body.querySelector("#personal-context").value }); await refresh(); closeModal(); toast("Saved for future conversations."); };
+      body.innerHTML = `<p>Save preferences or facts you want available across conversations. You control this text. Keel saves a preference only when you edit it here or explicitly ask “Remember that …”.</p><label for="personal-context">Saved preferences</label><textarea id="personal-context" class="input" rows="9" maxlength="4000" placeholder="I prefer concise answers. I’m learning Finnish. My meals should be vegetarian…">${safe(initial ?? state().bootstrap.config.personal_context ?? "")}</textarea><p class="muted">Saved on this computer. Included in future conversations with your AI. Clear the text and save to forget it.</p><p id="memory-error" class="welcome-error" role="status"></p><button id="memory-save" class="btn btn-primary">Save preferences</button>`;
+      body.querySelector("#memory-save").onclick = async () => {
+        try {
+          await invoke("save_personal_context", { text: body.querySelector("#personal-context").value });
+          await refresh(); closeModal(); toast("Saved for future conversations.");
+        } catch (error) {
+          body.querySelector("#memory-error").textContent = String(error);
+        }
+      };
     });
   }
 
   function threadSettings() {
     const thread = state().session; if (!thread || state().streaming) return;
     modal("Conversation", (body) => {
-      body.innerHTML = `<label for="thread-title">Name</label><input id="thread-title" class="input" maxlength="120" value="${safe(thread.title)}"/><label for="thread-project">Project</label><select id="thread-project" class="input"><option value="">No project</option>${(state().bootstrap.projects || []).map((p) => `<option value="${safe(p.id)}" ${p.id === thread.project_id ? "selected" : ""}>${safe(p.name)}</option>`).join("")}</select><label class="row"><input id="thread-pinned" type="checkbox" ${thread.pinned ? "checked" : ""}/> Pin in recent conversations</label><div class="row"><button id="thread-save" class="btn btn-primary">Save changes</button><button id="thread-export" class="btn">Export Markdown</button></div>`;
+      body.innerHTML = `<label for="thread-title">Name</label><input id="thread-title" class="input" maxlength="120" value="${safe(thread.title)}"/><label for="thread-project">Project</label><select id="thread-project" class="input"><option value="">No project</option>${(state().bootstrap.projects || []).map((p) => `<option value="${safe(p.id)}" ${p.id === thread.project_id ? "selected" : ""}>${safe(p.name)}</option>`).join("")}</select><label class="row"><input id="thread-pinned" type="checkbox" ${thread.pinned ? "checked" : ""}/> Pin in recent conversations</label><p id="thread-error" class="welcome-error" role="status"></p><div class="row"><button id="thread-save" class="btn btn-primary">Save changes</button><button id="thread-export" class="btn">Export Markdown</button></div>`;
       body.querySelector("#thread-save").onclick = async () => {
-        state().session = await invoke("update_thread", { id: thread.id, title: body.querySelector("#thread-title").value, pinned: body.querySelector("#thread-pinned").checked, projectId: body.querySelector("#thread-project").value || null });
-        state().activeProjectId = state().session.project_id; await refresh(); render(); closeModal();
+        const title = body.querySelector("#thread-title").value.trim();
+        if (!title) { body.querySelector("#thread-error").textContent = "Give this conversation a title."; return; }
+        try {
+          state().session = await invoke("update_thread", { id: thread.id, title, pinned: body.querySelector("#thread-pinned").checked, projectId: body.querySelector("#thread-project").value || null });
+          state().activeProjectId = state().session.project_id; await refresh(); render(); closeModal();
+        } catch (error) {
+          body.querySelector("#thread-error").textContent = String(error);
+        }
       };
-      body.querySelector("#thread-export").onclick = async () => { const path = await invoke("export_thread", { id: thread.id }); if (path) toast(`Saved to ${path}`); };
+      body.querySelector("#thread-export").onclick = async () => {
+        try { const path = await invoke("export_thread", { id: thread.id }); if (path) toast(`Saved to ${path}`); }
+        catch (error) { body.querySelector("#thread-error").textContent = String(error); }
+      };
       const runtime = state().bootstrap.runtime;
       if (thread.keel_session_log && thread.workspace_path && runtime.active_model_id) {
         let endpoint;
@@ -56,8 +75,12 @@ export function createEveryday(api) {
         terminal.className = "btn";
         terminal.textContent = "Copy terminal command";
         terminal.onclick = async () => {
-          await navigator.clipboard.writeText(command);
-          toast("Copied. Run this command in your terminal to continue the same Keel session.");
+          try {
+            await navigator.clipboard.writeText(command);
+            toast("Copied. Run this command in your terminal to continue the same Keel session.");
+          } catch {
+            toast("Could not access clipboard.");
+          }
         };
         body.querySelector("#thread-export").after(terminal);
       }
@@ -66,6 +89,11 @@ export function createEveryday(api) {
 
   async function search(query) {
     const version = ++searchVersion;
+    if (!String(query || "").trim()) {
+      state().searchResults = null;
+      api.renderSidebar();
+      return;
+    }
     const results = await invoke("search_threads", { query, projectId: state().activeProjectId });
     if (version !== searchVersion) return;
     state().searchResults = results; api.renderSidebar();

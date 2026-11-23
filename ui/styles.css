@@ -349,7 +349,8 @@ body {
   line-height: 1;
 }
 
-.recent-item:hover .recent-del {
+.recent-item:hover .recent-del,
+.recent-item:focus-within .recent-del {
   opacity: 0.75;
 }
 
@@ -1428,6 +1429,25 @@ body {
   color: var(--accent);
 }
 
+.study-feedback[data-state="warn"] {
+  color: var(--rust);
+}
+
+.md-task-item {
+  list-style: none;
+  margin-left: -18px;
+}
+
+.notice-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.notice-card .notice-text {
+  flex: 1;
+}
+
 .study-answer {
   padding-top: 8px;
   border-top: 1px solid var(--border);
@@ -1778,7 +1798,7 @@ body {
 }
 
 .muted { color: var(--muted); font-size: 13px; line-height: 1.6; }
-button:disabled { opacity: .5; cursor: wait; }
+button:disabled { opacity: .5; cursor: not-allowed; }
 
 /* Optional capabilities share the shell, without making media a prerequisite. */
 .tools-workspace { flex: 1; min-height: 0; overflow: auto; padding: 40px; }

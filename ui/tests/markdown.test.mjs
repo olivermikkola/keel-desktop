@@ -20,3 +20,24 @@ test("CSV previews keep multiline quoted fields in the same row", async () => {
   const { parseCsv } = await import("../markdown.js");
   assert.deepEqual(parseCsv('name,note\nA,"first\nsecond"\nB,"a ""quote"""'), [['name','note'],['A','first\nsecond'],['B','a "quote"']]);
 });
+
+test("handles balanced-paren URLs, single-escaped quotes, merged blockquotes, and task lists", () => {
+  const md = [
+    "[Rust](https://en.wikipedia.org/wiki/Rust_(programming_language))",
+    "[Quote](https://example.com/?q=a'b)",
+    "",
+    "> Line one",
+    "> Line two",
+    "",
+    "- [x] Done task",
+    "- [ ] Pending task",
+    "",
+    "***important***",
+  ].join("\n");
+  const html = renderMarkdown(md);
+  assert.ok(html.includes('href="https://en.wikipedia.org/wiki/Rust_(programming_language)"'));
+  assert.ok(html.includes("&#39;") && !html.includes("&amp;#39;"));
+  assert.ok(html.includes("<blockquote>Line one<br>Line two</blockquote>"));
+  assert.ok(html.includes('class="md-task-item"') && html.includes("checked"));
+  assert.ok(html.includes("<strong><em>important</em></strong>"));
+});
