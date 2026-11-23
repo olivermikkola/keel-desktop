@@ -154,25 +154,70 @@ pub fn recommended_code_harness(harnesses: &[HarnessOption]) -> &'static str {
     }
 }
 
+fn windows_exe_names(bin: &str) -> Vec<String> {
+    vec![
+        format!("{bin}.exe"),
+        format!("{bin}.cmd"),
+        format!("{bin}.bat"),
+        bin.to_string(),
+    ]
+}
+
+fn first_existing_in_dir(dir: &Path, names: &[String]) -> Option<PathBuf> {
+    for name in names {
+        let cand = dir.join(name);
+        if cand.is_file() {
+            return Some(cand);
+        }
+    }
+    None
+}
+
 fn find_on_path(bin: &str) -> Option<PathBuf> {
-    let exe_name = if cfg!(target_os = "windows") {
-        format!("{bin}.exe")
+    let names = if cfg!(target_os = "windows") {
+        windows_exe_names(bin)
     } else {
-        bin.to_string()
+        vec![bin.to_string()]
     };
     if let Some(path_var) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&path_var) {
-            let cand = dir.join(&exe_name);
-            if cand.is_file() {
-                return Some(cand);
+            if let Some(found) = first_existing_in_dir(&dir, &names) {
+                return Some(found);
             }
         }
     }
     if let Some(home) = dirs::home_dir() {
         for extra in [".local/bin", ".cargo/bin", ".bun/bin"] {
-            let cand = home.join(extra).join(&exe_name);
-            if cand.is_file() {
-                return Some(cand);
+            if let Some(found) = first_existing_in_dir(&home.join(extra), &names) {
+                return Some(found);
+            }
+        }
+        // Typical Windows install / package-manager shim locations outside PATH.
+        if cfg!(target_os = "windows") {
+            for extra in [
+                PathBuf::from(r"scoop\shims"),
+                PathBuf::from(r".keel\bin"),
+                PathBuf::from(r"AppData\Local\Microsoft\WinGet\Links"),
+                PathBuf::from(r"AppData\Local\Programs\keel"),
+                PathBuf::from(r"AppData\Local\keel\bin"),
+            ] {
+                if let Some(found) = first_existing_in_dir(&home.join(extra), &names) {
+                    return Some(found);
+                }
+            }
+        }
+    }
+    if cfg!(target_os = "windows") {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            let local = PathBuf::from(local);
+            for extra in [
+                PathBuf::from(r"Microsoft\WinGet\Links"),
+                PathBuf::from(r"Programs\keel"),
+                PathBuf::from(r"keel\bin"),
+            ] {
+                if let Some(found) = first_existing_in_dir(&local.join(extra), &names) {
+                    return Some(found);
+                }
             }
         }
     }
@@ -495,7 +540,9 @@ fn approval_stdin_line(decision: ApprovalDecision) -> &'static [u8] {
 }
 
 /// Run the canonical CLI once against its original session log. Closing stdin
-/// denies an outstanding approval, and SIGINT lets Keel reap an active shell job.
+/// denies an outstanding approval. On Unix, SIGINT lets Keel reap an active
+/// shell job (`sigint-shell-v1`); on Windows, stop falls through to a grace
+/// wait then process kill (no invented OS confinement).
 pub async fn run_keel_cli_turn<E, A, F>(
     turn: KeelCliTurn<'_>,
     mut stop: watch::Receiver<bool>,
@@ -507,9 +554,6 @@ where
     A: FnMut(String, String, String, Value) -> F,
     F: std::future::Future<Output = ApprovalDecision>,
 {
-    if !cfg!(unix) {
-        bail!("Keel CLI integration is unavailable on this platform");
-    }
     let binary = find_on_path("keel")
         .context("Install the current Keel CLI and put it on PATH to use Code")?;
     let root = crate::tools::validate_workspace_root(turn.root)?;
@@ -527,6 +571,12 @@ where
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    // Avoid flashing a console window when Desktop (GUI) spawns the CLI.
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
     match std::fs::metadata(turn.log) {
         Ok(meta) if !meta.is_file() || meta.len() == 0 => {
             bail!("Keel's session log is empty or invalid")
@@ -885,6 +935,51 @@ mod tests {
         let linux = code_execution_boundary_for("linux", false, false);
         assert!(linux.can_run_commands);
         assert_eq!(linux.sandbox, "landlock");
+    }
+
+    #[test]
+    fn windows_boundary_is_honest_about_missing_os_sandbox() {
+        let without_cli = code_execution_boundary_for("windows", false, false);
+        assert!(without_cli.can_run_commands);
+        assert_eq!(without_cli.sandbox, "none");
+        let notice = without_cli.notice.as_deref().expect("windows notice");
+        assert!(
+            notice.contains("no landlock or Seatbelt"),
+            "notice should state missing OS sandboxes: {notice}"
+        );
+        assert!(
+            notice.contains("Keel CLI"),
+            "notice should recommend Keel CLI: {notice}"
+        );
+        assert!(
+            notice.contains("not OS-sandboxed"),
+            "notice must not claim a sandbox: {notice}"
+        );
+
+        let with_cli = code_execution_boundary_for("windows", false, true);
+        assert!(with_cli.can_run_commands);
+        assert_eq!(with_cli.sandbox, "none");
+        let notice = with_cli.notice.as_deref().expect("windows notice with CLI");
+        assert!(
+            notice.contains("Prefer Keel CLI"),
+            "when CLI is present, prefer it: {notice}"
+        );
+        assert!(notice.contains("not OS-sandboxed"));
+        assert_eq!(with_cli.sandbox, "none");
+    }
+
+    #[test]
+    fn windows_exe_name_candidates_include_common_suffixes() {
+        let names = windows_exe_names("keel");
+        assert_eq!(
+            names,
+            vec![
+                "keel.exe".to_string(),
+                "keel.cmd".to_string(),
+                "keel.bat".to_string(),
+                "keel".to_string(),
+            ]
+        );
     }
 
     #[test]
