@@ -403,7 +403,7 @@ async def main(port):
         await page.locator('#ws-ext-remote').check()
         await page.locator('#ws-ext-use').click()
         await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='set_external_endpoint'&&c.args.confirmRemote===true)")
-        await page.locator('#model-pill-label').get_by_text('shared-qwen · Remote', exact=True).wait_for()
+        await page.locator('#model-pill-label').get_by_text('shared-qwen · Leaves this computer · may incur provider cost', exact=True).wait_for()
         await page.locator('[data-view=chat]').click()
         await page.locator('#telemetry-left').get_by_text('Leaves this computer', exact=False).wait_for()
         # Switcher lets you jump back to built-in local AI in one click.
