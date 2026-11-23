@@ -82,12 +82,29 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  case 'start_image_job': {
  const job={id:crypto.randomUUID(),request:args.request,workspace_path:args.workspacePath,status:'running',artifact_path:null,created_at:Date.now()/1000};jobs.unshift(job);result=job;
  setTimeout(()=>{job.status='succeeded';job.artifact_path='assets/keel-test.png';files.push(job.artifact_path);emit('keel://image-job',job);},250);break;}
- case 'list_audio_packs': result=[
-  {id:'stt-whisper-base',capability:'stt',display_name:'Speech to text · Whisper base (stub)',min_vram_mib:1024,runner_kind:'audio_stt',download_url:null,installed:false},
-  {id:'tts-local-en',capability:'tts',display_name:'Text to speech · English (stub)',min_vram_mib:512,runner_kind:'audio_tts',download_url:null,installed:false}
- ];break;
- case 'run_audio_stt': throw new Error('No speech-to-text pack is installed. Download an audio pack from Settings before using speech-to-text.');
- case 'run_audio_tts': throw new Error('No text-to-speech pack is installed. Download an audio pack from Settings before using text-to-speech.');
+ case 'list_audio_packs': result=window.__audioPacks || (window.__audioPacks=[
+  {id:'stt-whisper-base',capability:'stt',display_name:'Speech to text · Whisper base (stub)',min_vram_mib:1024,runner_kind:'audio_stt',download_url:null,installed:false,runner_path:null},
+  {id:'tts-local-en',capability:'tts',display_name:'Text to speech · English (stub)',min_vram_mib:512,runner_kind:'audio_tts',download_url:null,installed:false,runner_path:null}
+ ]);break;
+ case 'mark_audio_pack_installed': {
+  const packs=window.__audioPacks || [];
+  const pack=packs.find(p=>p.id===args.packId); if(!pack) throw new Error('Unknown audio pack');
+  pack.installed=true; result=structuredClone(pack); break;
+ }
+ case 'register_audio_pack_runner': {
+  const packs=window.__audioPacks || [];
+  const pack=packs.find(p=>p.id===args.packId); if(!pack) throw new Error('Unknown audio pack');
+  pack.installed=true; pack.runner_path=args.command; result=structuredClone(pack); break;
+ }
+ case 'install_audio_pack_download_stub': {
+  const packs=window.__audioPacks || [];
+  const pack=packs.find(p=>p.id===args.packId); if(!pack) throw new Error('Unknown audio pack');
+  if(!args.url && !pack.download_url) throw new Error('Pack has no download URL yet. Register a local runner path instead, or provide a URL.');
+  pack.installed=true; result=structuredClone(pack); break;
+ }
+ case 'prepare_audio_pack_vram': result={sufficient:true,message:'shim',reported_vram_mib:0,min_vram_mib:0,status:'processor_fallback'};break;
+ case 'run_audio_stt': throw new Error('No speech-to-text pack is installed. Download or register an audio pack from Settings before using speech-to-text.');
+ case 'run_audio_tts': throw new Error('No text-to-speech pack is installed. Download or register an audio pack from Settings before using text-to-speech.');
  default: throw new Error('Unexpected command '+cmd);
  }
  return structuredClone(result);

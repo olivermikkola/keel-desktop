@@ -2419,11 +2419,11 @@ function openCustomizeModal() {
     audioCard.className = "card";
     audioCard.innerHTML = `
       <strong>Speech packs</strong>
-      <p class="muted">Speech-to-text and text-to-speech packs will live here. Nothing downloads yet — runners are still stubs.</p>
+      <p class="muted">Local speech-to-text and text-to-speech only. Mark a pack installed, register a local runner binary/script, or record a download URL stub (bytes are not fetched yet).</p>
       <div id="audio-packs-list"><p class="muted">Loading…</p></div>
     `;
     body.appendChild(audioCard);
-    (async () => {
+    const renderAudioPacks = async () => {
       const slot = audioCard.querySelector("#audio-packs-list");
       try {
         const packs = await invoke("list_audio_packs");
@@ -2439,22 +2439,92 @@ function openCustomizeModal() {
                 : pack.capability === "tts"
                   ? "Text to speech"
                   : String(pack.capability || "Audio");
-            const status = pack.installed ? "Installed" : "Not installed yet";
+            const status = pack.installed
+              ? pack.runner_path
+                ? `Installed · runner ${pack.runner_path}`
+                : "Installed · no runner yet"
+              : "Not installed";
+            const id = escapeHtml(pack.id);
             return `
-              <div class="row" style="align-items:flex-start">
+              <div class="row" style="align-items:flex-start;gap:10px;margin-bottom:10px" data-audio-pack="${id}">
                 <div class="grow">
                   <div>${escapeHtml(pack.display_name || pack.id)}</div>
-                  <div class="muted" style="font-size:12px">${escapeHtml(kind)}</div>
+                  <div class="muted" style="font-size:12px">${escapeHtml(kind)} · ${escapeHtml(status)}</div>
                 </div>
-                <span class="muted" style="font-size:12px;white-space:nowrap">${escapeHtml(status)}</span>
+                <div class="row" style="gap:6px;flex-wrap:wrap;justify-content:flex-end">
+                  <button type="button" class="btn btn-sm btn-ghost" data-audio-mark="${id}">Mark installed</button>
+                  <button type="button" class="btn btn-sm btn-ghost" data-audio-runner="${id}">Register runner…</button>
+                  <button type="button" class="btn btn-sm btn-ghost" data-audio-url="${id}">Download URL…</button>
+                </div>
               </div>
             `;
           })
           .join("");
+
+        slot.querySelectorAll("[data-audio-mark]").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            btn.disabled = true;
+            try {
+              await invoke("mark_audio_pack_installed", { packId: btn.getAttribute("data-audio-mark") });
+              showToast("Pack marked installed.");
+              await renderAudioPacks();
+            } catch (err) {
+              showToast(friendlyRuntimeError(err));
+              btn.disabled = false;
+            }
+          });
+        });
+        slot.querySelectorAll("[data-audio-runner]").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const packId = btn.getAttribute("data-audio-runner");
+            const command = window.prompt(
+              "Local binary or script for this pack (absolute path or PATH name).\nSTT: command <audio_path> → transcript on stdout.\nTTS: command --text <text> --output <path>.",
+              "",
+            );
+            if (command == null) return;
+            const trimmed = command.trim();
+            if (!trimmed) {
+              showToast("Provide a runner path.");
+              return;
+            }
+            btn.disabled = true;
+            try {
+              await invoke("register_audio_pack_runner", { packId, command: trimmed });
+              showToast("Runner registered.");
+              await renderAudioPacks();
+            } catch (err) {
+              showToast(friendlyRuntimeError(err));
+              btn.disabled = false;
+            }
+          });
+        });
+        slot.querySelectorAll("[data-audio-url]").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const packId = btn.getAttribute("data-audio-url");
+            const url = window.prompt(
+              "Download URL stub (https://… or a local archive path). Bytes are not fetched yet — register a runner to actually run.",
+              "",
+            );
+            if (url == null) return;
+            btn.disabled = true;
+            try {
+              await invoke("install_audio_pack_download_stub", {
+                packId,
+                url: url.trim() || null,
+              });
+              showToast("Download stub recorded.");
+              await renderAudioPacks();
+            } catch (err) {
+              showToast(friendlyRuntimeError(err));
+              btn.disabled = false;
+            }
+          });
+        });
       } catch (err) {
         slot.innerHTML = `<p class="muted">${escapeHtml(friendlyRuntimeError(err))}</p>`;
       }
-    })();
+    };
+    renderAudioPacks();
 
     const ap = appState.appearance;
     const appearanceCard = document.createElement("div");

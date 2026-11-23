@@ -2053,25 +2053,78 @@ pub async fn publish_code_changes(
     .map_err(|e| e.to_string())
 }
 
-/// List STT/TTS pack stubs. `installed` reflects on-disk markers under the data dir.
+/// List STT/TTS packs. `installed` / `runner_path` reflect on-disk state under the data dir.
 #[tauri::command]
 pub async fn list_audio_packs(
     state: State<'_, AppState>,
 ) -> Result<Vec<AudioPackManifest>, String> {
-    let data_dir = state.data_dir.clone();
-    Ok(audio::list_audio_packs()
-        .into_iter()
-        .map(|pack| AudioPackManifest {
-            installed: audio::is_audio_pack_installed(&data_dir, &pack.id),
-            ..pack
-        })
-        .collect())
+    Ok(audio::list_audio_packs_resolved(&state.data_dir))
 }
 
-/// Speech-to-text entry. Surfaces not-installed (and unwired-runner) errors as strings.
+/// Mark a catalog pack installed without a runner (Settings → Mark installed).
+#[tauri::command]
+pub async fn mark_audio_pack_installed(
+    state: State<'_, AppState>,
+    pack_id: String,
+) -> Result<AudioPackManifest, String> {
+    let data_dir = state.data_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        audio::mark_audio_pack_installed(&data_dir, &pack_id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Register a local binary/script as the pack runner and mark it installed.
+#[tauri::command]
+pub async fn register_audio_pack_runner(
+    state: State<'_, AppState>,
+    pack_id: String,
+    command: String,
+    args: Option<Vec<String>>,
+) -> Result<AudioPackManifest, String> {
+    let data_dir = state.data_dir.clone();
+    let extra = args.unwrap_or_default();
+    tokio::task::spawn_blocking(move || {
+        audio::register_audio_pack_runner(&data_dir, &pack_id, &command, &extra)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Record a download-URL stub (no bytes fetched yet) and mark the pack installed.
+#[tauri::command]
+pub async fn install_audio_pack_download_stub(
+    state: State<'_, AppState>,
+    pack_id: String,
+    url: Option<String>,
+) -> Result<AudioPackManifest, String> {
+    let data_dir = state.data_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        audio::install_audio_pack_download_stub(&data_dir, &pack_id, url.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Soft VRAM note before an audio pack start (shim until prepare_pack_vram lands).
+#[tauri::command]
+pub async fn prepare_audio_pack_vram(
+    state: State<'_, AppState>,
+    pack_id: String,
+) -> Result<audio::AudioPackVramNote, String> {
+    let _ = &state;
+    let pack = audio::find_audio_pack(&pack_id)
+        .ok_or_else(|| format!("Unknown audio pack id '{pack_id}'."))?;
+    Ok(audio::prepare_pack_vram_shim(&pack))
+}
+
+/// Speech-to-text entry. Surfaces not-installed / missing-runner errors as strings.
 ///
-/// Soft VRAM check lives in `keel_core::audio::prepare_for_audio_pack` (total
-/// `nvidia_memory_mib` only). TODO: call `prepare_pack_vram` once `packs.rs`
+/// Soft VRAM check lives in `keel_core::audio::prepare_pack_vram_shim` (total
+/// `nvidia_memory_mib` only). TODO: call real `prepare_pack_vram` once `packs.rs`
 /// lands from the VRAM inventory PR.
 #[tauri::command]
 pub async fn run_audio_stt(
@@ -2086,10 +2139,10 @@ pub async fn run_audio_stt(
     .map_err(|e| e.to_string())?
 }
 
-/// Text-to-speech entry. Surfaces not-installed (and unwired-runner) errors as strings.
+/// Text-to-speech entry. Surfaces not-installed / missing-runner errors as strings.
 ///
-/// Soft VRAM check lives in `keel_core::audio::prepare_for_audio_pack`. TODO:
-/// call `prepare_pack_vram` once `packs.rs` lands from the VRAM inventory PR.
+/// Soft VRAM check lives in `keel_core::audio::prepare_pack_vram_shim`. TODO:
+/// call real `prepare_pack_vram` once `packs.rs` lands from the VRAM inventory PR.
 #[tauri::command]
 pub async fn run_audio_tts(
     state: State<'_, AppState>,

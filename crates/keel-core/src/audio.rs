@@ -1,16 +1,32 @@
-//! Skeleton speech-to-text and text-to-speech capability packs.
+//! Speech-to-text and text-to-speech capability packs.
 //!
-//! Catalog entries are stubs: nothing is downloaded or runnable yet. Full
-//! Whisper/TTS adapters, resumable downloads, and audio artifacts land later.
-//! Remote text-provider auth is a separate pillar (not wired here).
+//! Catalog entries ship as stubs. Users can mark a pack installed or register a
+//! local runner binary/script from Settings. Real Whisper/TTS adapters and
+//! resumable downloads land later. Remote text-provider auth is a separate
+//! pillar (not wired here).
+//!
+//! ## Local runner contract
+//!
+//! Pack directory under `<data_dir>/audio-packs/<pack_id>/`:
+//! - `.installed` — install marker
+//! - `runner.json` — `{ "command": "<path-or-name>", "args": ["…"] }`
+//!
+//! STT invokes: `command …args… <audio_path>` and reads the transcript from stdout.
+//! TTS invokes: `command …args… --text <text> --output <path>`.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// Capability ids exposed by the audio pack catalog.
 pub const CAPABILITY_STT: &str = "stt";
 pub const CAPABILITY_TTS: &str = "tts";
+
+const RUNNER_FILE: &str = "runner.json";
+const INSTALLED_MARKER: &str = ".installed";
+const INSTALL_META: &str = "install.json";
 
 /// Which audio capability a pack provides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,8 +62,8 @@ pub enum AudioRunnerKind {
 
 /// Pack-manifest shape for optional STT/TTS downloads.
 ///
-/// `download_url` is a placeholder (`None` until a real pack is pinned).
-/// Stub catalog entries report `installed: false`.
+/// Catalog stubs leave `download_url` / `runner_path` empty until the user
+/// registers a local binary or a future download pins a URL.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AudioPackManifest {
     pub id: String,
@@ -57,6 +73,29 @@ pub struct AudioPackManifest {
     pub runner_kind: AudioRunnerKind,
     pub download_url: Option<String>,
     pub installed: bool,
+    /// Absolute or PATH-resolvable command registered for this pack, when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runner_path: Option<String>,
+}
+
+/// On-disk runner configuration for an installed pack.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioRunnerConfig {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+/// How a pack was (or will be) installed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum AudioInstallMeta {
+    /// User marked the pack installed without a runner yet.
+    Marked,
+    /// Local binary/script path registered as the pack runner.
+    LocalRunner { command: String },
+    /// Download URL recorded; bytes are not fetched yet (stub).
+    DownloadStub { url: String },
 }
 
 /// Stub catalog. Entries are documented as not downloaded yet.
@@ -70,6 +109,7 @@ pub fn list_audio_packs() -> Vec<AudioPackManifest> {
             runner_kind: AudioRunnerKind::AudioStt,
             download_url: None,
             installed: false,
+            runner_path: None,
         },
         AudioPackManifest {
             id: "tts-local-en".into(),
@@ -79,6 +119,7 @@ pub fn list_audio_packs() -> Vec<AudioPackManifest> {
             runner_kind: AudioRunnerKind::AudioTts,
             download_url: None,
             installed: false,
+            runner_path: None,
         },
     ]
 }
@@ -89,17 +130,43 @@ pub fn find_audio_pack(pack_id: &str) -> Option<AudioPackManifest> {
         .find(|pack| pack.id == pack_id)
 }
 
-fn audio_packs_dir(data_dir: &Path) -> std::path::PathBuf {
+pub fn audio_packs_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("audio-packs")
 }
 
+fn pack_dir(data_dir: &Path, pack_id: &str) -> PathBuf {
+    audio_packs_dir(data_dir).join(pack_id)
+}
+
 /// True only when an install marker exists under the data directory.
-/// Stub catalog entries never create this marker.
 pub fn is_audio_pack_installed(data_dir: &Path, pack_id: &str) -> bool {
-    audio_packs_dir(data_dir)
-        .join(pack_id)
-        .join(".installed")
-        .is_file()
+    pack_dir(data_dir, pack_id).join(INSTALLED_MARKER).is_file()
+}
+
+/// Read the registered runner command for a pack, if any.
+pub fn read_audio_runner(data_dir: &Path, pack_id: &str) -> Option<AudioRunnerConfig> {
+    let path = pack_dir(data_dir, pack_id).join(RUNNER_FILE);
+    let raw = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+/// Overlay install + runner state onto a catalog entry.
+pub fn resolve_audio_pack(data_dir: &Path, pack: AudioPackManifest) -> AudioPackManifest {
+    let installed = is_audio_pack_installed(data_dir, &pack.id);
+    let runner_path = read_audio_runner(data_dir, &pack.id).map(|r| r.command);
+    AudioPackManifest {
+        installed,
+        runner_path,
+        ..pack
+    }
+}
+
+/// Catalog packs with on-disk install/runner overlays.
+pub fn list_audio_packs_resolved(data_dir: &Path) -> Vec<AudioPackManifest> {
+    list_audio_packs()
+        .into_iter()
+        .map(|pack| resolve_audio_pack(data_dir, pack))
+        .collect()
 }
 
 /// Resolve a catalog pack that is actually installed for the given capability.
@@ -119,31 +186,136 @@ pub fn require_installed_audio_pack(
     }
     for pack in candidates {
         if is_audio_pack_installed(data_dir, &pack.id) {
-            return Ok(AudioPackManifest {
-                installed: true,
-                ..pack
-            });
+            return Ok(resolve_audio_pack(data_dir, pack));
         }
     }
     bail!(
-        "No {} pack is installed. Download an audio pack from Settings before using {}.",
+        "No {} pack is installed. Download or register an audio pack from Settings before using {}.",
         capability.label(),
         capability.label()
     );
 }
 
+fn write_install_meta(dir: &Path, meta: &AudioInstallMeta) -> Result<()> {
+    let raw = serde_json::to_string_pretty(meta).context("serialize install meta")?;
+    fs::write(dir.join(INSTALL_META), raw).context("write install meta")?;
+    Ok(())
+}
+
+fn ensure_catalog_pack(pack_id: &str) -> Result<AudioPackManifest> {
+    find_audio_pack(pack_id).ok_or_else(|| anyhow::anyhow!("Unknown audio pack id '{pack_id}'."))
+}
+
+/// Mark a catalog pack installed without registering a runner yet.
+pub fn mark_audio_pack_installed(data_dir: &Path, pack_id: &str) -> Result<AudioPackManifest> {
+    let pack = ensure_catalog_pack(pack_id)?;
+    let dir = pack_dir(data_dir, pack_id);
+    fs::create_dir_all(&dir).with_context(|| format!("create pack dir {}", dir.display()))?;
+    fs::write(dir.join(INSTALLED_MARKER), b"marked\n").context("write install marker")?;
+    write_install_meta(&dir, &AudioInstallMeta::Marked)?;
+    Ok(resolve_audio_pack(data_dir, pack))
+}
+
+/// Register a local binary/script as the pack runner and mark the pack installed.
+///
+/// `command` may be an absolute path or a PATH-resolvable name. Absolute paths
+/// must exist; bare names are accepted (resolved at run time).
+pub fn register_audio_pack_runner(
+    data_dir: &Path,
+    pack_id: &str,
+    command: &str,
+    args: &[String],
+) -> Result<AudioPackManifest> {
+    let pack = ensure_catalog_pack(pack_id)?;
+    let command = command.trim();
+    if command.is_empty() {
+        bail!("Provide a local binary or script path for the audio pack runner.");
+    }
+    let cmd_path = Path::new(command);
+    if cmd_path.is_absolute() && !cmd_path.exists() {
+        bail!(
+            "Audio pack runner '{}' does not exist. Pick a binary or script on this machine.",
+            command
+        );
+    }
+
+    let dir = pack_dir(data_dir, pack_id);
+    fs::create_dir_all(&dir).with_context(|| format!("create pack dir {}", dir.display()))?;
+    let config = AudioRunnerConfig {
+        command: command.to_string(),
+        args: args.to_vec(),
+    };
+    let raw = serde_json::to_string_pretty(&config).context("serialize runner config")?;
+    fs::write(dir.join(RUNNER_FILE), raw).context("write runner.json")?;
+    fs::write(dir.join(INSTALLED_MARKER), b"local_runner\n").context("write install marker")?;
+    write_install_meta(
+        &dir,
+        &AudioInstallMeta::LocalRunner {
+            command: command.to_string(),
+        },
+    )?;
+    Ok(resolve_audio_pack(data_dir, pack))
+}
+
+/// Record a download-URL stub install. Does **not** fetch bytes yet.
+///
+/// Uses the catalog `download_url` when `url` is empty. Marks the pack installed
+/// so Settings shows Installed; `run_stt` / `run_tts` still need a registered
+/// runner (clear error until then).
+pub fn install_audio_pack_download_stub(
+    data_dir: &Path,
+    pack_id: &str,
+    url: Option<&str>,
+) -> Result<AudioPackManifest> {
+    let pack = ensure_catalog_pack(pack_id)?;
+    let resolved = url
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| pack.download_url.clone());
+    let Some(resolved) = resolved else {
+        bail!(
+            "Pack '{}' has no download URL yet. Register a local runner path instead, or provide a URL.",
+            pack_id
+        );
+    };
+    if !(resolved.starts_with("https://")
+        || resolved.starts_with("http://")
+        || Path::new(&resolved).exists())
+    {
+        bail!(
+            "Download stub needs an http(s) URL or an existing local archive path; got '{resolved}'."
+        );
+    }
+
+    let dir = pack_dir(data_dir, pack_id);
+    fs::create_dir_all(&dir).with_context(|| format!("create pack dir {}", dir.display()))?;
+    fs::write(dir.join(INSTALLED_MARKER), b"download_stub\n").context("write install marker")?;
+    write_install_meta(
+        &dir,
+        &AudioInstallMeta::DownloadStub {
+            url: resolved.clone(),
+        },
+    )?;
+    // Keep any previously registered runner; download stub alone is not enough to run.
+    Ok(resolve_audio_pack(data_dir, pack))
+}
+
 /// Soft VRAM readiness note for an audio pack start.
 ///
-/// TODO: Replace with `prepare_pack_vram` / `keel_core::packs::{place_pack,
-/// should_unload_for_pack}` once the VRAM inventory PR lands (`packs.rs`,
-/// free-MiB inventory, keep-alive unload). This branch only has
-/// `Machine::nvidia_memory_mib` (total reported), not free VRAM.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Local shim matching the intent of `prepare_pack_vram` from the VRAM inventory
+/// PR (`packs::place_pack` / `should_unload_for_pack`). This branch only has
+/// `Machine::nvidia_memory_mib` (total reported), not free-MiB inventory or
+/// keep-alive unload — so this never stops the managed text runner. Swap the
+/// body for a real `prepare_pack_vram` call once that API lands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AudioPackVramNote {
     pub sufficient: bool,
     pub message: String,
     pub reported_vram_mib: u64,
     pub min_vram_mib: u64,
+    /// Soft status aligned with the #46 command surface.
+    pub status: String,
 }
 
 /// Soft prepare using detect_machine + reported NVIDIA total memory.
@@ -151,8 +323,12 @@ pub fn prepare_for_audio_pack(pack: &AudioPackManifest) -> AudioPackVramNote {
     prepare_for_audio_pack_on(pack, &crate::hardware::detect_machine())
 }
 
-/// Same as [`prepare_for_audio_pack`] with an injected [`crate::hardware::Machine`]
-/// (tests and callers that already probed hardware).
+/// Alias kept so audio start paths can call through a name that mirrors #46.
+pub fn prepare_pack_vram_shim(pack: &AudioPackManifest) -> AudioPackVramNote {
+    prepare_for_audio_pack(pack)
+}
+
+/// Same as [`prepare_for_audio_pack`] with an injected [`crate::hardware::Machine`].
 pub fn prepare_for_audio_pack_on(
     pack: &AudioPackManifest,
     machine: &crate::hardware::Machine,
@@ -165,28 +341,32 @@ pub fn prepare_for_audio_pack_on(
             message: format!("Pack '{}' does not require graphics memory.", pack.id),
             reported_vram_mib: reported,
             min_vram_mib: need,
+            status: "processor_fallback".into(),
         };
     }
     if !machine.has_nvidia_graphics || reported == 0 {
         return AudioPackVramNote {
-            sufficient: false,
+            // Soft: local runners may still use the processor.
+            sufficient: true,
             message: format!(
-                "Pack '{}' needs at least {need} MiB graphics memory; no NVIDIA memory was reported. Free-MiB inventory / prepare_pack_vram is not on this branch yet.",
+                "Pack '{}' prefers at least {need} MiB graphics memory; no NVIDIA memory was reported. Running on the processor. Free-MiB inventory / prepare_pack_vram unload is not on this branch yet.",
                 pack.id
             ),
             reported_vram_mib: reported,
             min_vram_mib: need,
+            status: "processor_fallback".into(),
         };
     }
     if reported < need {
         return AudioPackVramNote {
-            sufficient: false,
+            sufficient: true,
             message: format!(
-                "Pack '{}' needs at least {need} MiB graphics memory; only {reported} MiB was reported on this machine.",
+                "Pack '{}' prefers at least {need} MiB graphics memory; only {reported} MiB was reported. Prefer the processor or free VRAM first. prepare_pack_vram keep-alive unload is not wired on this branch yet.",
                 pack.id
             ),
             reported_vram_mib: reported,
             min_vram_mib: need,
+            status: "processor_fallback".into(),
         };
     }
     AudioPackVramNote {
@@ -197,57 +377,128 @@ pub fn prepare_for_audio_pack_on(
         ),
         reported_vram_mib: reported,
         min_vram_mib: need,
+        status: "already_free".into(),
     }
 }
 
-fn soft_vram_note_before_start(capability: AudioCapability) {
-    let Some(stub) = list_audio_packs()
-        .into_iter()
-        .find(|pack| pack.capability == capability)
-    else {
-        return;
+fn soft_vram_prepare(pack: &AudioPackManifest) -> AudioPackVramNote {
+    let note = prepare_pack_vram_shim(pack);
+    eprintln!("[keel-audio] {} ({})", note.message, note.status);
+    note
+}
+
+fn require_runner(data_dir: &Path, pack: &AudioPackManifest) -> Result<AudioRunnerConfig> {
+    if let Some(config) = read_audio_runner(data_dir, &pack.id) {
+        return Ok(config);
+    }
+    // Env overrides for local testing without going through Settings.
+    let env_key = match pack.capability {
+        AudioCapability::Stt => "KEEL_AUDIO_STT_CMD",
+        AudioCapability::Tts => "KEEL_AUDIO_TTS_CMD",
     };
-    let note = prepare_for_audio_pack(&stub);
-    if !note.sufficient {
-        eprintln!("[keel-audio] {}", note.message);
+    if let Ok(command) = std::env::var(env_key) {
+        let command = command.trim().to_string();
+        if !command.is_empty() {
+            return Ok(AudioRunnerConfig {
+                command,
+                args: Vec::new(),
+            });
+        }
     }
+    bail!(
+        "{} pack '{}' is marked installed, but no local runner is registered. In Settings, register a binary/script path for this pack (or set {env_key}).",
+        match pack.capability {
+            AudioCapability::Stt => "Speech-to-text",
+            AudioCapability::Tts => "Text-to-speech",
+        },
+        pack.id
+    );
 }
 
-/// Speech-to-text entry point. Fails clearly until a pack is installed (and a
-/// real runner lands later).
-pub fn run_stt(data_dir: &Path, _audio_path: &Path) -> Result<String> {
-    // Soft VRAM note against catalog mins before the install gate.
-    soft_vram_note_before_start(AudioCapability::Stt);
+fn run_local_command(config: &AudioRunnerConfig, extra_args: &[String]) -> Result<String> {
+    let mut cmd = Command::new(&config.command);
+    cmd.args(&config.args).args(extra_args);
+    let output = cmd
+        .output()
+        .with_context(|| format!("failed to start audio runner '{}'", config.command))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        bail!(
+            "Audio runner '{}' exited with {}. stderr: {} stdout: {}",
+            config.command,
+            output
+                .status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".into()),
+            stderr.trim(),
+            stdout.trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Speech-to-text entry point.
+///
+/// Requires an installed pack and a registered (or env-overridden) local runner.
+pub fn run_stt(data_dir: &Path, audio_path: &Path) -> Result<String> {
     let pack = require_installed_audio_pack(data_dir, AudioCapability::Stt)?;
-    let note = prepare_for_audio_pack(&pack);
-    if !note.sufficient {
-        bail!("{}", note.message);
+    soft_vram_prepare(&pack);
+    if !audio_path.exists() {
+        bail!("Audio file not found: {}", audio_path.display());
     }
-    bail!(
-        "Speech-to-text pack '{}' is marked installed, but no STT runner is wired yet.",
-        pack.id
-    );
+    let runner = require_runner(data_dir, &pack)?;
+    let transcript = run_local_command(&runner, &[audio_path.to_string_lossy().into_owned()])?;
+    if transcript.is_empty() {
+        bail!(
+            "Speech-to-text runner '{}' produced no transcript for {}.",
+            runner.command,
+            audio_path.display()
+        );
+    }
+    Ok(transcript)
 }
 
-/// Text-to-speech entry point. Fails clearly until a pack is installed (and a
-/// real runner lands later).
-pub fn run_tts(data_dir: &Path, _text: &str, _output_path: &Path) -> Result<()> {
-    soft_vram_note_before_start(AudioCapability::Tts);
+/// Text-to-speech entry point.
+///
+/// Requires an installed pack and a registered (or env-overridden) local runner.
+pub fn run_tts(data_dir: &Path, text: &str, output_path: &Path) -> Result<()> {
     let pack = require_installed_audio_pack(data_dir, AudioCapability::Tts)?;
-    let note = prepare_for_audio_pack(&pack);
-    if !note.sufficient {
-        bail!("{}", note.message);
+    soft_vram_prepare(&pack);
+    let text = text.trim();
+    if text.is_empty() {
+        bail!("Provide text to speak.");
     }
-    bail!(
-        "Text-to-speech pack '{}' is marked installed, but no TTS runner is wired yet.",
-        pack.id
-    );
+    if let Some(parent) = output_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create TTS output dir {}", parent.display()))?;
+        }
+    }
+    let runner = require_runner(data_dir, &pack)?;
+    let _ = run_local_command(
+        &runner,
+        &[
+            "--text".into(),
+            text.to_string(),
+            "--output".into(),
+            output_path.to_string_lossy().into_owned(),
+        ],
+    )?;
+    if !output_path.exists() {
+        bail!(
+            "Text-to-speech runner '{}' finished but did not create {}.",
+            runner.command,
+            output_path.display()
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
 
     #[test]
     fn catalog_lists_stt_and_tts_stubs_not_downloaded() {
@@ -314,12 +565,104 @@ mod tests {
             .to_string();
         assert!(err.contains("No speech-to-text pack is installed"));
 
-        let pack_dir = audio_packs_dir(&dir).join("stt-whisper-base");
-        fs::create_dir_all(&pack_dir).unwrap();
-        fs::write(pack_dir.join(".installed"), b"stub").unwrap();
-        let pack = require_installed_audio_pack(&dir, AudioCapability::Stt).unwrap();
+        let pack = mark_audio_pack_installed(&dir, "stt-whisper-base").unwrap();
         assert_eq!(pack.id, "stt-whisper-base");
         assert!(pack.installed);
+    }
+
+    #[test]
+    fn installed_without_runner_gives_clear_error() {
+        let dir = tempfile_dir("stt-no-runner");
+        mark_audio_pack_installed(&dir, "stt-whisper-base").unwrap();
+        let wav = dir.join("clip.wav");
+        fs::write(&wav, b"RIFF").unwrap();
+        let err = run_stt(&dir, &wav).unwrap_err().to_string();
+        assert!(
+            err.contains("no local runner is registered"),
+            "unexpected: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn register_local_runner_and_run_stt() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile_dir("stt-runner");
+        let script = dir.join("fake-stt.sh");
+        fs::write(&script, "#!/bin/sh\nprintf 'hello from stt\\n'\n").unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+
+        let pack =
+            register_audio_pack_runner(&dir, "stt-whisper-base", script.to_str().unwrap(), &[])
+                .unwrap();
+        assert!(pack.installed);
+        assert_eq!(pack.runner_path.as_deref(), script.to_str());
+
+        let wav = dir.join("clip.wav");
+        fs::write(&wav, b"RIFF").unwrap();
+        let text = run_stt(&dir, &wav).unwrap();
+        assert_eq!(text, "hello from stt");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn register_local_runner_and_run_tts() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile_dir("tts-runner");
+        let script = dir.join("fake-tts.sh");
+        // Write output file for --output path (args: --text X --output Y).
+        fs::write(
+            &script,
+            "#!/bin/sh\nout=\"\"\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"--output\" ]; then out=\"$2\"; shift 2; continue; fi\n  shift\ndone\n: \"${out:?}\"\nprintf 'wav' > \"$out\"\n",
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+
+        register_audio_pack_runner(&dir, "tts-local-en", script.to_str().unwrap(), &[]).unwrap();
+        let out = dir.join("out.wav");
+        run_tts(&dir, "hello world", &out).unwrap();
+        assert_eq!(fs::read_to_string(&out).unwrap(), "wav");
+    }
+
+    #[test]
+    fn register_rejects_missing_absolute_runner() {
+        let dir = tempfile_dir("missing-bin");
+        let err = register_audio_pack_runner(
+            &dir,
+            "stt-whisper-base",
+            "/definitely/missing/keel-audio-runner-xyz",
+            &[],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("does not exist"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn download_stub_requires_url_and_marks_installed() {
+        let dir = tempfile_dir("dl-stub");
+        let err = install_audio_pack_download_stub(&dir, "stt-whisper-base", None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no download URL"), "unexpected: {err}");
+
+        let pack = install_audio_pack_download_stub(
+            &dir,
+            "stt-whisper-base",
+            Some("https://example.invalid/whisper-base.tar.gz"),
+        )
+        .unwrap();
+        assert!(pack.installed);
+        assert!(pack.runner_path.is_none());
+        let meta =
+            fs::read_to_string(pack_dir(&dir, "stt-whisper-base").join(INSTALL_META)).unwrap();
+        assert!(meta.contains("download_stub"));
     }
 
     fn machine_with_nvidia(mib: u64) -> crate::hardware::Machine {
@@ -336,50 +679,38 @@ mod tests {
     }
 
     #[test]
-    fn prepare_for_audio_pack_warns_when_reported_vram_is_low() {
+    fn prepare_for_audio_pack_soft_notes_low_vram() {
         let pack = find_audio_pack("stt-whisper-base").expect("stt stub");
         let low = prepare_for_audio_pack_on(&pack, &machine_with_nvidia(512));
-        assert!(!low.sufficient);
+        assert!(low.sufficient, "CPU fallback stays soft");
+        assert_eq!(low.status, "processor_fallback");
         assert!(
-            low.message.contains("needs at least") && low.message.contains("512"),
+            low.message.contains("prefers at least") && low.message.contains("512"),
             "unexpected: {}",
             low.message
         );
 
         let ok = prepare_for_audio_pack_on(&pack, &machine_with_nvidia(4096));
         assert!(ok.sufficient);
+        assert_eq!(ok.status, "already_free");
         assert!(ok.message.contains("4096"), "unexpected: {}", ok.message);
     }
 
     #[test]
-    fn prepare_for_audio_pack_warns_without_nvidia_memory() {
-        let pack = find_audio_pack("tts-local-en").expect("tts stub");
-        let note = prepare_for_audio_pack_on(&pack, &machine_with_nvidia(0));
-        assert!(!note.sufficient);
+    fn prepare_pack_vram_shim_aliases_prepare() {
+        let pack = find_audio_pack("tts-local-en").unwrap();
+        let a = prepare_for_audio_pack_on(&pack, &machine_with_nvidia(0));
+        let b = prepare_pack_vram_shim(&pack);
+        assert_eq!(a.status, "processor_fallback");
+        // b uses live detect_machine; status is always a known soft token.
         assert!(
-            note.message.contains("no NVIDIA memory was reported"),
-            "unexpected: {}",
-            note.message
+            b.status == "already_free" || b.status == "processor_fallback",
+            "unexpected status {}",
+            b.status
         );
     }
 
-    #[test]
-    fn run_stt_with_marker_returns_vram_note_when_memory_is_short() {
-        // Soft path still runs prepare after install; on machines with no
-        // reported NVIDIA memory the clear note surfaces instead of the
-        // "runner not wired" stub (detect_machine at test time).
-        let dir = tempfile_dir("stt-vram");
-        let pack_dir = audio_packs_dir(&dir).join("stt-whisper-base");
-        fs::create_dir_all(&pack_dir).unwrap();
-        fs::write(pack_dir.join(".installed"), b"stub").unwrap();
-
-        let pack = find_audio_pack("stt-whisper-base").unwrap();
-        let note = prepare_for_audio_pack_on(&pack, &machine_with_nvidia(256));
-        assert!(!note.sufficient);
-        assert!(note.min_vram_mib >= 1024);
-    }
-
-    fn tempfile_dir(label: &str) -> std::path::PathBuf {
+    fn tempfile_dir(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("keel-audio-{}-{}", label, std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();

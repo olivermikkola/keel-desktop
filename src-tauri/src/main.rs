@@ -165,6 +165,10 @@ fn main() {
             commands::set_workspace_mcp_trust,
             commands::refresh_mcp_servers,
             commands::list_audio_packs,
+            commands::mark_audio_pack_installed,
+            commands::register_audio_pack_runner,
+            commands::install_audio_pack_download_stub,
+            commands::prepare_audio_pack_vram,
             commands::run_audio_stt,
             commands::run_audio_tts,
         ])
