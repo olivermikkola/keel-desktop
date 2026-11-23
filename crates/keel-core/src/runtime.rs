@@ -70,6 +70,7 @@ impl RuntimeManager {
         model_path: &Path,
         context_size: u32,
         custom_bin: Option<&str>,
+        offload_args: &[String],
     ) -> Result<RuntimeStatus> {
         if !model_path.is_file() {
             bail!("This model isn't downloaded yet. Download it in Models first.");
@@ -107,9 +108,12 @@ impl RuntimeManager {
             .arg("1")
             .arg("--alias")
             .arg(model_id)
-            .arg("--jinja")
-            .stdout(Stdio::null())
-            .stderr(Stdio::from(log));
+            .arg("--jinja");
+        // Graphics-or-processor flags from `hardware::advise`. They stay out of the UI.
+        for arg in offload_args {
+            command.arg(arg);
+        }
+        command.stdout(Stdio::null()).stderr(Stdio::from(log));
         // llama-server binds its own socket. Keep the reservation until the
         // command and its log are ready, then release it immediately before spawn.
         drop(reserved_port);
