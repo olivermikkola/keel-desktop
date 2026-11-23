@@ -52,22 +52,68 @@ Formal targets for recommended model × hardware combinations. Fill a cell only 
 
 ## Continuous evidence
 
-Re-run against a deliberately started local OpenAI-compatible server:
+Re-run against a deliberately started local OpenAI-compatible server. **Measure CPU and GPU/Metal as separate runs** — never copy CPU cells into the GPU row.
+
+### Scaffold (no invented metrics)
 
 ```bash
-# Smoke (default): five everyday cases, one pass each
-KEEL_EVAL_URL=http://127.0.0.1:19181/v1 KEEL_EVAL_MODEL=bonsai4b \
-  cargo run -p keel-core --example evaluate_local
+# Prints the Published targets table; fails if any metric cell is not TBD
+python3 scripts/publish_eval_targets.py --scaffold
+# Equivalent:
+python3 scripts/publish_eval_targets.py --dry-run
+```
 
-# Held-out pack with repeats (use for published-target measurements)
+### Smoke (dev check, not for Published targets)
+
+```bash
 KEEL_EVAL_URL=http://127.0.0.1:19181/v1 KEEL_EVAL_MODEL=bonsai4b \
-  KEEL_EVAL_PACK=held_out KEEL_EVAL_RUNS=5 \
-  KEEL_EVAL_HARDWARE=cpu \
-  KEEL_EVAL_OUT=docs/eval-results/$(date -u +%Y-%m-%d)-bonsai4b-cpu.json \
   cargo run -p keel-core --example evaluate_local
 ```
 
-Stdout (and `KEEL_EVAL_OUT` when set) is pretty-printed JSON shaped like:
+### Hardware measurement — CPU
+
+Start the model server on **CPU** (no GPU offload / Metal). Then:
+
+```bash
+# Optional: capture peak RSS of the llama-server process while the pack runs
+#   Linux:   PEAK=$(ps -o rss= -p <pid> | awk '{printf "%.1f", $1/1024}')
+#   macOS:   PEAK=$(ps -o rss= -p <pid> | awk '{printf "%.1f", $1/1024}')
+#   Windows: use Task Manager / Get-Process WorkingSet64 (MiB)
+
+# Omit KEEL_EVAL_PEAK_RSS_MB unless PEAK is set to a measured MiB number.
+KEEL_EVAL_URL=http://127.0.0.1:19181/v1 KEEL_EVAL_MODEL=bonsai4b \
+  KEEL_EVAL_PACK=held_out KEEL_EVAL_RUNS=5 \
+  KEEL_EVAL_HARDWARE=cpu \
+  ${PEAK:+KEEL_EVAL_PEAK_RSS_MB="$PEAK"} \
+  KEEL_EVAL_OUT=docs/eval-results/$(date -u +%Y-%m-%d)-bonsai4b-cpu.json \
+  cargo run -p keel-core --example evaluate_local
+
+python3 scripts/publish_eval_targets.py \
+  --report docs/eval-results/$(date -u +%Y-%m-%d)-bonsai4b-cpu.json \
+  --model "Bonsai 2 · 4B" --hardware cpu --dry-run
+# Drop --dry-run only after reviewing the would-be row.
+```
+
+### Hardware measurement — GPU / Metal
+
+Start the **same** model on **GPU** (CUDA/Vulkan/ROCm) or **Apple Metal**. Use a separate JSON path and `--hardware gpu` or `--hardware metal` (both fill the GPU table row). Do not reuse a CPU report.
+
+```bash
+KEEL_EVAL_URL=http://127.0.0.1:19181/v1 KEEL_EVAL_MODEL=bonsai4b \
+  KEEL_EVAL_PACK=held_out KEEL_EVAL_RUNS=5 \
+  KEEL_EVAL_HARDWARE=metal \
+  ${PEAK:+KEEL_EVAL_PEAK_RSS_MB="$PEAK"} \
+  KEEL_EVAL_OUT=docs/eval-results/$(date -u +%Y-%m-%d)-bonsai4b-metal.json \
+  cargo run -p keel-core --example evaluate_local
+
+python3 scripts/publish_eval_targets.py \
+  --report docs/eval-results/$(date -u +%Y-%m-%d)-bonsai4b-metal.json \
+  --model "Bonsai 2 · 4B" --hardware metal --dry-run
+```
+
+On Linux/Windows with discrete GPU, set `KEEL_EVAL_HARDWARE=gpu` and name the file `…-gpu.json` instead of `…-metal.json`.
+
+Stdout (and `KEEL_EVAL_OUT` when set) is pretty-printed JSON. Shape only — **the numbers below are placeholders, not measurements**:
 
 ```json
 {
@@ -75,39 +121,36 @@ Stdout (and `KEEL_EVAL_OUT` when set) is pretty-printed JSON shaped like:
   "pack": "held_out",
   "runs": 5,
   "hardware": "cpu",
-  "pack_success_rate": 0.8,
-  "pack_p50_seconds": 18.2,
-  "pack_p50_ttft_seconds": 1.4,
-  "cases": [
-    {
-      "case": "friendly_email",
-      "runs": 5,
-      "passed": 5,
-      "success_rate": 1.0,
-      "p50_seconds": 12.4,
-      "p50_ttft_seconds": 0.9,
-      "samples": []
-    }
-  ],
-  "note": "…"
+  "pack_success_rate": null,
+  "pack_p50_seconds": null,
+  "pack_p50_ttft_seconds": null,
+  "peak_rss_mb": null,
+  "cases": [],
+  "note": "Replace nulls with values from evaluate_local; never hand-edit Published targets."
 }
 ```
 
 Where results should land:
 
-1. **Machine-readable:** keep the JSON under `docs/eval-results/<date>-<model>-<cpu|gpu>.json` (or locally). Do not commit secrets or host-private paths.
-2. **Human summary:** fill Published targets only via measured reports — dry-run then apply:
+1. **Machine-readable:** keep the JSON under `docs/eval-results/<date>-<model>-<cpu|gpu|metal>.json` (or locally). Do not commit secrets or host-private paths.
+2. **Human summary:** fill Published targets only via measured reports — scaffold first, then dry-run, then apply:
 
 ```bash
+python3 scripts/publish_eval_targets.py --scaffold
 python3 scripts/publish_eval_targets.py \
-  --report docs/eval-results/2026-11-23-bonsai4b-cpu.json \
+  --report docs/eval-results/YYYY-MM-DD-bonsai4b-cpu.json \
   --model "Bonsai 2 · 4B" --hardware cpu --dry-run
 ```
 
-The script refuses packs other than `held_out`, `KEEL_EVAL_RUNS` < 5, and CPU/GPU mismatches. Update only measured cells; leave the rest TBD.
+The script refuses missing `--report` (except scaffold/dry-run), packs other than `held_out`, `KEEL_EVAL_RUNS` < 5, non-numeric pack aggregates, placeholder strings like `"TBD"`, and CPU/GPU mismatches. Update only measured cells; leave the rest TBD.
 3. **Informal samples:** one-off development runs may stay under Observed real-model results below; they do not count as published targets.
 
-No-model CI gate (registry load + grader wiring, no live server): `cargo test -p keel-core --lib eval`. That filter covers pack membership, `prepare_turn` for every smoke/held_out case, grader dispatch, and aggregation — including `smoke_and_held_out_registries_load_and_wire_graders`. Real-model runs stay opt-in (no CI GPU requirement); do not invent TTFT/p50 cells in Published targets.
+No-model CI gates (no live server, no invented latency):
+
+- Registry / graders: `cargo test -p keel-core --lib eval`
+- Publish script fail-closed + TBD scaffold: `python3 scripts/test_publish_eval_targets.py`
+
+Real-model runs stay opt-in (no CI GPU requirement); do not invent TTFT/p50 cells in Published targets.
 
 ## Observed real-model results
 
@@ -128,7 +171,7 @@ One additional email experiment showed why the reasoning switch needed a backend
 
 ## Remaining bar for recommending a switch
 
-1. Measure the held-out pack (`KEEL_EVAL_PACK=held_out`, `KEEL_EVAL_RUNS`≥5) on intended user hardware (TTFT is recorded automatically), then expand remaining TODOs (long-session compaction, native mid-turn recovery) and stronger project-document / multi-file coverage.
-2. Fill Published targets (TTFT, p50 latency, success rate, peak RSS) per recommended model/hardware combination from those runs with `scripts/publish_eval_targets.py`. Do not infer GPU results from CPU tests.
+1. Measure the held-out pack on intended user hardware with the CPU and GPU/Metal command blocks under Continuous evidence (TTFT is recorded automatically), then expand remaining TODOs (long-session compaction, native mid-turn recovery) and stronger project-document / multi-file coverage.
+2. Fill Published targets (TTFT, p50 latency, success rate, peak RSS) only via `scripts/publish_eval_targets.py --report …` after `--scaffold` / `--dry-run` review. Do not invent cells; do not infer GPU/Metal from CPU.
 3. Test with people doing the recurring tasks they currently use Claude for, and compare completed work, correction effort, and time—not just UI appearance or a few successful prompts.
 4. Address the failures those evaluations find. Hosted provider authentication and automatic audio/video packs remain separate unimplemented capabilities.

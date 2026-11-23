@@ -31,6 +31,11 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Run UI tests
         run: node --test ui/tests/*.test.mjs
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Publish eval targets fail-closed + TBD scaffold
+        run: python3 scripts/test_publish_eval_targets.py
 
   build-and-test:
     name: Build, Clippy & Test (${{ matrix.os }})
