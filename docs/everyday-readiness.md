@@ -22,11 +22,20 @@ The target is an assistant a person can use for recurring writing, document, dat
 - Linux CI also starts a real Tauri window under Xvfb with `--ui-smoke-test`, using a temporary app data directory. The actual frontend must bootstrap through native IPC, create its initial Chat session, and render its composer. This complements the fixture-based flow checks; it does not operate native file dialogs.
 - `python scripts/ui-smoke.py`: real frontend with a test-only Tauri IPC fixture. Exercises guided setup, attachments/source preview, preferences, projects, thread rename/pin/search, Chat/Work/Code, file review, Library, Images, and sandboxed asset previews. Native pickers and GPU inference are not simulated as real interactions by this test.
 - `KEEL_EVAL_MODEL_PATH=/path/model.gguf cargo run -p keel-core --example check_managed_setup`: an opt-in real download/start/stop check. It downloads and verifies the pinned runner, loads a supplied GGUF, checks its model alias, and stops it. Passed locally on Linux with Bonsai 4B and runner b12428.
-- `KEEL_EVAL_URL=http://127.0.0.1:19181/v1 KEEL_EVAL_MODEL=model-name cargo run -p keel-core --example evaluate_local`: opt-in task checks using the actual agent engine and a running model. Case definitions and graders live in `keel_core::eval_cases` (pack tag `smoke` for the current five cases). `KEEL_EVAL_CASE` restricts a run to one case; `KEEL_EVAL_PACK` selects a pack (default `smoke`); `KEEL_EVAL_RUNS` repeats each case and reports success rate plus p50 latency (default `1`). It creates disposable CSV/code fixtures; the code check applies a staged edit in that fixture and checks the result with Python. Review answers as well as heuristic pass flags.
+- `KEEL_EVAL_URL=http://127.0.0.1:19181/v1 KEEL_EVAL_MODEL=model-name cargo run -p keel-core --example evaluate_local`: opt-in task checks using the actual agent engine and a running model. Case definitions and graders live in `keel_core::eval_cases`. Packs: `smoke` (five everyday cases) and `held_out` (smoke plus preference-conflict, CSV filter, multi-file code, buried-fact recall, and unknown-from-brief stubs; longer native/long-session cases remain TODOs in the registry). `KEEL_EVAL_CASE` restricts a run to one case; `KEEL_EVAL_PACK` selects a pack (default `smoke`); `KEEL_EVAL_RUNS` repeats each case and reports success rate plus p50 latency (default `1`). It creates disposable CSV/code fixtures; code checks apply staged edits in that fixture and check results with Python. Review answers as well as heuristic pass flags.
 
 ## Published targets
 
-Formal targets for recommended model × hardware combinations (time to first token, p50 answer latency, task success rate on the held-out suite, peak RSS). **Every cell is TBD** until measured on the intended hardware. Do not treat the informal CPU samples below as these targets. **GPU/Metal is unmeasured** — do not infer GPU numbers from CPU runs.
+Formal targets for recommended model × hardware combinations. Fill a cell only after a measured run on that model × hardware with the held-out pack (`KEEL_EVAL_PACK=held_out`) and enough repeats (`KEEL_EVAL_RUNS`, typically ≥5). Columns:
+
+| Column | Meaning |
+| --- | --- |
+| TTFT | Time to first visible answer token (not yet emitted by `evaluate_local`; leave TBD until instrumented) |
+| p50 latency | Median wall-clock seconds per case from the JSON report (`p50_seconds`), then summarize across the pack as agreed when publishing |
+| Success rate | Pack-level fraction of passed case samples (`passed / runs` aggregated across cases) |
+| Peak RSS | Peak resident set size of the model server during the run (measure with OS tools; not in the JSON report yet) |
+
+**Every cell below is TBD** until measured on the intended hardware. Do not treat the informal CPU samples in the next section as these targets. **GPU/Metal is unmeasured** — do not invent or infer GPU numbers from CPU runs.
 
 | Model | Hardware | TTFT | p50 latency | Success rate | Peak RSS |
 | --- | --- | --- | --- | --- | --- |
@@ -40,6 +49,50 @@ Formal targets for recommended model × hardware combinations (time to first tok
 | Bonsai 2 · 9B | GPU | TBD | TBD | TBD | TBD |
 | Bonsai 2 · 27B | CPU | TBD | TBD | TBD | TBD |
 | Bonsai 2 · 27B | GPU | TBD | TBD | TBD | TBD |
+
+## Continuous evidence
+
+Re-run against a deliberately started local OpenAI-compatible server:
+
+```bash
+# Smoke (default): five everyday cases, one pass each
+KEEL_EVAL_URL=http://127.0.0.1:19181/v1 KEEL_EVAL_MODEL=bonsai4b \
+  cargo run -p keel-core --example evaluate_local
+
+# Held-out pack with repeats (use for published-target measurements)
+KEEL_EVAL_URL=http://127.0.0.1:19181/v1 KEEL_EVAL_MODEL=bonsai4b \
+  KEEL_EVAL_PACK=held_out KEEL_EVAL_RUNS=5 \
+  cargo run -p keel-core --example evaluate_local | tee eval-held-out.json
+```
+
+Stdout is pretty-printed JSON shaped like:
+
+```json
+{
+  "model": "bonsai4b",
+  "pack": "held_out",
+  "runs": 5,
+  "cases": [
+    {
+      "case": "friendly_email",
+      "runs": 5,
+      "passed": 5,
+      "success_rate": 1.0,
+      "p50_seconds": 12.4,
+      "samples": []
+    }
+  ],
+  "note": "…"
+}
+```
+
+Where results should land:
+
+1. **Machine-readable:** keep the JSON next to the measurement notes (for example `docs/eval-results/<date>-<model>-<cpu|gpu>.json` locally or in a PR). Do not commit secrets or host-private paths.
+2. **Human summary:** when a cell in Published targets is filled, cite the JSON (date, model id, runner build, `run_where`, pack, `KEEL_EVAL_RUNS`) in the PR or release notes. Update only measured cells; leave the rest TBD.
+3. **Informal samples:** one-off development runs may stay under Observed real-model results below; they do not count as published targets.
+
+Unit tests for graders and aggregation: `cargo test -p keel-core --lib eval`. Real-model runs stay opt-in (no CI GPU requirement).
 
 ## Observed real-model results
 
@@ -60,7 +113,7 @@ One additional email experiment showed why the reasoning switch needed a backend
 
 ## Remaining bar for recommending a switch
 
-1. Run a larger held-out suite and repeated runs on the intended user hardware, including projects with real documents, conflicting/updated preferences, multi-file coding, long sessions, and recovery during actual native interactions.
-2. Establish acceptable time to first token, answer latency, memory use, and task success for each recommended model/hardware combination. Do not infer GPU results from CPU tests.
+1. Measure the held-out pack (`KEEL_EVAL_PACK=held_out`, `KEEL_EVAL_RUNS`≥5) on intended user hardware, then expand remaining TODOs (long-session compaction, native mid-turn recovery) and stronger project-document / multi-file coverage.
+2. Fill Published targets (TTFT, p50 latency, success rate, peak RSS) per recommended model/hardware combination from those runs. Do not infer GPU results from CPU tests.
 3. Test with people doing the recurring tasks they currently use Claude for, and compare completed work, correction effort, and time—not just UI appearance or a few successful prompts.
 4. Address the failures those evaluations find. Hosted provider authentication and automatic audio/video packs remain separate unimplemented capabilities.

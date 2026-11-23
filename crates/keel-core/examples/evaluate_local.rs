@@ -6,8 +6,11 @@
 //! - `KEEL_EVAL_URL` (default `http://127.0.0.1:19181/v1`)
 //! - `KEEL_EVAL_MODEL` (default `bonsai4b`)
 //! - `KEEL_EVAL_CASE` — run only this case name
-//! - `KEEL_EVAL_PACK` — pack tag filter (default `smoke`)
+//! - `KEEL_EVAL_PACK` — pack tag filter (`smoke` default, or `held_out`)
 //! - `KEEL_EVAL_RUNS` — repeat each case N times and aggregate (default `1`)
+//!
+//! Stdout is a JSON report with per-case `success_rate` and `p50_seconds`.
+//! See `docs/everyday-readiness.md` § Continuous evidence for where to archive it.
 use anyhow::{Context, Result};
 use keel_core::{
     agent::{run_agent_turn, ApprovalDecision, TurnParams},
