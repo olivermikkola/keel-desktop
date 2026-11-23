@@ -36,6 +36,13 @@ use tauri::{AppHandle, Emitter, State};
 use tokio::sync::{oneshot, watch, Mutex};
 use tokio::task::AbortHandle;
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Test spy: increments when the real keep-alive unload path runs.
+#[cfg(test)]
+static PREPARE_PACK_VRAM_CALLS: AtomicUsize = AtomicUsize::new(0);
+
 pub struct AppState {
     pub images: keel_core::images::ImageService,
     pub turn_lock: Arc<Mutex<()>>,
@@ -871,6 +878,8 @@ async fn prepare_pack_vram_for_manifest(
     state: &AppState,
     pack: keel_core::packs::PackManifest,
 ) -> Result<PackVramResult, String> {
+    #[cfg(test)]
+    PREPARE_PACK_VRAM_CALLS.fetch_add(1, Ordering::SeqCst);
     let inventory = fresh_vram_inventory(state);
 
     let mut rt = state.runtime.lock().await;
@@ -2442,16 +2451,9 @@ async fn prepare_vram_for_audio_capability(
     prepare_pack_vram_for_manifest(state, pack.to_pack_manifest()).await
 }
 
-/// Speech-to-text entry. Surfaces not-installed / missing-runner errors as strings.
-///
-/// Calls real [`prepare_pack_vram_for_manifest`] first so a VRAM-hungry STT pack
-/// can unload keep-alive before the local runner starts.
-#[tauri::command]
-pub async fn run_audio_stt(
-    state: State<'_, AppState>,
-    audio_path: String,
-) -> Result<String, String> {
-    prepare_vram_for_audio_capability(&state, audio::AudioCapability::Stt).await?;
+/// Speech-to-text after real [`prepare_pack_vram_for_manifest`] (testable without Tauri State).
+async fn run_audio_stt_prepared(state: &AppState, audio_path: String) -> Result<String, String> {
+    prepare_vram_for_audio_capability(state, audio::AudioCapability::Stt).await?;
     let data_dir = state.data_dir.clone();
     tokio::task::spawn_blocking(move || {
         audio::run_stt(&data_dir, Path::new(&audio_path)).map_err(|e| e.to_string())
@@ -2460,20 +2462,16 @@ pub async fn run_audio_stt(
     .map_err(|e| e.to_string())?
 }
 
-/// Text-to-speech entry. Surfaces not-installed / missing-runner errors as strings.
+/// Text-to-speech after real [`prepare_pack_vram_for_manifest`] (testable without Tauri State).
 ///
-/// Calls real [`prepare_pack_vram_for_manifest`] first so a VRAM-hungry TTS pack
-/// can unload keep-alive before the local runner starts.
-///
-/// Omit or blank `output_path` to write under `{data_dir}/audio-try/try-tts.wav`
-/// (Settings → Try TTS). Returns the path used.
-#[tauri::command]
-pub async fn run_audio_tts(
-    state: State<'_, AppState>,
+/// Omit or blank `output_path` to write under `{data_dir}/audio-try/try-tts.wav`.
+/// Returns the path used.
+async fn run_audio_tts_prepared(
+    state: &AppState,
     text: String,
     output_path: Option<String>,
 ) -> Result<String, String> {
-    prepare_vram_for_audio_capability(&state, audio::AudioCapability::Tts).await?;
+    prepare_vram_for_audio_capability(state, audio::AudioCapability::Tts).await?;
     let data_dir = state.data_dir.clone();
     let resolved = match output_path
         .as_deref()
@@ -2494,4 +2492,184 @@ pub async fn run_audio_tts(
     .await
     .map_err(|e| e.to_string())??;
     Ok(out_display)
+}
+
+/// Speech-to-text entry. Surfaces not-installed / missing-runner errors as strings.
+///
+/// Calls real [`prepare_pack_vram_for_manifest`] first so a VRAM-hungry STT pack
+/// can unload keep-alive before the local runner starts.
+#[tauri::command]
+pub async fn run_audio_stt(
+    state: State<'_, AppState>,
+    audio_path: String,
+) -> Result<String, String> {
+    run_audio_stt_prepared(&state, audio_path).await
+}
+
+/// Text-to-speech entry. Surfaces not-installed / missing-runner errors as strings.
+///
+/// Calls real [`prepare_pack_vram_for_manifest`] first so a VRAM-hungry TTS pack
+/// can unload keep-alive before the local runner starts.
+///
+/// Omit or blank `output_path` to write under `{data_dir}/audio-try/try-tts.wav`
+/// (Settings → Try TTS). Returns the path used.
+#[tauri::command]
+pub async fn run_audio_tts(
+    state: State<'_, AppState>,
+    text: String,
+    output_path: Option<String>,
+) -> Result<String, String> {
+    run_audio_tts_prepared(&state, text, output_path).await
+}
+
+#[cfg(test)]
+mod audio_prepare_pack_vram_wiring {
+    use super::*;
+    use keel_core::sessions::DesktopConfig;
+    use std::fs;
+    use std::sync::Mutex as StdMutex;
+
+    /// Serialize spy-counter assertions; Tokio runs these tests in parallel.
+    static WIRING_TEST_LOCK: StdMutex<()> = StdMutex::new(());
+
+    fn temp_root(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "keel-audio-vram-{}-{}-{}",
+            label,
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn test_app_state(root: &Path) -> AppState {
+        let data_dir = root.join("data");
+        let config_dir = root.join("config");
+        fs::create_dir_all(&data_dir).unwrap();
+        fs::create_dir_all(&config_dir).unwrap();
+        AppState {
+            images: keel_core::images::ImageService::new(&data_dir).expect("image service"),
+            turn_lock: Arc::new(Mutex::new(())),
+            config_dir,
+            data_dir,
+            config: Arc::new(Mutex::new(DesktopConfig::default())),
+            runtime: Arc::new(Mutex::new(RuntimeManager::new(19191))),
+            approvals: Arc::new(Mutex::new(HashMap::new())),
+            always_allowed: Arc::new(Mutex::new(HashMap::new())),
+            active_abort: Arc::new(Mutex::new(None)),
+            download_lock: Mutex::new(()),
+            setup_pause: Mutex::new(None),
+            active_cli_stop: Mutex::new(None),
+            placement_cache: Mutex::new(None),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_audio_stt_calls_real_prepare_pack_vram_without_gpu() {
+        let _guard = WIRING_TEST_LOCK.lock().unwrap();
+        let root = temp_root("stt");
+        let state = test_app_state(&root);
+        audio::mark_audio_pack_installed(&state.data_dir, "stt-whisper-base").unwrap();
+
+        let before = PREPARE_PACK_VRAM_CALLS.load(Ordering::SeqCst);
+        // Fail-closed after prepare: pack is installed but no runner / audio file.
+        let err = run_audio_stt_prepared(&state, root.join("missing.wav").display().to_string())
+            .await
+            .expect_err("STT should fail after prepare without a runner");
+        let after = PREPARE_PACK_VRAM_CALLS.load(Ordering::SeqCst);
+
+        assert_eq!(
+            after,
+            before + 1,
+            "run_audio_stt must invoke real prepare_pack_vram_for_manifest before the runner"
+        );
+        assert!(
+            err.contains("runner") || err.contains("Audio file not found"),
+            "expected runner/audio failure after prepare, got: {err}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn run_audio_tts_calls_real_prepare_pack_vram_without_gpu() {
+        let _guard = WIRING_TEST_LOCK.lock().unwrap();
+        let root = temp_root("tts");
+        let state = test_app_state(&root);
+        audio::mark_audio_pack_installed(&state.data_dir, "tts-local-en").unwrap();
+
+        let before = PREPARE_PACK_VRAM_CALLS.load(Ordering::SeqCst);
+        let err = run_audio_tts_prepared(
+            &state,
+            "hello".into(),
+            Some(root.join("out.wav").display().to_string()),
+        )
+        .await
+        .expect_err("TTS should fail after prepare without a runner");
+        let after = PREPARE_PACK_VRAM_CALLS.load(Ordering::SeqCst);
+
+        assert_eq!(
+            after,
+            before + 1,
+            "run_audio_tts must invoke real prepare_pack_vram_for_manifest before the runner"
+        );
+        assert!(
+            err.contains("runner"),
+            "expected missing-runner failure after prepare, got: {err}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn audio_start_skips_prepare_pack_vram_when_pack_is_not_installed() {
+        let _guard = WIRING_TEST_LOCK.lock().unwrap();
+        let root = temp_root("skip");
+        let state = test_app_state(&root);
+
+        let before = PREPARE_PACK_VRAM_CALLS.load(Ordering::SeqCst);
+        let stt_err = run_audio_stt_prepared(&state, root.join("x.wav").display().to_string())
+            .await
+            .expect_err("STT without pack");
+        let tts_err = run_audio_tts_prepared(
+            &state,
+            "hi".into(),
+            Some(root.join("o.wav").display().to_string()),
+        )
+        .await
+        .expect_err("TTS without pack");
+        let after = PREPARE_PACK_VRAM_CALLS.load(Ordering::SeqCst);
+
+        assert_eq!(
+            after, before,
+            "prepare_pack_vram must not run when no audio pack is installed"
+        );
+        assert!(stt_err.contains("installed"), "got: {stt_err}");
+        assert!(tts_err.contains("installed"), "got: {tts_err}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tauri_audio_commands_delegate_to_prepared_helpers() {
+        // Lock the public entrypoints to the helpers the spy tests cover.
+        let src = include_str!("commands.rs");
+        let stt = src
+            .split("pub async fn run_audio_stt(")
+            .nth(1)
+            .and_then(|rest| rest.split("pub async fn run_audio_tts(").next())
+            .expect("run_audio_stt");
+        let tts = src
+            .split("pub async fn run_audio_tts(")
+            .nth(1)
+            .and_then(|rest| rest.split("#[cfg(test)]").next())
+            .expect("run_audio_tts");
+        assert!(
+            stt.contains("run_audio_stt_prepared"),
+            "run_audio_stt must call run_audio_stt_prepared"
+        );
+        assert!(
+            tts.contains("run_audio_tts_prepared"),
+            "run_audio_tts must call run_audio_tts_prepared"
+        );
+    }
 }
