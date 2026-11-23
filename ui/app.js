@@ -295,6 +295,7 @@ const TOOL_VERBS = {
   create_file: "Create",
   delete_file: "Delete",
   rename_file: "Rename",
+  web_search: "Search web",
 };
 
 function toolTargetLabel(tool) {
@@ -776,8 +777,8 @@ function renderHeader() {
   const attachBtn = document.getElementById("attach-docs-btn");
   if (attachBtn) {
     attachBtn.title = b.ocr_available
-      ? "Attach or drop/paste PDF, DOCX, text, CSV, code, or image (offline OCR ready)"
-      : "Attach or drop/paste PDF, DOCX, text, CSV, or code (install Tesseract for image OCR)";
+      ? "Attach or drop/paste PDF, DOCX, text, CSV, code, or image (Chat can see image pixels; OCR ready as fallback)"
+      : "Attach or drop/paste PDF, DOCX, text, CSV, code, or image (Chat can see image pixels; install Tesseract for OCR captions)";
   }
 
   const harness = b.harnesses.find((h) => h.id === b.config.harness_mode);

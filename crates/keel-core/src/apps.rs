@@ -114,7 +114,7 @@ impl AppPreset {
 
     pub fn allowed_tools(self) -> &'static [&'static str] {
         match self {
-            AppPreset::Chat => &[],
+            AppPreset::Chat => &["web_search"],
             AppPreset::Code => &[
                 "list_files",
                 "read_file",
@@ -125,6 +125,7 @@ impl AppPreset {
                 "rename_file",
                 "run_sql",
                 "run_shell",
+                "web_search",
             ],
             AppPreset::Websites => &[
                 "list_files",
@@ -134,6 +135,7 @@ impl AppPreset {
                 "create_file",
                 "delete_file",
                 "rename_file",
+                "web_search",
             ],
             AppPreset::General | AppPreset::Sheets => &[
                 "list_files",
@@ -144,6 +146,7 @@ impl AppPreset {
                 "delete_file",
                 "rename_file",
                 "run_sql",
+                "web_search",
             ],
             AppPreset::Docs | AppPreset::Study | AppPreset::Slides => &[
                 "list_files",
@@ -153,6 +156,7 @@ impl AppPreset {
                 "create_file",
                 "delete_file",
                 "rename_file",
+                "web_search",
             ],
         }
     }
@@ -181,13 +185,13 @@ impl AppPreset {
     pub fn instructions(self) -> &'static str {
         match self {
             AppPreset::Chat => {
-                "You are Keel, a helpful conversational assistant. Answer questions, explain ideas, brainstorm, and help with writing. You have no file, shell, or connector tools in Chat. Do not claim to access files, browse the web, or execute actions. If the user needs work done in a folder, suggest Work; for repository changes or commands, suggest Code."
+                "You are Keel, a helpful conversational assistant. Answer questions, explain ideas, brainstorm, and help with writing. In Chat you may use web_search (requires user approval) for current facts or sources; do not invent browse results. You have no file, shell, or connector tools here. Do not claim to access folders or run commands. If the user needs work done in a folder, suggest Work; for repository changes or commands, suggest Code. When an image is attached as pixels, describe what you see in the image; OCR text is only a fallback caption."
             }
             AppPreset::General => {
-                "You are Keel in Work, helping turn local files into useful deliverables. Inspect relevant files, then carry out the work. When answering from files, cite the source filename and lines you read. Use SQL for exact calculations over CSV data. File changes are staged for review. Do not claim a deliverable is saved until its edit is approved. Shell commands are available in Code, not Work."
+                "You are Keel in Work, helping turn local files into useful deliverables. Inspect relevant files, then carry out the work. When answering from files, cite the source filename and lines you read. Use SQL for exact calculations over CSV data. Use web_search (requires user approval) when current public facts are needed. File changes are staged for review. Do not claim a deliverable is saved until its edit is approved. Shell commands are available in Code, not Work."
             }
             AppPreset::Code => {
-                "You are Keel, a local AI agent working inside the user's selected workspace folder. Inspect files before editing them. Keep changes minimal and accurate. Propose edits with propose_edit or create_file, and only request run_shell when compiling, testing, or running a command is genuinely needed."
+                "You are Keel, a local AI agent working inside the user's selected workspace folder. Inspect files before editing them. Keep changes minimal and accurate. Propose edits with propose_edit or create_file, and only request run_shell when compiling, testing, or running a command is genuinely needed. Use web_search only when public documentation or current facts are required; it needs user approval."
             }
             AppPreset::Websites => {
                 "This chat is the Websites app. Use list_files to find existing assets/ PNGs; reference them with relative img src paths when appropriate. Build what the user asks as a self-contained web page in index.html (with inline CSS and JavaScript unless separate files are requested). Keep the layout responsive and clean, with real content instead of placeholders, and avoid external network fonts or CDN scripts so it previews reliably offline. To update an existing page, read it first and use propose_edit."
@@ -241,8 +245,15 @@ mod tests {
             let info = preset.info();
             assert!(!info.title.is_empty());
             assert!(!info.starters.is_empty());
+            assert!(
+                info.tools.contains(&"web_search".to_string()),
+                "{:?} should expose web_search",
+                preset
+            );
             if preset != &AppPreset::Chat {
                 assert!(info.tools.contains(&"read_file".to_string()));
+            } else {
+                assert_eq!(info.tools, vec!["web_search".to_string()]);
             }
         }
     }

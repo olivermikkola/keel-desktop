@@ -29,8 +29,9 @@ Built with **Tauri 2**, **Rust**, and **llama.cpp** (`llama-server`), carrying t
 
 ### Everyday assistant — Chat & Work
 
-- **Document chat:** Drag and drop files, paste images from the clipboard, or attach text-based PDFs, DOCX, text, Markdown, CSV, and code. Inspect the extracted source and ask follow-up questions. Large documents use labeled excerpts. Run OCR on scanned PDFs before importing them.
-- **Offline image text:** Uses a local Tesseract installation to read supported image attachments and workspace files through OCR. You can install Tesseract with `sudo apt install tesseract-ocr`, `sudo dnf install tesseract`, or `brew install tesseract`.
+- **Document chat:** Drag and drop files, paste images from the clipboard, or attach text-based PDFs, DOCX, text, Markdown, CSV, and code. Inspect the extracted source and ask follow-up questions. Large documents use labeled excerpts. Run OCR on scanned PDFs before importing them. In Chat, attached images are sent as pixels so a vision-capable model can describe what it sees.
+- **Web search:** Chat and Work can look up current public facts with `web_search` after you approve the request. Search leaves your machine over the network; answers still come from your local (or connected) model.
+- **Offline image text:** Optional local Tesseract OCR supplies a text caption for images and workspace files when pixels are not enough. You can install Tesseract with `sudo apt install tesseract-ocr`, `sudo dnf install tesseract`, or `brew install tesseract`.
 - **Projects:** Reusable instructions, reference documents, an optional working folder, and conversations grouped around the same work.
 - **Saved preferences:** Editable local context for future conversations. Add it in the sidebar or explicitly ask “Remember that …”; ordinary conversation is not automatically mined for memories.
 - **Conversation tools:** Search message text and titles, rename, pin, export to Markdown, edit a prompt in a copy, retry a text answer, keep drafts, undo a deletion, and navigate with keyboard shortcuts (`Ctrl/Cmd+N/K/B/,/1/2/3`, `Esc` to stop, `?` shortcut reference in Settings). Interrupted replies keep partial answers and proposed edits.

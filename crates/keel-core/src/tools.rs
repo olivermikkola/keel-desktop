@@ -776,6 +776,20 @@ pub fn openai_tool_schemas(
                 }
             }
         }),
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the public web for current facts or sources (requires user approval). Use for news, documentation, or anything that may have changed since training. Do not invent results.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "Short search query" }
+                    },
+                    "required": ["query"]
+                }
+            }
+        }),
     ];
 
     let mut filtered: Vec<serde_json::Value> = all

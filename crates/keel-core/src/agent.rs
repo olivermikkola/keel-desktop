@@ -28,6 +28,7 @@ use crate::tools::{
     openai_tool_schemas, read_workspace_file, run_shell_command, search_workspace_files,
     validate_workspace_root, StagedEdit, StagedEditKind,
 };
+use crate::web_search::web_search;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EndpointUnreachable {
@@ -146,12 +147,7 @@ where
         params.auto_apply_edits,
         params.enable_thinking,
     );
-    messages.push(ChatTurnMessage {
-        role: "system".to_string(),
-        content: system_prompt,
-        tool_call_id: None,
-        tool_calls: None,
-    });
+    messages.push(ChatTurnMessage::text("system", system_prompt));
     let latest_request = params
         .history
         .iter()
@@ -170,22 +166,38 @@ where
     // macOS where command execution is reserved for the Seatbelt-confined Keel CLI.
     let allow_shell = cfg!(not(target_os = "macos"))
         && crate::harnesses::code_execution_boundary().can_run_commands;
-    let tool_schemas = if params.app_preset != AppPreset::Chat
-        && (validated_ws.is_some() || !mcp_schemas.is_empty())
-    {
-        let base_allowed = if validated_ws.is_some() {
-            params.app_preset.tools_for_request(&latest_request)
-        } else {
-            &["run_sql"][..]
-        };
-        let filtered: Vec<&str> = base_allowed
+    let has_workspace = validated_ws.is_some();
+    let base_allowed: Vec<&str> = if params.app_preset == AppPreset::Chat {
+        params.app_preset.allowed_tools().to_vec()
+    } else if has_workspace {
+        params
+            .app_preset
+            .tools_for_request(&latest_request)
+            .to_vec()
+    } else {
+        // Without a folder, only tools that do not need workspace paths remain.
+        params
+            .app_preset
+            .allowed_tools()
             .iter()
             .copied()
-            .filter(|name| allow_shell || *name != "run_shell")
-            .collect();
-        openai_tool_schemas(&filtered, &mcp_schemas)
-    } else {
+            .filter(|name| matches!(*name, "run_sql" | "web_search"))
+            .collect()
+    };
+    let filtered: Vec<&str> = base_allowed
+        .into_iter()
+        .filter(|name| match *name {
+            "run_shell" => has_workspace && allow_shell,
+            "list_files" | "read_file" | "search_files" | "propose_edit" | "create_file"
+            | "delete_file" | "rename_file" => has_workspace,
+            "run_sql" | "web_search" => true,
+            _ => has_workspace,
+        })
+        .collect();
+    let tool_schemas = if filtered.is_empty() && mcp_schemas.is_empty() {
         Vec::new()
+    } else {
+        openai_tool_schemas(&filtered, &mcp_schemas)
     };
 
     let exposed_tools: HashSet<String> = tool_schemas
@@ -290,6 +302,7 @@ where
             content: visible_text,
             tool_call_id: None,
             tool_calls: Some(Value::Array(openai_tool_calls)),
+            image_urls: Vec::new(),
         });
 
         for tc in tool_calls {
@@ -371,6 +384,7 @@ where
                 content,
                 tool_call_id: Some(tc.id),
                 tool_calls: None,
+                image_urls: Vec::new(),
             });
 
             if breaker.is_tripped() {
@@ -598,6 +612,32 @@ where
             }
             Ok((run_shell_command(root, command).await?, None))
         }
+        "web_search" => {
+            let query = args
+                .get("query")
+                .and_then(|v| v.as_str())
+                .context("Missing `query`")?;
+            if !always_allowed.contains("web_search") {
+                let req_id = uuid::Uuid::new_v4().to_string();
+                let summary = format!("Search the web for: `{query}`");
+                emit(AgentEvent::ApprovalRequired {
+                    id: req_id.clone(),
+                    tool: "web_search".to_string(),
+                    summary: summary.clone(),
+                    arguments: args.clone(),
+                });
+                match ask_approval(req_id, "web_search".to_string(), summary, args.clone()).await {
+                    ApprovalDecision::AllowOnce => {}
+                    ApprovalDecision::AllowAlways => {
+                        always_allowed.insert("web_search".to_string());
+                    }
+                    ApprovalDecision::Deny => {
+                        bail!("User denied web search for `{query}`");
+                    }
+                }
+            }
+            Ok((web_search(query).await?, None))
+        }
         other => {
             let info = mcp_lookup
                 .get(other)
@@ -649,6 +689,21 @@ struct PartialToolCall {
     arguments: String,
 }
 
+fn api_messages(messages: &[ChatTurnMessage], include_images: bool) -> Vec<Value> {
+    messages
+        .iter()
+        .map(|message| {
+            if include_images {
+                message.to_api_value()
+            } else {
+                let mut stripped = message.clone();
+                stripped.strip_images();
+                stripped.to_api_value()
+            }
+        })
+        .collect()
+}
+
 async fn stream_completion<E>(
     client: &reqwest::Client,
     endpoint: &str,
@@ -661,9 +716,10 @@ async fn stream_completion<E>(
 where
     E: FnMut(AgentEvent),
 {
+    let had_images = messages.iter().any(ChatTurnMessage::has_images);
     let mut body = json!({
         "model": model,
-        "messages": messages,
+        "messages": api_messages(messages, true),
         "stream": true,
         "stream_options": { "include_usage": true },
         "chat_template_kwargs": { "enable_thinking": enable_thinking },
@@ -694,6 +750,24 @@ where
             obj.remove("stream_options");
         }
         if let Ok(retry_resp) = client.post(endpoint).json(&compat_body).send().await {
+            if retry_resp.status().is_success() {
+                resp = retry_resp;
+            }
+        }
+    }
+
+    // Text-only local models may reject multimodal content; fall back to OCR text alone.
+    if had_images && matches!(resp.status().as_u16(), 400 | 422) {
+        let mut text_only = body.clone();
+        if let Some(obj) = text_only.as_object_mut() {
+            obj.insert(
+                "messages".into(),
+                Value::Array(api_messages(messages, false)),
+            );
+            obj.remove("chat_template_kwargs");
+            obj.remove("stream_options");
+        }
+        if let Ok(retry_resp) = client.post(endpoint).json(&text_only).send().await {
             if retry_resp.status().is_success() {
                 resp = retry_resp;
             }
@@ -895,7 +969,10 @@ fn build_system_prompt(
     let mut parts = vec![preset.instructions().to_string()];
 
     if preset == AppPreset::Chat {
-        // Chat deliberately receives no workspace context or tool instructions.
+        parts.push(
+            "Chat tools: `web_search` only (user must approve). No workspace file or shell tools."
+                .to_string(),
+        );
     } else if let Some(ws) = workspace {
         let mode_note = if auto_apply {
             "File edits you make apply immediately to the workspace."
@@ -947,12 +1024,7 @@ mod tests {
             workspace_root: None,
             auto_apply_edits: false,
             enable_thinking: false,
-            history: vec![ChatTurnMessage {
-                role: "user".into(),
-                content: "Hello".into(),
-                tool_call_id: None,
-                tool_calls: None,
-            }],
+            history: vec![ChatTurnMessage::text("user", "Hello")],
             mcp_config: McpConfigFile::default(),
             mcp_tools: vec![],
             max_steps: 1,

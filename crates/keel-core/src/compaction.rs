@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatTurnMessage {
@@ -8,6 +9,55 @@ pub struct ChatTurnMessage {
     pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<serde_json::Value>,
+    /// Image data URLs for OpenAI-compatible multimodal `image_url` parts.
+    /// Skipped in ordinary JSON; `to_api_value` expands them into content parts.
+    #[serde(default, skip_serializing)]
+    pub image_urls: Vec<String>,
+}
+
+impl ChatTurnMessage {
+    pub fn text(role: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: role.into(),
+            content: content.into(),
+            tool_call_id: None,
+            tool_calls: None,
+            image_urls: Vec::new(),
+        }
+    }
+
+    /// OpenAI chat-completions message object, including multimodal content when present.
+    pub fn to_api_value(&self) -> Value {
+        let mut obj = serde_json::Map::new();
+        obj.insert("role".into(), Value::String(self.role.clone()));
+        if self.image_urls.is_empty() {
+            obj.insert("content".into(), Value::String(self.content.clone()));
+        } else {
+            let mut parts = vec![json!({"type": "text", "text": self.content})];
+            for url in &self.image_urls {
+                parts.push(json!({
+                    "type": "image_url",
+                    "image_url": { "url": url }
+                }));
+            }
+            obj.insert("content".into(), Value::Array(parts));
+        }
+        if let Some(id) = &self.tool_call_id {
+            obj.insert("tool_call_id".into(), Value::String(id.clone()));
+        }
+        if let Some(calls) = &self.tool_calls {
+            obj.insert("tool_calls".into(), calls.clone());
+        }
+        Value::Object(obj)
+    }
+
+    pub fn strip_images(&mut self) {
+        self.image_urls.clear();
+    }
+
+    pub fn has_images(&self) -> bool {
+        !self.image_urls.is_empty()
+    }
 }
 
 /// Rough token estimate (~4 characters per token, conservative for small local contexts).
@@ -20,7 +70,9 @@ pub fn estimate_tokens(messages: &[ChatTurnMessage]) -> usize {
                 .as_ref()
                 .map(|v| v.to_string().len())
                 .unwrap_or(0);
-            (m.content.len() + tc) / 4 + 8
+            // Budget roughly for vision tokens when image parts are attached.
+            let images = m.image_urls.len() * 768;
+            (m.content.len() + tc) / 4 + 8 + images
         })
         .sum()
 }
@@ -137,19 +189,12 @@ mod tests {
 
     #[test]
     fn compacts_when_exceeding_budget() {
-        let mut msgs = vec![ChatTurnMessage {
-            role: "system".to_string(),
-            content: "You are Keel.".to_string(),
-            tool_call_id: None,
-            tool_calls: None,
-        }];
+        let mut msgs = vec![ChatTurnMessage::text("system", "You are Keel.")];
         for i in 0..12 {
-            msgs.push(ChatTurnMessage {
-                role: if i % 2 == 0 { "user" } else { "assistant" }.to_string(),
-                content: "x".repeat(400),
-                tool_call_id: None,
-                tool_calls: None,
-            });
+            msgs.push(ChatTurnMessage::text(
+                if i % 2 == 0 { "user" } else { "assistant" },
+                "x".repeat(400),
+            ));
         }
         let (compacted, did_compact) = compact_messages(msgs, 500, 4);
         assert!(did_compact);
@@ -160,5 +205,16 @@ mod tests {
             .iter()
             .all(|message| message.role != "system"));
         assert_eq!(compacted.last().unwrap().content, "x".repeat(400));
+    }
+
+    #[test]
+    fn multimodal_api_value_includes_image_parts() {
+        let mut message = ChatTurnMessage::text("user", "What is in this picture?");
+        message.image_urls = vec!["data:image/png;base64,abc".into()];
+        let value = message.to_api_value();
+        let parts = value["content"].as_array().unwrap();
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[1]["type"], "image_url");
+        assert_eq!(parts[1]["image_url"]["url"], "data:image/png;base64,abc");
     }
 }
