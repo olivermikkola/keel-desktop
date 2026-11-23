@@ -2069,6 +2069,10 @@ pub async fn list_audio_packs(
 }
 
 /// Speech-to-text entry. Surfaces not-installed (and unwired-runner) errors as strings.
+///
+/// Soft VRAM check lives in `keel_core::audio::prepare_for_audio_pack` (total
+/// `nvidia_memory_mib` only). TODO: call `prepare_pack_vram` once `packs.rs`
+/// lands from the VRAM inventory PR.
 #[tauri::command]
 pub async fn run_audio_stt(
     state: State<'_, AppState>,
@@ -2083,6 +2087,9 @@ pub async fn run_audio_stt(
 }
 
 /// Text-to-speech entry. Surfaces not-installed (and unwired-runner) errors as strings.
+///
+/// Soft VRAM check lives in `keel_core::audio::prepare_for_audio_pack`. TODO:
+/// call `prepare_pack_vram` once `packs.rs` lands from the VRAM inventory PR.
 #[tauri::command]
 pub async fn run_audio_tts(
     state: State<'_, AppState>,

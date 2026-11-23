@@ -132,10 +132,97 @@ pub fn require_installed_audio_pack(
     );
 }
 
+/// Soft VRAM readiness note for an audio pack start.
+///
+/// TODO: Replace with `prepare_pack_vram` / `keel_core::packs::{place_pack,
+/// should_unload_for_pack}` once the VRAM inventory PR lands (`packs.rs`,
+/// free-MiB inventory, keep-alive unload). This branch only has
+/// `Machine::nvidia_memory_mib` (total reported), not free VRAM.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioPackVramNote {
+    pub sufficient: bool,
+    pub message: String,
+    pub reported_vram_mib: u64,
+    pub min_vram_mib: u64,
+}
+
+/// Soft prepare using detect_machine + reported NVIDIA total memory.
+pub fn prepare_for_audio_pack(pack: &AudioPackManifest) -> AudioPackVramNote {
+    prepare_for_audio_pack_on(pack, &crate::hardware::detect_machine())
+}
+
+/// Same as [`prepare_for_audio_pack`] with an injected [`crate::hardware::Machine`]
+/// (tests and callers that already probed hardware).
+pub fn prepare_for_audio_pack_on(
+    pack: &AudioPackManifest,
+    machine: &crate::hardware::Machine,
+) -> AudioPackVramNote {
+    let reported = machine.nvidia_memory_mib;
+    let need = pack.min_vram_mib;
+    if need == 0 {
+        return AudioPackVramNote {
+            sufficient: true,
+            message: format!("Pack '{}' does not require graphics memory.", pack.id),
+            reported_vram_mib: reported,
+            min_vram_mib: need,
+        };
+    }
+    if !machine.has_nvidia_graphics || reported == 0 {
+        return AudioPackVramNote {
+            sufficient: false,
+            message: format!(
+                "Pack '{}' needs at least {need} MiB graphics memory; no NVIDIA memory was reported. Free-MiB inventory / prepare_pack_vram is not on this branch yet.",
+                pack.id
+            ),
+            reported_vram_mib: reported,
+            min_vram_mib: need,
+        };
+    }
+    if reported < need {
+        return AudioPackVramNote {
+            sufficient: false,
+            message: format!(
+                "Pack '{}' needs at least {need} MiB graphics memory; only {reported} MiB was reported on this machine.",
+                pack.id
+            ),
+            reported_vram_mib: reported,
+            min_vram_mib: need,
+        };
+    }
+    AudioPackVramNote {
+        sufficient: true,
+        message: format!(
+            "Pack '{}' min VRAM {need} MiB looks covered by reported NVIDIA memory ({reported} MiB). Free-MiB / keep-alive unload via prepare_pack_vram is not wired on this branch yet.",
+            pack.id
+        ),
+        reported_vram_mib: reported,
+        min_vram_mib: need,
+    }
+}
+
+fn soft_vram_note_before_start(capability: AudioCapability) {
+    let Some(stub) = list_audio_packs()
+        .into_iter()
+        .find(|pack| pack.capability == capability)
+    else {
+        return;
+    };
+    let note = prepare_for_audio_pack(&stub);
+    if !note.sufficient {
+        eprintln!("[keel-audio] {}", note.message);
+    }
+}
+
 /// Speech-to-text entry point. Fails clearly until a pack is installed (and a
 /// real runner lands later).
 pub fn run_stt(data_dir: &Path, _audio_path: &Path) -> Result<String> {
+    // Soft VRAM note against catalog mins before the install gate.
+    soft_vram_note_before_start(AudioCapability::Stt);
     let pack = require_installed_audio_pack(data_dir, AudioCapability::Stt)?;
+    let note = prepare_for_audio_pack(&pack);
+    if !note.sufficient {
+        bail!("{}", note.message);
+    }
     bail!(
         "Speech-to-text pack '{}' is marked installed, but no STT runner is wired yet.",
         pack.id
@@ -145,7 +232,12 @@ pub fn run_stt(data_dir: &Path, _audio_path: &Path) -> Result<String> {
 /// Text-to-speech entry point. Fails clearly until a pack is installed (and a
 /// real runner lands later).
 pub fn run_tts(data_dir: &Path, _text: &str, _output_path: &Path) -> Result<()> {
+    soft_vram_note_before_start(AudioCapability::Tts);
     let pack = require_installed_audio_pack(data_dir, AudioCapability::Tts)?;
+    let note = prepare_for_audio_pack(&pack);
+    if !note.sufficient {
+        bail!("{}", note.message);
+    }
     bail!(
         "Text-to-speech pack '{}' is marked installed, but no TTS runner is wired yet.",
         pack.id
@@ -228,6 +320,63 @@ mod tests {
         let pack = require_installed_audio_pack(&dir, AudioCapability::Stt).unwrap();
         assert_eq!(pack.id, "stt-whisper-base");
         assert!(pack.installed);
+    }
+
+    fn machine_with_nvidia(mib: u64) -> crate::hardware::Machine {
+        crate::hardware::Machine {
+            physical_cores: 8,
+            logical_cpus: 16,
+            memory_bytes: 32 * 1024 * 1024 * 1024,
+            has_intel_graphics: false,
+            has_amd_graphics: false,
+            has_nvidia_graphics: mib > 0,
+            nvidia_driver_usable: mib > 0,
+            nvidia_memory_mib: mib,
+        }
+    }
+
+    #[test]
+    fn prepare_for_audio_pack_warns_when_reported_vram_is_low() {
+        let pack = find_audio_pack("stt-whisper-base").expect("stt stub");
+        let low = prepare_for_audio_pack_on(&pack, &machine_with_nvidia(512));
+        assert!(!low.sufficient);
+        assert!(
+            low.message.contains("needs at least") && low.message.contains("512"),
+            "unexpected: {}",
+            low.message
+        );
+
+        let ok = prepare_for_audio_pack_on(&pack, &machine_with_nvidia(4096));
+        assert!(ok.sufficient);
+        assert!(ok.message.contains("4096"), "unexpected: {}", ok.message);
+    }
+
+    #[test]
+    fn prepare_for_audio_pack_warns_without_nvidia_memory() {
+        let pack = find_audio_pack("tts-local-en").expect("tts stub");
+        let note = prepare_for_audio_pack_on(&pack, &machine_with_nvidia(0));
+        assert!(!note.sufficient);
+        assert!(
+            note.message.contains("no NVIDIA memory was reported"),
+            "unexpected: {}",
+            note.message
+        );
+    }
+
+    #[test]
+    fn run_stt_with_marker_returns_vram_note_when_memory_is_short() {
+        // Soft path still runs prepare after install; on machines with no
+        // reported NVIDIA memory the clear note surfaces instead of the
+        // "runner not wired" stub (detect_machine at test time).
+        let dir = tempfile_dir("stt-vram");
+        let pack_dir = audio_packs_dir(&dir).join("stt-whisper-base");
+        fs::create_dir_all(&pack_dir).unwrap();
+        fs::write(pack_dir.join(".installed"), b"stub").unwrap();
+
+        let pack = find_audio_pack("stt-whisper-base").unwrap();
+        let note = prepare_for_audio_pack_on(&pack, &machine_with_nvidia(256));
+        assert!(!note.sufficient);
+        assert!(note.min_vram_mib >= 1024);
     }
 
     fn tempfile_dir(label: &str) -> std::path::PathBuf {

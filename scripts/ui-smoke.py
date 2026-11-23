@@ -82,6 +82,12 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  case 'start_image_job': {
  const job={id:crypto.randomUUID(),request:args.request,workspace_path:args.workspacePath,status:'running',artifact_path:null,created_at:Date.now()/1000};jobs.unshift(job);result=job;
  setTimeout(()=>{job.status='succeeded';job.artifact_path='assets/keel-test.png';files.push(job.artifact_path);emit('keel://image-job',job);},250);break;}
+ case 'list_audio_packs': result=[
+  {id:'stt-whisper-base',capability:'stt',display_name:'Speech to text · Whisper base (stub)',min_vram_mib:1024,runner_kind:'audio_stt',download_url:null,installed:false},
+  {id:'tts-local-en',capability:'tts',display_name:'Text to speech · English (stub)',min_vram_mib:512,runner_kind:'audio_tts',download_url:null,installed:false}
+ ];break;
+ case 'run_audio_stt': throw new Error('No speech-to-text pack is installed. Download an audio pack from Settings before using speech-to-text.');
+ case 'run_audio_tts': throw new Error('No text-to-speech pack is installed. Download an audio pack from Settings before using text-to-speech.');
  default: throw new Error('Unexpected command '+cmd);
  }
  return structuredClone(result);
