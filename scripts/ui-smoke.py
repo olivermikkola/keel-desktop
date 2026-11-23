@@ -54,7 +54,7 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  case 'download_catalog_model':window.__test.includeDamaged=false;result=[{id:'test',name:'Test local model',installed:true,damaged:false,quantization:'Q4',bytes:1000000000,detail:'Fast local model',tier:'fast'}];break;
  case 'delete_model':window.__test.includeDamaged=false;result=[{id:'test',name:'Test local model',installed:true,damaged:false,quantization:'Q4',bytes:1000000000,detail:'Fast local model',tier:'fast'}];break;
  case 'pick_model_file':result=null;break;
- case 'set_external_endpoint':cfg.external_base_url=args.baseUrl;cfg.external_model_name=args.modelName || null;runtime={state:'external',active_model_id:null,base_url:args.baseUrl};result=runtime;break;
+ case 'set_external_endpoint':if(!String(args.baseUrl||'').match(/127\.0\.0\.1|localhost|\[::1\]/i) && !args.confirmRemote) throw new Error('This server is not on this computer.');cfg.external_base_url=args.baseUrl;cfg.external_model_name=args.modelName || null;runtime={state:'external',active_model_id:null,base_url:args.baseUrl};result=runtime;break;
  case 'connect_image_server':cfg.image_endpoint=args.endpoint;result=['Local checkpoint'];break;
  case 'read_workspace_png':result=''' + json.dumps(PNG) + r''';break;
  case 'read_workspace_file_raw':result=fileContent[args.relPath] || '# Local document';break;
@@ -375,11 +375,14 @@ async def main(port):
         await page.locator('#ws-ext-url').evaluate('(el) => { el.closest("details").open = true; }')
         await page.locator('#ws-ext-url').fill('https://models.example.com/v1')
         await page.locator('#ws-ext-name').fill('shared-qwen')
-        await page.locator('#ws-ext-notice').get_by_text('server you connect here', exact=False).wait_for()
+        await page.locator('#ws-ext-notice').get_by_text('Leaves this computer', exact=False).wait_for()
+        await page.locator('#ws-ext-notice').get_by_text('may incur provider cost', exact=False).wait_for()
+        await page.locator('#ws-ext-remote').check()
         await page.locator('#ws-ext-use').click()
+        await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='set_external_endpoint'&&c.args.confirmRemote===true)")
         await page.locator('#model-pill-label').get_by_text('shared-qwen · Remote', exact=True).wait_for()
         await page.locator('[data-view=chat]').click()
-        await page.locator('#telemetry-left').get_by_text('External model server', exact=False).wait_for()
+        await page.locator('#telemetry-left').get_by_text('Leaves this computer', exact=False).wait_for()
         # Switcher lets you jump back to built-in local AI in one click.
         await page.locator('#model-pill-btn').click()
         await page.locator('#switcher-use-builtin').click()

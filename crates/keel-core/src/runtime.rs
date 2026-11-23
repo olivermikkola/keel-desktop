@@ -451,6 +451,14 @@ pub fn find_llama_server(explicit: Option<&str>) -> Option<PathBuf> {
 
 /// Queries `/v1/models` on an OpenAI-compatible server to list available model IDs.
 pub async fn probe_openai_models(base_url: &str) -> Result<Vec<String>> {
+    probe_openai_models_with_auth(base_url, None).await
+}
+
+/// Like [`probe_openai_models`], optionally sending `Authorization: Bearer <key>`.
+pub async fn probe_openai_models_with_auth(
+    base_url: &str,
+    api_key: Option<&str>,
+) -> Result<Vec<String>> {
     let trimmed = base_url.trim().trim_end_matches('/');
     let parsed =
         reqwest::Url::parse(trimmed).context("Enter a valid http:// or https:// server URL")?;
@@ -462,7 +470,11 @@ pub async fn probe_openai_models(base_url: &str) -> Result<Vec<String>> {
         .timeout(Duration::from_secs(3))
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
-    let mut resp = client.get(&url).send().await?.error_for_status()?;
+    let mut request = client.get(&url);
+    if let Some(auth) = crate::remote::bearer_authorization(api_key) {
+        request = request.header(reqwest::header::AUTHORIZATION, auth);
+    }
+    let mut resp = request.send().await?.error_for_status()?;
     let mut body = Vec::new();
     const MAX_PROBE_BYTES: usize = 2 * 1024 * 1024;
     while let Some(chunk) = resp.chunk().await? {
@@ -851,6 +863,43 @@ mod runner_check_tests {
         ));
         assert!(is_loopback_url("http://127.0.0.1:11434/v1"));
         assert!(!is_loopback_url("https://models.example.com/v1"));
+    }
+
+    #[tokio::test]
+    async fn probe_sends_authorization_bearer_when_key_set() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let n = socket.read(&mut buf).await.unwrap();
+            let request = String::from_utf8_lossy(&buf[..n]).to_string();
+            let body = r#"{"data":[{"id":"remote-model"}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+            request
+        });
+        let ids =
+            probe_openai_models_with_auth(&format!("http://{addr}/v1"), Some("sk-fixture-key"))
+                .await
+                .unwrap();
+        assert_eq!(ids, vec!["remote-model".to_string()]);
+        let request = server.await.unwrap();
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer sk-fixture-key"),
+            "missing auth header in: {request}"
+        );
+        assert!(
+            request.starts_with("GET /v1/models"),
+            "unexpected request: {request}"
+        );
     }
 
     #[test]

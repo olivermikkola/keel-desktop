@@ -197,13 +197,17 @@ export function modelLocation(runtime) {
     const host = new URL(runtime?.base_url).hostname.toLowerCase();
     if (host === "localhost" || host === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(host)) return "Local model server";
   } catch { /* An invalid address cannot be confirmed as local. */ }
-  return "External model server";
+  return "Leaves this computer";
+}
+
+export function isRemoteModelServer(address) {
+  return modelLocation({ state: "external", base_url: address }) === "Leaves this computer";
 }
 
 export function serverDataNotice(address) {
-  return modelLocation({ state: "external", base_url: address }) === "Local model server"
-    ? "Keel sends prompts and relevant files to the model server on this computer."
-    : "Keel sends prompts and relevant files to the server you connect here.";
+  return isRemoteModelServer(address)
+    ? "Leaves this computer · may incur provider cost. Keel sends prompts and relevant files to this server."
+    : "Keel sends prompts and relevant files to the model server on this computer.";
 }
 
 export function assistantStatus({ runtime, waking, setup }) {
