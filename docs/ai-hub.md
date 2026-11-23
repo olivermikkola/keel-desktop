@@ -28,7 +28,7 @@ Successful images are written as new `assets/keel-<job-id>.png` files in the sel
 4. **Video:** asynchronous generation with engine-specific requirements, progress, cancellation semantics, and playable artifacts after image/audio jobs are dependable.
 5. **Explicit remote providers:** opt-in endpoint/auth configuration, secure credential storage, clear processing-location/cost labels, and no silent cloud fallback. A model still has to run somewhere when a user skips a local download.
 
-Images currently need a separately installed image server. System RAM detection is implemented for model sizing, while GPU/VRAM detection, audio/video backends, automatic media runtime installation, hosted-provider authentication, and web search are not implemented by this milestone.
+Images currently need a separately installed image server. Keel notices the graphics chip and keeps the chosen model loaded between messages, using the graphics-or-processor choice from Settings. **Check this model** asks three short questions (a saved preference, a number in a note, and a question the note does not answer). A model that fails is not offered as the one for this computer. Audio/video backends, automatic media runtime installation, hosted-provider authentication, and web search are not implemented.
 
 ## Verification
 

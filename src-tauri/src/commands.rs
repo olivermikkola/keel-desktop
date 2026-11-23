@@ -11,12 +11,14 @@ use keel_core::mcp::{
     load_workspace_mcp_config, save_global_mcp_config, save_workspace_mcp_config, McpScope,
     McpServerConfig, McpServerStatus, McpToolInfo,
 };
+use keel_core::model_check::{self, ModelCheckReport};
 use keel_core::models::{
     candidate_models_for_auto_start, catalog_download_url, delete_model_file, download_gguf,
     list_models, models_dir, parse_huggingface_gguf_url, CatalogModel,
 };
 use keel_core::runtime::{
-    check_runner_starts, find_llama_server, probe_openai_models, RuntimeManager, RuntimeStatus,
+    check_runner_starts, find_llama_server, probe_openai_models, ModelLaunch, RuntimeManager,
+    RuntimeStatus,
 };
 use keel_core::sessions::{
     delete_session, list_sessions, load_session, save_config, save_session, ChatSession,
@@ -29,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::{oneshot, watch, Mutex};
 use tokio::task::AbortHandle;
@@ -47,6 +49,15 @@ pub struct AppState {
     pub download_lock: Mutex<()>,
     pub setup_pause: Mutex<Option<watch::Sender<bool>>>,
     pub active_cli_stop: Mutex<Option<watch::Sender<bool>>>,
+    pub(crate) placement_cache: Mutex<Option<PlacementCache>>,
+}
+
+pub(crate) struct PlacementCache {
+    run_where: String,
+    graphics_share: String,
+    model_bytes: u64,
+    graphics_installed: bool,
+    advice: keel_core::hardware::ComputerAdvice,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -63,6 +74,9 @@ pub struct BootstrapState {
     pub mcp_servers: Vec<McpServerStatus>,
     pub ocr_available: bool,
     pub system_ram_gb: u64,
+    pub computer: keel_core::hardware::ComputerAdvice,
+    pub model_checks: std::collections::BTreeMap<String, ModelCheckReport>,
+    pub offered_model_id: String,
 }
 
 fn now_epoch() -> u64 {
@@ -87,6 +101,20 @@ pub async fn get_bootstrap_state(
     let ws_trusted = ws.map(|p| cfg.is_mcp_workspace_trusted(p)).unwrap_or(false);
     let loaded_mcp = load_mcp_configs_with_trust(&state.config_dir, ws, ws_trusted);
     let mcp_servers = inspect_mcp_servers_with_trust(&loaded_mcp, ws).await;
+    let selected_bytes = models
+        .iter()
+        .find(|model| model.id == cfg.selected_model_id)
+        .map(|model| model.bytes)
+        .unwrap_or(0);
+    let mut computer = cached_advice(&state, selected_bytes).await;
+    let model_checks = model_check::load_checks(&state.data_dir);
+    let failed: Vec<String> = model_checks
+        .iter()
+        .filter(|(_, report)| !report.passed)
+        .map(|(id, _)| id.clone())
+        .collect();
+    let offered_model_id = model_check::offered_model_id(&computer.recommended_model_id, &failed);
+    computer.recommended_model_id = offered_model_id.clone();
 
     Ok(BootstrapState {
         version: keel_core::version().to_string(),
@@ -101,6 +129,9 @@ pub async fn get_bootstrap_state(
         mcp_servers,
         ocr_available: keel_core::documents::ocr_available(),
         system_ram_gb: keel_core::setup::system_ram_gb(),
+        computer,
+        model_checks,
+        offered_model_id,
     })
 }
 
@@ -391,6 +422,153 @@ async fn resolve_or_install_engine(app: &AppHandle, state: &AppState) -> Result<
     Err("Keel's built-in AI engine isn't available on this computer yet. You can connect Ollama or LM Studio in Models.".to_string())
 }
 
+async fn cached_advice(state: &AppState, model_bytes: u64) -> keel_core::hardware::ComputerAdvice {
+    let cfg = state.config.lock().await.clone();
+    let graphics_installed =
+        keel_core::setup::installed_graphics_runtime(&state.data_dir).is_some();
+    {
+        let cache = state.placement_cache.lock().await;
+        if let Some(hit) = cache.as_ref() {
+            if hit.run_where == cfg.run_where
+                && hit.graphics_share == cfg.graphics_share
+                && hit.model_bytes == model_bytes
+                && hit.graphics_installed == graphics_installed
+            {
+                return hit.advice.clone();
+            }
+        }
+    }
+    let devices = keel_core::setup::installed_graphics_runtime(&state.data_dir)
+        .map(|bin| keel_core::hardware::probe_devices(&bin))
+        .unwrap_or_default();
+    let advice = keel_core::hardware::advise(
+        &keel_core::hardware::detect_machine(),
+        &cfg.run_where,
+        &cfg.graphics_share,
+        model_bytes,
+        &devices,
+    );
+    *state.placement_cache.lock().await = Some(PlacementCache {
+        run_where: cfg.run_where,
+        graphics_share: cfg.graphics_share,
+        model_bytes,
+        graphics_installed,
+        advice: advice.clone(),
+    });
+    advice
+}
+
+struct PreparedEngine {
+    path: PathBuf,
+    devices: Vec<keel_core::hardware::GraphicsDevice>,
+}
+
+/// Picks the graphics build when that is the fast path, and the processor
+/// build otherwise. A failed graphics install stays on the processor.
+async fn prepare_launch_engine(
+    app: &AppHandle,
+    state: &AppState,
+) -> Result<PreparedEngine, String> {
+    let cfg = state.config.lock().await.clone();
+    let machine = keel_core::hardware::detect_machine();
+    let already = keel_core::setup::installed_graphics_runtime(&state.data_dir).is_some();
+    let want = keel_core::hardware::should_prepare_graphics(
+        &cfg.run_where,
+        machine.graphics_chip(),
+        already,
+    );
+    let path = if want {
+        match prepare_graphics_engine(app, state).await {
+            Ok(path) => path,
+            Err(_) => resolve_or_install_engine(app, state).await?,
+        }
+    } else {
+        resolve_or_install_engine(app, state).await?
+    };
+    let devices = keel_core::hardware::probe_devices(&path);
+    Ok(PreparedEngine { path, devices })
+}
+
+async fn prepare_graphics_engine(app: &AppHandle, state: &AppState) -> Result<PathBuf, String> {
+    if let Some(path) = keel_core::setup::installed_graphics_runtime(&state.data_dir) {
+        if check_runner_starts(&path).is_ok() {
+            return Ok(path);
+        }
+    }
+    let explicit = state.config.lock().await.llama_server_path.clone();
+    if let Some(path) = keel_core::hardware::graphics_binary(explicit.as_deref()) {
+        if check_runner_starts(&path).is_ok() {
+            return Ok(path);
+        }
+    }
+    if keel_core::setup::graphics_runtime_asset().is_none() {
+        return Err("The graphics chip can't be used on this computer yet.".into());
+    }
+    let _download = state.download_lock.lock().await;
+    if let Some(path) = keel_core::setup::installed_graphics_runtime(&state.data_dir) {
+        if check_runner_starts(&path).is_ok() {
+            return Ok(path);
+        }
+    }
+    keel_core::setup::install_graphics_runtime(&state.data_dir, |prog| {
+        let _ = app.emit("keel://download-progress", prog);
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+fn launch_for<'a>(
+    model_id: &'a str,
+    model_path: &'a Path,
+    context_size: u32,
+    bin: &'a str,
+    advice: &'a keel_core::hardware::ComputerAdvice,
+    cfg: &'a DesktopConfig,
+) -> ModelLaunch<'a> {
+    ModelLaunch {
+        model_id,
+        model_path,
+        context_size,
+        custom_bin: Some(bin),
+        offload_args: &advice.args,
+        run_where: &cfg.run_where,
+        graphics_share: &cfg.graphics_share,
+        settings_bin: cfg.llama_server_path.as_deref(),
+    }
+}
+
+/// Keeps the managed runner when the model and the graphics-or-processor choice
+/// have not changed. The next message does not pay for another load.
+async fn loaded_model_can_stay(state: &AppState) -> Option<RuntimeStatus> {
+    let cfg = state.config.lock().await.clone();
+    if cfg.external_base_url.is_some() {
+        return None;
+    }
+    let models = list_models(&state.data_dir, &cfg.custom_model_paths);
+    let model = models
+        .iter()
+        .find(|m| m.id == cfg.selected_model_id && m.installed && !m.damaged)?;
+    let path = model.local_path.as_deref()?;
+    let ctx = keel_core::setup::effective_context_size(
+        model.context_size,
+        cfg.context_window,
+        keel_core::setup::system_ram_gb(),
+    );
+    let mut rt = state.runtime.lock().await;
+    if rt.still_loaded(
+        &model.id,
+        path,
+        ctx,
+        &cfg.run_where,
+        &cfg.graphics_share,
+        cfg.llama_server_path.as_deref(),
+    ) {
+        Some(rt.status())
+    } else {
+        None
+    }
+}
+
 async fn auto_start_local_model(
     app: &AppHandle,
     state: &AppState,
@@ -398,15 +576,37 @@ async fn auto_start_local_model(
     {
         let mut rt = state.runtime.lock().await;
         let current = rt.status();
-        if matches!(current.state.as_str(), "running" | "external") {
+        if current.state == "external" {
             return Ok(current);
         }
     }
+    if let Some(status) = loaded_model_can_stay(state).await {
+        return Ok(status);
+    }
     let cfg_snapshot = state.config.lock().await.clone();
     let models = list_models(&state.data_dir, &cfg_snapshot.custom_model_paths);
-    let preferred_id = cfg_snapshot.selected_model_id.clone();
+    let failed = model_check::failed_model_ids(&state.data_dir);
+    let preferred_id = if failed
+        .iter()
+        .any(|id| id == &cfg_snapshot.selected_model_id)
+    {
+        model_check::offered_model_id(&cfg_snapshot.selected_model_id, &failed)
+    } else {
+        cfg_snapshot.selected_model_id.clone()
+    };
     let preferred = models.iter().find(|m| m.id == preferred_id).cloned();
-    let candidates = candidate_models_for_auto_start(&models, &preferred_id);
+    let mut pool: Vec<CatalogModel> = models
+        .iter()
+        .filter(|model| !failed.iter().any(|id| id == &model.id))
+        .cloned()
+        .collect();
+    let pool_can_start = pool
+        .iter()
+        .any(|model| model.installed && !model.damaged && model.local_path.is_some());
+    if !pool_can_start {
+        pool.clone_from(&models);
+    }
+    let candidates = candidate_models_for_auto_start(&pool, &preferred_id);
     if candidates.is_empty() {
         if models.iter().any(|m| m.damaged) {
             return Err("Your downloaded model looks damaged. Open Models and click Repair to download a clean copy.".to_string());
@@ -414,8 +614,8 @@ async fn auto_start_local_model(
         return Err("Your AI isn't set up yet. Click Set up my AI to get started.".to_string());
     }
 
-    let engine = resolve_or_install_engine(app, state).await?;
-    let engine_str = engine.to_string_lossy().into_owned();
+    let prepared = prepare_launch_engine(app, state).await?;
+    let engine_str = prepared.path.to_string_lossy().into_owned();
     let mut last_error: Option<String> = None;
 
     for cand in candidates {
@@ -426,10 +626,25 @@ async fn auto_start_local_model(
         let ram_gb = keel_core::setup::system_ram_gb();
         let ctx_size =
             keel_core::setup::effective_context_size(cand.context_size, configured_ctx, ram_gb);
+        let cfg_now = state.config.lock().await.clone();
+        let advice = keel_core::hardware::advise(
+            &keel_core::hardware::detect_machine(),
+            &cfg_now.run_where,
+            &cfg_now.graphics_share,
+            cand.bytes,
+            &prepared.devices,
+        );
         let started = {
             let mut rt = state.runtime.lock().await;
-            rt.start_model(&cand.id, Path::new(path_str), ctx_size, Some(&engine_str))
-                .await
+            rt.start_model(launch_for(
+                &cand.id,
+                Path::new(path_str),
+                ctx_size,
+                &engine_str,
+                &advice,
+                &cfg_now,
+            ))
+            .await
         };
         match started {
             Ok(status) => {
@@ -500,8 +715,15 @@ pub async fn start_model(
         .local_path
         .ok_or_else(|| format!("{} isn't downloaded yet.", model.name))?;
 
-    let engine = resolve_or_install_engine(&app, &state).await?;
-    let engine_str = engine.to_string_lossy().into_owned();
+    let prepared = prepare_launch_engine(&app, &state).await?;
+    let engine_str = prepared.path.to_string_lossy().into_owned();
+    let advice = keel_core::hardware::advise(
+        &keel_core::hardware::detect_machine(),
+        &cfg_snapshot.run_where,
+        &cfg_snapshot.graphics_share,
+        model.bytes,
+        &prepared.devices,
+    );
 
     let ram_gb = keel_core::setup::system_ram_gb();
     let ctx_size = keel_core::setup::effective_context_size(
@@ -511,9 +733,16 @@ pub async fn start_model(
     );
     let status = {
         let mut rt = state.runtime.lock().await;
-        rt.start_model(&model.id, Path::new(&path_str), ctx_size, Some(&engine_str))
-            .await
-            .map_err(|e| e.to_string())?
+        rt.start_model(launch_for(
+            &model.id,
+            Path::new(&path_str),
+            ctx_size,
+            &engine_str,
+            &advice,
+            &cfg_snapshot,
+        ))
+        .await
+        .map_err(|e| e.to_string())?
     };
 
     let mut cfg = state.config.lock().await;
@@ -530,6 +759,47 @@ pub async fn auto_start_model(
     state: State<'_, AppState>,
 ) -> Result<RuntimeStatus, String> {
     auto_start_local_model(&app, &state).await
+}
+
+#[tauri::command]
+pub async fn check_current_model(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ModelCheckReport, String> {
+    let _turn = state
+        .turn_lock
+        .try_lock()
+        .map_err(|_| "Wait for the current reply to finish.".to_string())?;
+    let mut status = state.runtime.lock().await.status();
+    if !matches!(status.state.as_str(), "running" | "external") {
+        status = auto_start_local_model(&app, &state).await?;
+    }
+    let model_id = status
+        .active_model_id
+        .clone()
+        .filter(|id| !id.trim().is_empty())
+        .ok_or_else(|| {
+            "Your AI isn't ready yet. Start it in Models, then try the check again.".to_string()
+        })?;
+    let report = model_check::run_model_check(&status.base_url, &model_id)
+        .await
+        .map_err(|_| {
+            "This model didn't answer the check. Make sure your AI is running and try again."
+                .to_string()
+        })?;
+    if report
+        .items
+        .iter()
+        .all(|item| item.detail == "This question didn't finish.")
+    {
+        return Err(
+            "This model didn't answer the check. Make sure your AI is running and try again."
+                .into(),
+        );
+    }
+    model_check::save_report(&state.data_dir, &report)
+        .map_err(|_| "The check finished, but Keel couldn't save it.".to_string())?;
+    Ok(report)
 }
 
 #[tauri::command]
@@ -839,6 +1109,7 @@ pub async fn send_message(
         let prompt_owned = input.prompt.clone();
         let base_url = rt_status.base_url.clone();
         let model_id = rt_status.active_model_id.clone();
+        let started = Instant::now();
         let handle = tokio::spawn(async move {
             run_external_harness(
                 &harness_mode,
@@ -885,6 +1156,7 @@ pub async fn send_message(
                 prompt_tokens: 0,
                 completion_tokens: 0,
                 tokens_per_sec: 0.0,
+                elapsed_secs: started.elapsed().as_secs_f64(),
             },
         );
         return Ok(session);
@@ -1138,6 +1410,7 @@ async fn stream_keel_cli(
     let (stop, receiver) = watch::channel(false);
     *state.active_cli_stop.lock().await = Some(stop);
     let mut recording_error = None;
+    let started = Instant::now();
     let result = run_keel_cli_turn(
         KeelCliTurn {
             root: &root,
@@ -1186,6 +1459,7 @@ async fn stream_keel_cli(
                     prompt_tokens: 0,
                     completion_tokens: 0,
                     tokens_per_sec: 0.0,
+                    elapsed_secs: started.elapsed().as_secs_f64(),
                 };
                 let _ = app.emit("keel://agent-event", &event);
                 recorder.record(&event)
@@ -1323,6 +1597,10 @@ pub struct CustomizeUpdate {
     pub llama_server_path: Option<String>,
     #[serde(default)]
     pub context_window: Option<u32>,
+    #[serde(default)]
+    pub run_where: Option<String>,
+    #[serde(default)]
+    pub graphics_share: Option<String>,
 }
 
 #[tauri::command]
@@ -1337,6 +1615,12 @@ pub async fn save_customize_settings(
     cfg.llama_server_path = update.llama_server_path.filter(|s| !s.trim().is_empty());
     if let Some(ctx) = update.context_window {
         cfg.context_window = if ctx == 0 { 0 } else { ctx.clamp(2048, 32768) };
+    }
+    if let Some(run_where) = update.run_where {
+        cfg.run_where = keel_core::hardware::canonical_run_where(&run_where);
+    }
+    if let Some(graphics_share) = update.graphics_share {
+        cfg.graphics_share = keel_core::hardware::canonical_graphics_share(&graphics_share);
     }
     save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
     Ok(cfg.clone())

@@ -123,8 +123,10 @@ export function friendlyRuntimeError(raw) {
 }
 
 /** Plain-language tier label for a model card; never exposes quant names or file formats. */
-export function modelTierLabel(model) {
+export function modelTierLabel(model, suggestedId) {
   if (model?.damaged) return "Needs repair";
+  if (model?.checkPassed === false) return "Didn't pass the check";
+  if (suggestedId && model?.id === suggestedId) return "Good fit";
   switch (model?.tier) {
     case "fast": return "Fast";
     case "balanced": return "Recommended";
@@ -134,16 +136,50 @@ export function modelTierLabel(model) {
   }
 }
 
+/** Everyday labels for where the model runs. No engine or chip names. */
+export function speedSettingsCopy() {
+  return {
+    where: "Where should the model run?",
+    whereOptions: [
+      ["auto", "Automatic"],
+      ["graphics", "Graphics chip"],
+      ["processor", "Processor"],
+    ],
+    share: "How much of the model sits on the graphics chip?",
+    shareOptions: [
+      ["auto", "Automatic"],
+      ["full", "All of it"],
+      ["partial", "Some of it"],
+    ],
+    later: "The next message uses this. Keel keeps the model loaded until you change it.",
+  };
+}
+
+/** Status-line phrase for the previous reply. Empty when there isn't one yet. */
+export function answerTimePhrase(seconds) {
+  const n = Math.round(Number(seconds));
+  if (!Number.isFinite(n) || n < 1) return "";
+  return n === 1 ? "last answer took 1 second" : `last answer took ${n} seconds`;
+}
+
+export function modelCheckIntro() {
+  return "Three short questions: a saved preference, a number in a note, and a question the note does not answer.";
+}
+
 /** Which installed model to start automatically when the app opens, or null. */
 export function modelToWake(bootstrap) {
   if (!bootstrap || bootstrap.config?.external_base_url) return null;
   if (!["stopped", "error"].includes(bootstrap.runtime?.state)) return null;
   const wanted = bootstrap.config?.selected_model_id;
-  const healthy = (bootstrap.models || []).filter((m) => m.installed && !m.damaged);
+  const failed = (id) => bootstrap.model_checks?.[id]?.passed === false;
+  const installed = (bootstrap.models || []).filter((m) => m.installed && !m.damaged);
+  const healthy = installed.filter((m) => !failed(m.id));
+  const pool = healthy.length ? healthy : installed;
   const chosen =
-    healthy.find((m) => m.id === wanted) ||
-    healthy.find((m) => m.tier !== "desktop") ||
-    healthy[0];
+    pool.find((m) => m.id === wanted) ||
+    pool.find((m) => m.id === bootstrap.offered_model_id) ||
+    pool.find((m) => m.tier !== "desktop") ||
+    pool[0];
   return chosen ? chosen.id : null;
 }
 

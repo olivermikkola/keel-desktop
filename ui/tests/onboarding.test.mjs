@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assistantStatus, createProgressTracker, formatEta, formatSpeed, friendlyRuntimeError, friendlySetupError, isFirstRun, modelLocation, modelTierLabel, modelToWake, serverDataNotice, stepStates } from "../onboarding.js";
+import { assistantStatus, createProgressTracker, formatEta, formatSpeed, friendlyRuntimeError, friendlySetupError, isFirstRun, modelLocation, modelTierLabel, modelToWake, serverDataNotice, speedSettingsCopy, answerTimePhrase, modelCheckIntro, stepStates } from "../onboarding.js";
 
 const MB = 1024 * 1024;
 
@@ -142,6 +142,32 @@ test("modelToWake skips damaged models and recovers from error state", () => {
   );
   assert.equal(modelTierLabel({ tier: "fast" }), "Fast");
   assert.equal(modelTierLabel({ tier: "balanced" }), "Recommended");
+  assert.equal(modelTierLabel({ id: "bonsai-4b", tier: "balanced" }, "bonsai-4b"), "Good fit");
+  assert.equal(modelTierLabel({ id: "bonsai-9b", tier: "balanced", checkPassed: false }, "bonsai-9b"), "Didn't pass the check");
   assert.equal(modelTierLabel({ tier: "desktop" }), "Most capable");
   assert.equal(modelTierLabel({ tier: "balanced", damaged: true }), "Needs repair");
+  assert.equal(
+    modelToWake({
+      runtime: { state: "stopped" },
+      config: { selected_model_id: "bonsai-9b" },
+      offered_model_id: "bonsai-4b",
+      model_checks: { "bonsai-9b": { passed: false } },
+      models: [
+        { id: "bonsai-9b", installed: true, damaged: false, tier: "balanced" },
+        { id: "bonsai-4b", installed: true, damaged: false, tier: "fast" },
+      ],
+    }),
+    "bonsai-4b",
+  );
+});
+
+test("answer time and the model check speak in everyday words", () => {
+  assert.equal(answerTimePhrase(0), "");
+  assert.equal(answerTimePhrase(1.2), "last answer took 1 second");
+  assert.equal(answerTimePhrase(12.4), "last answer took 12 seconds");
+  const copy = speedSettingsCopy();
+  assert.match(copy.where, /Where should the model run/);
+  assert.equal(copy.whereOptions[1][1], "Graphics chip");
+  assert.match(modelCheckIntro(), /saved preference/);
+  assert.doesNotMatch(modelCheckIntro(), /GPU|token|llama/i);
 });

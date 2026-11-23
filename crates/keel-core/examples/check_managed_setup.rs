@@ -8,12 +8,16 @@ async fn main() -> Result<()> {
     let runner = keel_core::setup::install_runtime(&directory, |_| {}).await?;
     let mut runtime = keel_core::runtime::RuntimeManager::new(19182);
     let status = runtime
-        .start_model(
-            "setup-smoke",
-            std::path::Path::new(&model),
-            4096,
-            runner.to_str(),
-        )
+        .start_model(keel_core::runtime::ModelLaunch {
+            model_id: "setup-smoke",
+            model_path: std::path::Path::new(&model),
+            context_size: 4096,
+            custom_bin: runner.to_str(),
+            offload_args: &[],
+            run_where: "processor",
+            graphics_share: "auto",
+            settings_bin: None,
+        })
         .await?;
     anyhow::ensure!(status.state == "running", "Expected a live managed runtime");
     let models = keel_core::runtime::probe_openai_models(&status.base_url).await?;

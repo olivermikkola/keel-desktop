@@ -68,6 +68,7 @@ fn main() {
         download_lock: Mutex::new(()),
         setup_pause: Mutex::new(None),
         active_cli_stop: Mutex::new(None),
+        placement_cache: Mutex::new(None),
     };
 
     let app = tauri::Builder::default()
@@ -134,6 +135,7 @@ fn main() {
             commands::delete_session_cmd,
             commands::start_model,
             commands::auto_start_model,
+            commands::check_current_model,
             commands::stop_runtime,
             commands::get_runtime_status,
             commands::set_external_endpoint,

@@ -1,6 +1,6 @@
 import { createEveryday } from "./everyday.js";
 import { createImageWorkspace } from "./images.js";
-import { assistantStatus, friendlyRuntimeError, friendlySetupError, isFirstRun, modelLocation, modelTierLabel, modelToWake, serverDataNotice } from "./onboarding.js";
+import { assistantStatus, friendlyRuntimeError, friendlySetupError, isFirstRun, modelLocation, modelTierLabel, modelToWake, serverDataNotice, speedSettingsCopy, answerTimePhrase, modelCheckIntro } from "./onboarding.js";
 import { MODES, modeForPreset, isRuntimeLive, promptBlockReason } from "./modes.js";
 import { escapeHtml, renderMarkdown } from "./markdown.js";
 import {
@@ -55,6 +55,7 @@ const appState = {
   modelSwitcherOpen: false,
   waking: false,
   sendWhenReady: false,
+  lastAnswerSeconds: 0,
   appearance: loadAppearance(),
 };
 
@@ -795,7 +796,9 @@ function renderHeader() {
   els.diffsPillBtn.classList.toggle("has-pending", counts.pending > 0);
   els.telemetryRight.textContent = `Keel v${b.version}`;
   if (!appState.streaming) {
-    els.telemetryLeft.textContent = appState.sendWhenReady ? "Your message sends as soon as your AI is ready" : isBusy ? "Waking up your AI. This takes a few seconds." : isRuntimeLive(rt) ? `${location} · ${appState.session?.messages.length || 0} messages` : "Your AI is off. Send a message to start it.";
+    const took = answerTimePhrase(appState.lastAnswerSeconds);
+    const live = `${location} · ${appState.session?.messages.length || 0} messages${took ? ` · ${took}` : ""}`;
+    els.telemetryLeft.textContent = appState.sendWhenReady ? "Your message sends as soon as your AI is ready" : isBusy ? "Waking up your AI. This takes a few seconds." : isRuntimeLive(rt) ? live : "Your AI is off. Send a message to start it.";
   }
   const mode = modeForPreset(appState.session?.app_preset);
   els.promptInput.placeholder = MODES[mode].placeholder;
@@ -914,6 +917,20 @@ async function removeLocalModel(modelId) {
   );
 }
 
+function tierLabel(model) {
+  const b = appState.bootstrap;
+  const failed = b?.model_checks?.[model.id]?.passed === false;
+  return modelTierLabel(failed ? { ...model, checkPassed: false } : model, b?.offered_model_id);
+}
+
+function checkResultHtml(report) {
+  if (!report) return `<p class="muted">${escapeHtml(modelCheckIntro())}</p>`;
+  const items = (report.items || [])
+    .map((item) => `<li>${escapeHtml(item.detail || item.name || "")}</li>`)
+    .join("");
+  return `<p>${escapeHtml(report.summary || "")}</p>${items ? `<ul class="check-list">${items}</ul>` : ""}`;
+}
+
 function renderModelSwitcher() {
   const menu = els.modelSwitcherMenu;
   const b = appState.bootstrap;
@@ -952,7 +969,7 @@ function renderModelSwitcher() {
     html += `<div class="switcher-section-label">ON THIS COMPUTER</div>`;
     for (const m of healthy) {
       const isActive = rt.state === "running" && rt.active_model_id === m.id;
-      const tier = modelTierLabel(m);
+      const tier = tierLabel(m);
       html += `
         <button type="button" class="switcher-item ${isActive ? "active" : ""}" data-switch-model="${escapeHtml(m.id)}" role="menuitem" ${busy ? "disabled" : ""}>
           <span class="switcher-item-main">
@@ -1202,9 +1219,13 @@ function handleAgentEvent(ev) {
     els.telemetryLeft.textContent = "Waiting for approval";
     renderApprovalCard(ev);
   } else if (ev.type === "turn_finished") {
+    const fromServer = Number(ev.elapsed_secs);
+    const fromClock = streamingStartedAt ? (Date.now() - streamingStartedAt) / 1000 : 0;
+    appState.lastAnswerSeconds = fromServer > 0 ? fromServer : fromClock;
     const tps = Number(ev.tokens_per_sec) > 0 ? ` · ${ev.tokens_per_sec.toFixed(1)} tok/s` : "";
     const toks = Number(ev.completion_tokens) > 0 ? ` · ${ev.completion_tokens} tokens` : "";
-    els.telemetryLeft.textContent = `${modelLocation(appState.bootstrap.runtime)}${tps}${toks || " · Finished"}`;
+    const took = answerTimePhrase(appState.lastAnswerSeconds);
+    els.telemetryLeft.textContent = `${modelLocation(appState.bootstrap.runtime)}${took ? ` · ${took}` : ""}${tps}${toks || " · Finished"}`;
   }
   updateStreamingNode();
   if (["staged_edit_added", "turn_finished"].includes(ev.type)) {
@@ -1618,7 +1639,7 @@ function renderModelsWorkspace() {
       const isRunning = rt.active_model_id === m.id && rt.state === "running";
       const isSelected = inspected?.id === m.id;
       const isThisBusy = appState.busyModelId === m.id;
-      const tier = modelTierLabel(m);
+      const tier = tierLabel(m);
       const badgeClass = m.damaged ? "model-badge warn" : isRunning ? "model-badge live" : "model-badge";
       const badgeText = m.damaged ? "Needs repair" : isRunning ? "In use" : tier;
       const fit = !m.damaged ? modelFitLabel(m.bytes, b.system_ram_gb) : "";
@@ -2321,6 +2342,78 @@ function openDiffsModal() {
 function openCustomizeModal() {
   const b = appState.bootstrap;
   openModal("Settings", (body) => {
+    const speedCopy = speedSettingsCopy();
+    let runWhere = b.config.run_where || "auto";
+    let graphicsShare = b.config.graphics_share || "auto";
+    const speedCard = document.createElement("div");
+    speedCard.className = "card";
+    const segButtons = (options, current, attr) =>
+      options
+        .map(
+          ([id, label]) =>
+            `<button type="button" class="seg-btn ${current === id ? "active" : ""}" data-${attr}="${id}">${label}</button>`,
+        )
+        .join("");
+    speedCard.innerHTML = `
+      <strong>${speedCopy.where}</strong>
+      <div class="seg-group">${segButtons(speedCopy.whereOptions, runWhere, "run-where")}</div>
+      <strong>${speedCopy.share}</strong>
+      <div class="seg-group">${segButtons(speedCopy.shareOptions, graphicsShare, "graphics-share")}</div>
+      <p class="muted" id="speed-summary">${escapeHtml(b.computer?.summary || "Automatic chooses where the model runs on this computer.")}</p>
+      <p class="muted">${speedCopy.later}</p>
+    `;
+    const paintSpeed = () => {
+      speedCard.querySelectorAll("[data-run-where]").forEach((btn) => {
+        btn.classList.toggle("active", btn.getAttribute("data-run-where") === runWhere);
+      });
+      const onProcessor = runWhere === "processor";
+      speedCard.querySelectorAll("[data-graphics-share]").forEach((btn) => {
+        btn.disabled = onProcessor;
+        btn.classList.toggle("active", !onProcessor && btn.getAttribute("data-graphics-share") === graphicsShare);
+      });
+    };
+    speedCard.querySelectorAll("[data-run-where]").forEach((btn) => {
+      btn.onclick = () => {
+        runWhere = btn.getAttribute("data-run-where");
+        paintSpeed();
+      };
+    });
+    speedCard.querySelectorAll("[data-graphics-share]").forEach((btn) => {
+      btn.onclick = () => {
+        if (runWhere === "processor") return;
+        graphicsShare = btn.getAttribute("data-graphics-share");
+        paintSpeed();
+      };
+    });
+    paintSpeed();
+    body.appendChild(speedCard);
+
+    const checkCard = document.createElement("div");
+    checkCard.className = "card";
+    const activeId = b.runtime?.active_model_id || b.config?.selected_model_id;
+    const known = b.model_checks?.[activeId];
+    checkCard.innerHTML = `
+      <strong>Check this model</strong>
+      <div id="model-check-result">${known ? checkResultHtml(known) : `<p class="muted">${escapeHtml(modelCheckIntro())}</p>`}</div>
+      <button id="check-model" type="button" class="btn btn-sm">Check this model</button>
+    `;
+    checkCard.querySelector("#check-model").onclick = async () => {
+      const button = checkCard.querySelector("#check-model");
+      const slot = checkCard.querySelector("#model-check-result");
+      button.disabled = true;
+      slot.innerHTML = `<p class="muted">Checking… this usually takes under a minute.</p>`;
+      try {
+        const report = await invoke("check_current_model");
+        await refreshBootstrap();
+        slot.innerHTML = checkResultHtml(report);
+      } catch (err) {
+        slot.innerHTML = `<p class="muted">${escapeHtml(friendlyRuntimeError(err))}</p>`;
+      } finally {
+        button.disabled = false;
+      }
+    };
+    body.appendChild(checkCard);
+
     const ap = appState.appearance;
     const appearanceCard = document.createElement("div");
     appearanceCard.className = "card";
@@ -2459,6 +2552,8 @@ function openCustomizeModal() {
     card.querySelector("#cust-save").onclick = async () => {
       const prevCtx = b.config.context_window || 0;
       const nextCtx = Number(card.querySelector("#cust-ctx")?.value || 0);
+      const prevWhere = b.config.run_where || "auto";
+      const prevShare = b.config.graphics_share || "auto";
       try {
         await invoke("save_customize_settings", {
           update: {
@@ -2467,15 +2562,18 @@ function openCustomizeModal() {
             harness_mode: card.querySelector("#cust-harness").value,
             llama_server_path: card.querySelector("#cust-llama").value || null,
             context_window: nextCtx,
+            run_where: runWhere,
+            graphics_share: graphicsShare,
           },
         });
         await refreshBootstrap();
         renderHeader();
         closeModal();
-        const restartNeeded = prevCtx !== nextCtx && appState.bootstrap?.runtime?.state === "running";
+        const running = appState.bootstrap?.runtime?.state === "running";
+        const changed = prevCtx !== nextCtx || prevWhere !== runWhere || prevShare !== graphicsShare;
         showToast(
-          restartNeeded
-            ? "Settings saved. Restart the model in Models to apply the new context window."
+          running && changed
+            ? "Settings saved. The next message uses this."
             : "Settings saved.",
         );
       } catch (err) {

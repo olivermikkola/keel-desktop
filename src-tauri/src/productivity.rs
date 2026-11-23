@@ -216,10 +216,23 @@ pub async fn get_setup_plan(
     state: State<'_, AppState>,
 ) -> Result<keel_core::setup::SetupPlan, String> {
     let cfg = state.config.lock().await;
-    Ok(keel_core::setup::plan(
-        &state.data_dir,
-        cfg.llama_server_path.as_deref(),
-    ))
+    let mut plan = keel_core::setup::plan(&state.data_dir, cfg.llama_server_path.as_deref());
+    let failed = keel_core::model_check::failed_model_ids(&state.data_dir);
+    let offered = keel_core::model_check::offered_model_id(&plan.recommended_model.id, &failed);
+    if offered != plan.recommended_model.id {
+        if let Some(model) = keel_core::models::default_catalog()
+            .into_iter()
+            .find(|model| model.id == offered)
+        {
+            plan.fast_model = keel_core::hardware::lighter_model_id(&offered).and_then(|id| {
+                keel_core::models::default_catalog()
+                    .into_iter()
+                    .find(|model| model.id == id)
+            });
+            plan.recommended_model = model;
+        }
+    }
+    Ok(plan)
 }
 
 #[tauri::command]
