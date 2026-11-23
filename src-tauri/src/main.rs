@@ -157,6 +157,7 @@ fn main() {
             commands::save_customize_settings,
             commands::save_mcp_server,
             commands::remove_mcp_server,
+            commands::set_workspace_mcp_trust,
             commands::refresh_mcp_servers,
         ])
         .build(tauri::generate_context!())

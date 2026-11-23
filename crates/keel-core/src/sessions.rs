@@ -21,6 +21,8 @@ pub struct DesktopConfig {
     pub harness_mode: String,
     pub custom_model_paths: HashMap<String, String>,
     pub recent_workspaces: Vec<String>,
+    #[serde(default)]
+    pub trusted_mcp_workspaces: Vec<String>,
 }
 
 impl Default for DesktopConfig {
@@ -37,6 +39,34 @@ impl Default for DesktopConfig {
             harness_mode: "keel".to_string(),
             custom_model_paths: HashMap::new(),
             recent_workspaces: Vec::new(),
+            trusted_mcp_workspaces: Vec::new(),
+        }
+    }
+}
+
+impl DesktopConfig {
+    pub fn normalize_workspace_key(workspace: &Path) -> String {
+        std::fs::canonicalize(workspace)
+            .unwrap_or_else(|_| workspace.to_path_buf())
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    pub fn is_mcp_workspace_trusted(&self, workspace: &Path) -> bool {
+        let key = Self::normalize_workspace_key(workspace);
+        let raw = workspace.to_string_lossy();
+        self.trusted_mcp_workspaces
+            .iter()
+            .any(|item| item == &key || item == raw.as_ref())
+    }
+
+    pub fn set_mcp_workspace_trusted(&mut self, workspace: &Path, trusted: bool) {
+        let key = Self::normalize_workspace_key(workspace);
+        let raw = workspace.to_string_lossy().into_owned();
+        self.trusted_mcp_workspaces
+            .retain(|item| item != &key && item != &raw);
+        if trusted {
+            self.trusted_mcp_workspaces.push(key);
         }
     }
 }

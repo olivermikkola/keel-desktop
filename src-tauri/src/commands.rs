@@ -7,8 +7,9 @@ use keel_core::harnesses::{
     CodeExecutionBoundary, HarnessOption, KeelCliTurn,
 };
 use keel_core::mcp::{
-    inspect_mcp_servers, load_mcp_configs, save_global_mcp_config, McpConfigFile, McpServerConfig,
-    McpServerStatus, McpToolInfo,
+    inspect_mcp_servers_with_trust, load_global_mcp_config, load_mcp_configs_with_trust,
+    load_workspace_mcp_config, save_global_mcp_config, save_workspace_mcp_config, McpScope,
+    McpServerConfig, McpServerStatus, McpToolInfo,
 };
 use keel_core::models::{
     candidate_models_for_auto_start, catalog_download_url, delete_model_file, download_gguf,
@@ -81,8 +82,9 @@ pub async fn get_bootstrap_state(
     let presets = AppPreset::all().iter().map(|p| p.info()).collect();
     let harnesses = detect_harnesses();
     let ws = workspace_path.as_deref().map(Path::new);
-    let mcp_cfg = load_mcp_configs(&state.config_dir, ws);
-    let mcp_servers = inspect_mcp_servers(&mcp_cfg, ws).await;
+    let ws_trusted = ws.map(|p| cfg.is_mcp_workspace_trusted(p)).unwrap_or(false);
+    let loaded_mcp = load_mcp_configs_with_trust(&state.config_dir, ws, ws_trusted);
+    let mcp_servers = inspect_mcp_servers_with_trust(&loaded_mcp, ws).await;
 
     Ok(BootstrapState {
         version: keel_core::version().to_string(),
@@ -867,11 +869,22 @@ pub async fn send_message(
     } else {
         session.active_workspace()
     };
-    let mcp_cfg: McpConfigFile = load_mcp_configs(&state.config_dir, ws_path.as_deref());
+    let ws_trusted = session
+        .workspace_path
+        .as_deref()
+        .map(Path::new)
+        .map(|p| cfg.is_mcp_workspace_trusted(p))
+        .unwrap_or(false)
+        || ws_path
+            .as_deref()
+            .map(|p| cfg.is_mcp_workspace_trusted(p))
+            .unwrap_or(false);
+    let loaded_mcp = load_mcp_configs_with_trust(&state.config_dir, ws_path.as_deref(), ws_trusted);
+    let mcp_cfg = loaded_mcp.active.clone();
     let mcp_statuses = if session.app_preset == AppPreset::Chat {
         Vec::new()
     } else {
-        inspect_mcp_servers(&mcp_cfg, ws_path.as_deref()).await
+        inspect_mcp_servers_with_trust(&loaded_mcp, ws_path.as_deref()).await
     };
     let mcp_tools: Vec<McpToolInfo> = mcp_statuses.into_iter().flat_map(|s| s.tools).collect();
 
@@ -1260,6 +1273,24 @@ pub struct McpServerInput {
     pub name: String,
     pub command: String,
     pub args: Vec<String>,
+    #[serde(default)]
+    pub scope: McpScope,
+    #[serde(default)]
+    pub workspace_path: Option<String>,
+}
+
+async fn inspect_current_mcp(
+    state: &State<'_, AppState>,
+    workspace: Option<&Path>,
+) -> Vec<McpServerStatus> {
+    let ws_trusted = {
+        let cfg = state.config.lock().await;
+        workspace
+            .map(|p| cfg.is_mcp_workspace_trusted(p))
+            .unwrap_or(false)
+    };
+    let loaded = load_mcp_configs_with_trust(&state.config_dir, workspace, ws_trusted);
+    inspect_mcp_servers_with_trust(&loaded, workspace).await
 }
 
 #[tauri::command]
@@ -1272,34 +1303,101 @@ pub async fn save_mcp_server(
     if name.is_empty() || input.command.trim().is_empty() {
         return Err("Server name and command are required".to_string());
     }
-    let mut global = load_mcp_configs(&state.config_dir, None);
-    global.mcp_servers.insert(
-        name,
-        McpServerConfig {
-            command: input.command.trim().to_string(),
-            args: input.args,
-            env: HashMap::new(),
-            enabled: true,
-        },
-    );
-    save_global_mcp_config(&state.config_dir, &global).map_err(|e| e.to_string())?;
-    let ws = workspace_path.as_deref().map(Path::new);
-    let merged = load_mcp_configs(&state.config_dir, ws);
-    Ok(inspect_mcp_servers(&merged, ws).await)
+    let effective_ws = workspace_path
+        .or(input.workspace_path)
+        .filter(|s| !s.trim().is_empty());
+    let server = McpServerConfig {
+        command: input.command.trim().to_string(),
+        args: input.args,
+        env: HashMap::new(),
+        enabled: true,
+    };
+
+    match input.scope {
+        McpScope::Workspace => {
+            let Some(ref ws_str) = effective_ws else {
+                return Err("Pick a folder before saving a workspace MCP server.".to_string());
+            };
+            let ws_root = validate_workspace_root(Path::new(ws_str)).map_err(|e| e.to_string())?;
+            let mut local = load_workspace_mcp_config(&ws_root);
+            local.mcp_servers.insert(name, server);
+            save_workspace_mcp_config(&ws_root, &local).map_err(|e| e.to_string())?;
+            let mut cfg = state.config.lock().await;
+            cfg.set_mcp_workspace_trusted(&ws_root, true);
+            save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
+        }
+        McpScope::Global => {
+            let mut global = load_global_mcp_config(&state.config_dir);
+            global.mcp_servers.insert(name, server);
+            save_global_mcp_config(&state.config_dir, &global).map_err(|e| e.to_string())?;
+        }
+    }
+
+    let ws = effective_ws.as_deref().map(Path::new);
+    Ok(inspect_current_mcp(&state, ws).await)
 }
 
 #[tauri::command]
 pub async fn remove_mcp_server(
     state: State<'_, AppState>,
     name: String,
+    scope: Option<McpScope>,
     workspace_path: Option<String>,
 ) -> Result<Vec<McpServerStatus>, String> {
-    let mut global = load_mcp_configs(&state.config_dir, None);
-    global.mcp_servers.remove(&name);
-    save_global_mcp_config(&state.config_dir, &global).map_err(|e| e.to_string())?;
-    let ws = workspace_path.as_deref().map(Path::new);
-    let merged = load_mcp_configs(&state.config_dir, ws);
-    Ok(inspect_mcp_servers(&merged, ws).await)
+    let ws = workspace_path
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(Path::new);
+
+    match scope {
+        Some(McpScope::Workspace) => {
+            let Some(ws_path) = ws else {
+                return Err("Pick a folder to remove a workspace MCP server.".to_string());
+            };
+            let ws_root = validate_workspace_root(ws_path).map_err(|e| e.to_string())?;
+            let mut local = load_workspace_mcp_config(&ws_root);
+            local.mcp_servers.remove(&name);
+            save_workspace_mcp_config(&ws_root, &local).map_err(|e| e.to_string())?;
+        }
+        Some(McpScope::Global) => {
+            let mut global = load_global_mcp_config(&state.config_dir);
+            global.mcp_servers.remove(&name);
+            save_global_mcp_config(&state.config_dir, &global).map_err(|e| e.to_string())?;
+        }
+        None => {
+            let mut removed = false;
+            if let Some(ws_path) = ws {
+                if let Ok(ws_root) = validate_workspace_root(ws_path) {
+                    let mut local = load_workspace_mcp_config(&ws_root);
+                    if local.mcp_servers.remove(&name).is_some() {
+                        save_workspace_mcp_config(&ws_root, &local).map_err(|e| e.to_string())?;
+                        removed = true;
+                    }
+                }
+            }
+            let mut global = load_global_mcp_config(&state.config_dir);
+            if global.mcp_servers.remove(&name).is_some() || !removed {
+                save_global_mcp_config(&state.config_dir, &global).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+
+    Ok(inspect_current_mcp(&state, ws).await)
+}
+
+#[tauri::command]
+pub async fn set_workspace_mcp_trust(
+    state: State<'_, AppState>,
+    workspace_path: String,
+    trusted: bool,
+) -> Result<Vec<McpServerStatus>, String> {
+    let ws_root = validate_workspace_root(Path::new(&workspace_path)).map_err(|e| e.to_string())?;
+    {
+        let mut cfg = state.config.lock().await;
+        cfg.set_mcp_workspace_trusted(&ws_root, trusted);
+        save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
+    }
+    Ok(inspect_current_mcp(&state, Some(&ws_root)).await)
 }
 
 #[tauri::command]
@@ -1307,9 +1405,11 @@ pub async fn refresh_mcp_servers(
     state: State<'_, AppState>,
     workspace_path: Option<String>,
 ) -> Result<Vec<McpServerStatus>, String> {
-    let ws = workspace_path.as_deref().map(Path::new);
-    let merged = load_mcp_configs(&state.config_dir, ws);
-    Ok(inspect_mcp_servers(&merged, ws).await)
+    let ws = workspace_path
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(Path::new);
+    Ok(inspect_current_mcp(&state, ws).await)
 }
 
 #[tauri::command]
