@@ -285,11 +285,16 @@ pub async fn import_keel_session(
     let root =
         validate_workspace_root(Path::new(&workspace_path)).map_err(|error| error.to_string())?;
     let selected = tokio::task::spawn_blocking(move || {
-        app.dialog()
+        let mut picker = app
+            .dialog()
             .file()
             .set_title("Open a Keel CLI session")
-            .add_filter("Keel session logs", &["jsonl"])
-            .blocking_pick_file()
+            .add_filter("Keel session logs", &["jsonl"]);
+        // Prefer the CLI's default journal folder when it exists (~/.keel/sessions).
+        if let Some(sessions) = keel_core::harnesses::default_keel_sessions_dir() {
+            picker = picker.set_directory(sessions);
+        }
+        picker.blocking_pick_file()
     })
     .await
     .map_err(|error| error.to_string())?;

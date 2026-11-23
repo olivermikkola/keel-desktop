@@ -163,6 +163,12 @@ fn find_on_path(bin: &str) -> Option<PathBuf> {
     None
 }
 
+/// Default Keel CLI journal folder (`~/.keel/sessions`) when it exists.
+pub fn default_keel_sessions_dir() -> Option<std::path::PathBuf> {
+    let sessions = dirs::home_dir()?.join(".keel").join("sessions");
+    sessions.is_dir().then_some(sessions)
+}
+
 pub struct KeelCliTurn<'a> {
     pub root: &'a Path,
     pub log: &'a Path,
@@ -655,6 +661,8 @@ pub async fn run_external_harness(
     model: Option<&str>,
 ) -> Result<String> {
     let workspace = crate::tools::validate_workspace_root(workspace)?;
+    // Keel CLI must use run_keel_cli_turn (streaming JSON + approvals), never this one-shot path.
+    let _ = (base_url, model);
     let mut cmd = match harness_id {
         "opencode" => {
             let bin = find_on_path("opencode").context("`opencode` is not installed on PATH")?;
@@ -662,18 +670,9 @@ pub async fn run_external_harness(
             c.arg("run").arg("--").arg(prompt);
             c
         }
-        "keel-cli" => {
-            let bin = find_on_path("keel").context("`keel` CLI is not installed on PATH")?;
-            let mut c = Command::new(bin);
-            if let Some(url) = base_url {
-                c.arg("--base-url").arg(url);
-            }
-            if let Some(m) = model {
-                c.arg("--model").arg(m);
-            }
-            c.arg("--").arg(prompt);
-            c
-        }
+        "keel-cli" => bail!(
+            "Use Code with Engine for Code mode set to Keel CLI. The one-shot CLI path was removed."
+        ),
         "claude" => {
             let bin = find_on_path("claude").context("`claude` CLI is not installed on PATH")?;
             let mut c = Command::new(bin);
