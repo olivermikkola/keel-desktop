@@ -163,6 +163,33 @@ fn windows_exe_names(bin: &str) -> Vec<String> {
     ]
 }
 
+/// Typical Windows package-manager / install shim dirs under the user profile.
+/// Extracted so Linux CI can assert the candidate list without a Windows host.
+fn windows_home_shim_dirs(home: &Path) -> Vec<PathBuf> {
+    [
+        PathBuf::from(r"scoop\shims"),
+        PathBuf::from(r".keel\bin"),
+        PathBuf::from(r"AppData\Local\Microsoft\WinGet\Links"),
+        PathBuf::from(r"AppData\Local\Programs\keel"),
+        PathBuf::from(r"AppData\Local\keel\bin"),
+    ]
+    .into_iter()
+    .map(|extra| home.join(extra))
+    .collect()
+}
+
+/// Typical Windows shim dirs under `%LOCALAPPDATA%`.
+fn windows_local_appdata_shim_dirs(local: &Path) -> Vec<PathBuf> {
+    [
+        PathBuf::from(r"Microsoft\WinGet\Links"),
+        PathBuf::from(r"Programs\keel"),
+        PathBuf::from(r"keel\bin"),
+    ]
+    .into_iter()
+    .map(|extra| local.join(extra))
+    .collect()
+}
+
 fn first_existing_in_dir(dir: &Path, names: &[String]) -> Option<PathBuf> {
     for name in names {
         let cand = dir.join(name);
@@ -194,14 +221,8 @@ fn find_on_path(bin: &str) -> Option<PathBuf> {
         }
         // Typical Windows install / package-manager shim locations outside PATH.
         if cfg!(target_os = "windows") {
-            for extra in [
-                PathBuf::from(r"scoop\shims"),
-                PathBuf::from(r".keel\bin"),
-                PathBuf::from(r"AppData\Local\Microsoft\WinGet\Links"),
-                PathBuf::from(r"AppData\Local\Programs\keel"),
-                PathBuf::from(r"AppData\Local\keel\bin"),
-            ] {
-                if let Some(found) = first_existing_in_dir(&home.join(extra), &names) {
+            for dir in windows_home_shim_dirs(&home) {
+                if let Some(found) = first_existing_in_dir(&dir, &names) {
                     return Some(found);
                 }
             }
@@ -209,13 +230,8 @@ fn find_on_path(bin: &str) -> Option<PathBuf> {
     }
     if cfg!(target_os = "windows") {
         if let Ok(local) = std::env::var("LOCALAPPDATA") {
-            let local = PathBuf::from(local);
-            for extra in [
-                PathBuf::from(r"Microsoft\WinGet\Links"),
-                PathBuf::from(r"Programs\keel"),
-                PathBuf::from(r"keel\bin"),
-            ] {
-                if let Some(found) = first_existing_in_dir(&local.join(extra), &names) {
+            for dir in windows_local_appdata_shim_dirs(&PathBuf::from(local)) {
+                if let Some(found) = first_existing_in_dir(&dir, &names) {
                     return Some(found);
                 }
             }
@@ -885,6 +901,15 @@ pub async fn run_external_harness(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    /// Serialize tests that mutate process-wide env (`PATH`, `KEEL_HOME`).
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[test]
     fn always_includes_builtin_then_keel_cli_option() {
@@ -1000,6 +1025,98 @@ mod tests {
                 "keel".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn windows_path_shim_dirs_cover_scoop_winget_and_keel_installs() {
+        let home = PathBuf::from(r"C:\Users\keel");
+        let home_dirs = windows_home_shim_dirs(&home);
+        let joined: Vec<String> = home_dirs
+            .iter()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .collect();
+        assert!(
+            joined.iter().any(|p| p.ends_with("scoop/shims")),
+            "scoop shims missing: {joined:?}"
+        );
+        assert!(
+            joined.iter().any(|p| p.ends_with(".keel/bin")),
+            ".keel/bin missing: {joined:?}"
+        );
+        assert!(
+            joined
+                .iter()
+                .any(|p| p.contains("WinGet/Links") || p.contains("WinGet\\Links")),
+            "WinGet Links missing: {joined:?}"
+        );
+        assert!(
+            joined.iter().any(|p| p.ends_with("Programs/keel")),
+            "Programs/keel missing: {joined:?}"
+        );
+
+        let local = PathBuf::from(r"C:\Users\keel\AppData\Local");
+        let local_dirs = windows_local_appdata_shim_dirs(&local);
+        let local_joined: Vec<String> = local_dirs
+            .iter()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .collect();
+        assert_eq!(local_dirs.len(), 3);
+        assert!(
+            local_joined
+                .iter()
+                .any(|p| p.ends_with("Microsoft/WinGet/Links")),
+            "LOCALAPPDATA WinGet Links missing: {local_joined:?}"
+        );
+        assert!(
+            local_joined.iter().any(|p| p.ends_with("keel/bin")),
+            "LOCALAPPDATA keel/bin missing: {local_joined:?}"
+        );
+    }
+
+    #[test]
+    fn first_existing_in_dir_prefers_exe_then_cmd_then_bat() {
+        let dir = std::env::temp_dir().join(format!("keel_path_names_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Only .cmd exists — Windows lookup should still find it before bare name.
+        let cmd = dir.join("keel.cmd");
+        std::fs::write(&cmd, b"@echo off\n").unwrap();
+        let names = windows_exe_names("keel");
+        let found = first_existing_in_dir(&dir, &names).expect("should find .cmd");
+        assert_eq!(found, cmd);
+
+        let exe = dir.join("keel.exe");
+        std::fs::write(&exe, b"MZ").unwrap();
+        let found = first_existing_in_dir(&dir, &names).expect("should prefer .exe");
+        assert_eq!(found, exe);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn find_on_path_discovers_binary_from_path_env() {
+        let _guard = env_lock();
+        let dir = std::env::temp_dir().join(format!("keel_path_bin_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin_name = if cfg!(windows) { "keel.exe" } else { "keel" };
+        let bin = dir.join(bin_name);
+        std::fs::write(&bin, b"#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&bin).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&bin, perms).unwrap();
+        }
+
+        let prev_path = std::env::var_os("PATH");
+        std::env::set_var("PATH", &dir);
+        let found = find_on_path("keel");
+        match prev_path {
+            Some(value) => std::env::set_var("PATH", value),
+            None => std::env::remove_var("PATH"),
+        }
+        let found = found.expect("PATH should surface fake keel");
+        assert_eq!(found, bin);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1130,6 +1247,9 @@ mod tests {
     fn fake_cli_sandbox() -> &'static str {
         if cfg!(target_os = "macos") {
             "seatbelt"
+        } else if cfg!(target_os = "windows") {
+            // Honest Windows CLI builds advertise no OS confinement.
+            "none"
         } else {
             "landlock"
         }
@@ -1321,6 +1441,187 @@ mod tests {
         );
     }
 
+    /// Windows-shaped capabilities (`sandbox: "none"`) must still handshake;
+    /// Desktop only requires Seatbelt on macOS.
+    #[tokio::test]
+    async fn fake_cli_e2e_windows_sandbox_none_capabilities_handshake() {
+        let (mut cli_out, desktop_in) = tokio::io::duplex(64 * 1024);
+        let (mut desktop_out, _cli_in) = tokio::io::duplex(64 * 1024);
+
+        let fake = tokio::spawn(async move {
+            write_ndjson_line(
+                &mut cli_out,
+                r#"{"type":"capabilities","approval_protocol":"stdio-line-v1","stop_protocol":"sigint-shell-v1","sandbox":"none"}"#,
+            )
+            .await;
+            write_ndjson_line(
+                &mut cli_out,
+                r#"{"type":"done","status":"ok","answer":"windows-shaped ok","error":null}"#,
+            )
+            .await;
+        });
+
+        let answer = read_keel_turn(
+            desktop_in,
+            &mut desktop_out,
+            |_event| {},
+            |_id, _tool, _summary, _args| async { ApprovalDecision::Deny },
+        )
+        .await;
+
+        fake.await.expect("fake CLI task");
+        if cfg!(target_os = "macos") {
+            let err = answer.expect_err("macOS must reject sandbox none");
+            assert!(
+                err.to_string().contains("Seatbelt"),
+                "unexpected macOS error: {err}"
+            );
+        } else {
+            assert_eq!(
+                answer.expect("non-mac accepts sandbox none"),
+                "windows-shaped ok"
+            );
+        }
+    }
+
+    /// Fake-CLI e2e: reasoning deltas, AllowAlways → `allow\n`, and sentinel veto projection.
+    #[tokio::test]
+    async fn fake_cli_e2e_reasoning_allow_always_and_sentinel_veto() {
+        let (mut cli_out, desktop_in) = tokio::io::duplex(64 * 1024);
+        let (mut desktop_out, cli_in) = tokio::io::duplex(64 * 1024);
+        let sandbox = fake_cli_sandbox();
+
+        let fake = tokio::spawn(async move {
+            let mut cli_in = BufReader::new(cli_in);
+            write_ndjson_line(
+                &mut cli_out,
+                &format!(
+                    r#"{{"type":"capabilities","approval_protocol":"stdio-line-v1","stop_protocol":"sigint-shell-v1","sandbox":"{sandbox}"}}"#
+                ),
+            )
+            .await;
+            write_ndjson_line(
+                &mut cli_out,
+                r#"{"type":"reasoning","content":"checking safety"}"#,
+            )
+            .await;
+            write_ndjson_line(
+                &mut cli_out,
+                r#"{"type":"tool_call","id":"tc3","name":"run_shell","arguments":{"command":"echo hi"}}"#,
+            )
+            .await;
+            write_ndjson_line(
+                &mut cli_out,
+                r#"{"type":"approval_request","protocol":"stdio-line-v1","id":"ap3","tool_call_id":"tc3","tool":"run_shell","arguments":{"command":"echo hi"}}"#,
+            )
+            .await;
+
+            let mut decision = Vec::new();
+            cli_in.read_until(b'\n', &mut decision).await.unwrap();
+            assert_eq!(
+                decision, b"allow\n",
+                "AllowAlways must still write a single allow line"
+            );
+
+            write_ndjson_line(
+                &mut cli_out,
+                r#"{"type":"tool_result","id":"tc3","output":"hi\n"}"#,
+            )
+            .await;
+            write_ndjson_line(
+                &mut cli_out,
+                r#"{"type":"tool_call","id":"tc4","name":"run_shell","arguments":{"command":"rm -rf /"}}"#,
+            )
+            .await;
+            write_ndjson_line(
+                &mut cli_out,
+                r#"{"type":"sentinel_veto","tool_name":"run_shell","reason":"destructive"}"#,
+            )
+            .await;
+            write_ndjson_line(
+                &mut cli_out,
+                r#"{"type":"done","status":"ok","answer":"vetoed","error":null}"#,
+            )
+            .await;
+        });
+
+        let mut events = Vec::new();
+        let answer = read_keel_turn(
+            desktop_in,
+            &mut desktop_out,
+            |event| events.push(event),
+            |_id, _tool, _summary, _args| async { ApprovalDecision::AllowAlways },
+        )
+        .await
+        .expect("fake CLI turn should succeed");
+
+        fake.await.expect("fake CLI task");
+        assert_eq!(answer, "vetoed");
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                AgentEvent::ThinkingDelta { text } if text == "checking safety"
+            )),
+            "expected reasoning delta: {events:?}"
+        );
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                AgentEvent::ToolCallResult {
+                    name,
+                    is_error: true,
+                    result,
+                    ..
+                } if name == "run_shell" && result.contains("Blocked by Keel security")
+            )),
+            "expected sentinel veto projection: {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .all(|e| !matches!(e, AgentEvent::StagedEditAdded { .. })),
+            "must not invent staged edits: {events:?}"
+        );
+    }
+
+    /// Failed `done` status must surface the CLI error instead of inventing success.
+    #[tokio::test]
+    async fn fake_cli_e2e_done_error_status_fails_turn() {
+        let (mut cli_out, desktop_in) = tokio::io::duplex(64 * 1024);
+        let (mut desktop_out, _cli_in) = tokio::io::duplex(64 * 1024);
+        let sandbox = fake_cli_sandbox();
+
+        let fake = tokio::spawn(async move {
+            write_ndjson_line(
+                &mut cli_out,
+                &format!(
+                    r#"{{"type":"capabilities","approval_protocol":"stdio-line-v1","stop_protocol":"sigint-shell-v1","sandbox":"{sandbox}"}}"#
+                ),
+            )
+            .await;
+            write_ndjson_line(
+                &mut cli_out,
+                r#"{"type":"done","status":"error","answer":null,"error":"model offline"}"#,
+            )
+            .await;
+        });
+
+        let err = read_keel_turn(
+            desktop_in,
+            &mut desktop_out,
+            |_event| {},
+            |_id, _tool, _summary, _args| async { ApprovalDecision::Deny },
+        )
+        .await
+        .expect_err("error done must fail the turn");
+
+        fake.await.expect("fake CLI task");
+        assert!(
+            err.to_string().contains("model offline"),
+            "unexpected error: {err}"
+        );
+    }
+
     /// Diff/--shadow parity is intentionally not claimed yet: unknown file-edit
     /// lines stay `Other` and never become `StagedEditAdded`. When the CLI
     /// advertises a dedicated event, replace this with a real shadow assertion.
@@ -1383,6 +1684,7 @@ mod tests {
 
     #[test]
     fn export_keel_session_log_copies_into_sessions_dir() {
+        let _guard = env_lock();
         let dir = std::env::temp_dir().join(format!("keel_export_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let source = dir.join("source.jsonl");
@@ -1423,10 +1725,93 @@ mod tests {
     }
 
     #[test]
+    fn keel_home_and_sessions_dir_honor_keel_home_override() {
+        let _guard = env_lock();
+        let dir = std::env::temp_dir().join(format!("keel_home_{}", uuid::Uuid::new_v4()));
+        let fake_home = dir.join("portable");
+        std::fs::create_dir_all(&fake_home).unwrap();
+        let prev = std::env::var_os("KEEL_HOME");
+        std::env::set_var("KEEL_HOME", &fake_home);
+
+        assert_eq!(keel_home_dir().as_deref(), Some(fake_home.as_path()));
+        assert_eq!(
+            keel_sessions_dir(),
+            Some(fake_home.join(".keel").join("sessions"))
+        );
+        assert!(
+            default_keel_sessions_dir().is_none(),
+            "sessions dir must not be advertised before it exists"
+        );
+        let created = ensure_keel_sessions_dir().expect("create sessions");
+        assert_eq!(created, fake_home.join(".keel").join("sessions"));
+        assert_eq!(default_keel_sessions_dir(), Some(created));
+
+        match prev {
+            Some(value) => std::env::set_var("KEEL_HOME", value),
+            None => std::env::remove_var("KEEL_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn empty_keel_home_falls_through_to_dirs_home() {
+        let _guard = env_lock();
+        let prev = std::env::var_os("KEEL_HOME");
+        std::env::set_var("KEEL_HOME", "");
+        let home = keel_home_dir();
+        match prev {
+            Some(value) => std::env::set_var("KEEL_HOME", value),
+            None => std::env::remove_var("KEEL_HOME"),
+        }
+        // Empty override must not win; dirs::home_dir() may still be Some.
+        if let Some(dirs_home) = dirs::home_dir() {
+            assert_eq!(home, Some(dirs_home));
+        }
+    }
+
+    #[test]
     fn validate_keel_session_log_rejects_missing_paths() {
         let missing =
             std::env::temp_dir().join(format!("no-journal-{}.jsonl", uuid::Uuid::new_v4()));
         let err = validate_keel_session_log(&missing).unwrap_err().to_string();
         assert!(err.contains("Cannot find"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn validate_keel_session_log_rejects_directories() {
+        let dir = std::env::temp_dir().join(format!("keel_journal_dir_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let err = validate_keel_session_log(&dir).unwrap_err().to_string();
+        assert!(
+            err.contains("not a regular file") || err.contains("Cannot find"),
+            "unexpected: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_keel_session_accepts_tool_arg_aliases() {
+        let dir = std::env::temp_dir().join(format!("keel_journal_alias_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+        // CLI journals may use tool/args/result instead of name/arguments/output.
+        std::fs::write(
+            &path,
+            r#"{"kind":"user","data":{"text":"run"}}
+{"kind":"assistant","data":{"text":"Working."}}
+{"kind":"tool","data":{"tool":"run_shell","args":{"command":"pwd"},"result":"/tmp\n"}}
+"#,
+        )
+        .unwrap();
+        let messages = read_keel_session(&path).unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1].tool_calls.len(), 1);
+        assert_eq!(messages[1].tool_calls[0].name, "run_shell");
+        assert_eq!(
+            messages[1].tool_calls[0].arguments.get("command"),
+            Some(&Value::String("pwd".into()))
+        );
+        assert_eq!(messages[1].tool_calls[0].result.as_deref(), Some("/tmp\n"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
