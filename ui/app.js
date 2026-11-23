@@ -1,6 +1,6 @@
 import { createEveryday } from "./everyday.js";
 import { createImageWorkspace } from "./images.js";
-import { assistantStatus, friendlyRuntimeError, friendlySetupError, isFirstRun, isRemoteModelServer, modelLocation, modelTierLabel, modelToWake, serverDataNotice, speedSettingsCopy, answerTimePhrase, modelCheckIntro } from "./onboarding.js";
+import { assistantStatus, connectedExternalLocation, friendlyRuntimeError, friendlySetupError, isFirstRun, isRemoteModelServer, modelLocation, modelTierLabel, modelToWake, serverDataNotice, speedSettingsCopy, answerTimePhrase, modelCheckIntro } from "./onboarding.js";
 import { MODES, modeForPreset, isRuntimeLive, promptBlockReason } from "./modes.js";
 import { escapeHtml, renderMarkdown } from "./markdown.js";
 import {
@@ -750,10 +750,9 @@ function renderSidebar() {
   const activeModel = b.models.find((m) => m.id === (rt.active_model_id || b.config.selected_model_id));
   const setup = welcome.status();
   const status = assistantStatus({ runtime: rt, waking: appState.waking, setup });
-  const sidebarLocation = modelLocation(rt);
   const runningLabel =
     rt.state === "external"
-      ? `${b.config.external_model_name || sidebarLocation}${sidebarLocation === "Leaves this computer" ? " · Remote" : ""}`
+      ? externalConnectedLabel(b, rt)
       : rt.state === "running" ? activeModel?.name || "Local model" : status.key === "setup" ? "Setting up your AI" : "No model loaded";
   const isLive = isRuntimeLive(rt);
   const fill = status.key === "setup" ? ` style="width:${Math.round(setup.fraction * 100)}%"` : "";
@@ -786,12 +785,12 @@ function renderHeader() {
     (m) => m.id === (rt.active_model_id || b.config.selected_model_id),
   );
   const setup = welcome.status();
-  const location = modelLocation(rt);
+  const location = rt.state === "external" ? connectedExternalLocation(rt) : modelLocation(rt);
   els.modelPillBtn.title = isRuntimeLive(rt) ? `${location} · Click to switch AI` : "Click to choose or start your AI";
   els.modelPillBtn.setAttribute("aria-expanded", String(appState.modelSwitcherOpen));
   els.modelPillLabel.textContent = setup.busy || setup.paused ? assistantStatus({ runtime: rt, setup }).label : isBusy ? "Waking up your AI…" : rt.state === "stopped" ? (b.models.some((m) => m.installed && !m.damaged) ? "Start your AI" : b.models.some((m) => m.damaged) ? "Repair your AI" : "Set up your AI") : rt.state === "error" ? "Model needs attention" :
     rt.state === "external"
-      ? `${b.config.external_model_name || location}${location === "Leaves this computer" ? " · Remote" : ""}`
+      ? externalConnectedLabel(b, rt)
       : selected
         ? selected.name
         : b.config.selected_model_id || "Select model";
@@ -945,6 +944,18 @@ async function removeLocalModel(modelId) {
   );
 }
 
+/** Connected external pill/sidebar label: remote keeps cost language; loopback stays local-only. */
+function externalConnectedLabel(b, rt) {
+  const location = connectedExternalLocation({
+    state: "external",
+    base_url: rt?.base_url || b.config.external_base_url || "",
+  });
+  const name = b.config.external_model_name;
+  const remote = isRemoteModelServer(rt?.base_url || b.config.external_base_url || "");
+  if (remote) return name ? `${name} · ${location}` : location;
+  return name || location;
+}
+
 function tierLabel(model) {
   const b = appState.bootstrap;
   const failed = b?.model_checks?.[model.id]?.passed === false;
@@ -973,13 +984,14 @@ function renderModelSwitcher() {
 
   let html = "";
   if (rt.state === "external") {
-    const extName = b.config.external_model_name || modelLocation(rt);
+    const extUrl = rt.base_url || b.config.external_base_url || "";
+    const extName = b.config.external_model_name || connectedExternalLocation({ state: "external", base_url: extUrl });
     html += `
       <div class="switcher-section-label">CONNECTED APP</div>
       <div class="switcher-item active">
         <span class="switcher-item-main">
           <strong>${escapeHtml(extName)}</strong>
-          <span class="switcher-item-sub">${escapeHtml(modelLocation(rt))}</span>
+          <span class="switcher-item-sub">${escapeHtml(serverDataNotice(extUrl))}</span>
         </span>
         <span class="switcher-check">✓</span>
       </div>
@@ -1819,7 +1831,13 @@ function renderModelsWorkspace() {
       <div class="card">
         <div class="row" style="font-size:12px;color:var(--accent)">
           <span class="status-dot ${rt.state}"></span>
-          <span>${isRunningLocal || isRunningExternal ? modelLocation(rt) : "Off"}</span>
+          <span>${
+            isRunningExternal
+              ? escapeHtml(serverDataNotice(rt.base_url || b.config.external_base_url || ""))
+              : isRunningLocal
+                ? escapeHtml(modelLocation(rt))
+                : "Off"
+          }</span>
         </div>
         <div class="row" style="margin-top:4px">
           ${

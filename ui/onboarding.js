@@ -204,9 +204,23 @@ export function isRemoteModelServer(address) {
   return modelLocation({ state: "external", base_url: address }) === "Leaves this computer";
 }
 
+/**
+ * Connected Models chrome (pill / switcher / inspector): keep location + cost
+ * language once an external endpoint is live. Remote (non-loopback) includes the
+ * same cost phrase as serverDataNotice; loopback stays on-this-computer only.
+ */
+export function connectedExternalLocation(runtime) {
+  if (runtime?.state !== "external") return modelLocation(runtime);
+  const address = runtime?.base_url || "";
+  if (isRemoteModelServer(address)) {
+    return "Leaves this computer · may incur provider cost";
+  }
+  return modelLocation(runtime);
+}
+
 export function serverDataNotice(address) {
   return isRemoteModelServer(address)
-    ? "Leaves this computer · may incur provider cost. Keel sends prompts and relevant files to this server."
+    ? `${connectedExternalLocation({ state: "external", base_url: address })}. Keel sends prompts and relevant files to this server.`
     : "Keel sends prompts and relevant files to the model server on this computer.";
 }
 
