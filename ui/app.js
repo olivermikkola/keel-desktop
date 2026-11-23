@@ -1658,18 +1658,76 @@ function renderModelsWorkspace() {
 function renderConnectorsWorkspace() {
   const b = appState.bootstrap;
   if (!b) return;
-  const serversHtml = (b.mcp_servers || [])
-    .map(
-      (srv) => `
-      <div class="card">
+  const servers = b.mcp_servers || [];
+  const hasUntrustedWorkspace = servers.some((srv) => srv.scope === "workspace" && srv.trusted === false);
+  const hasTrustedWorkspace = servers.some((srv) => srv.scope === "workspace" && srv.trusted !== false);
+
+  const trustBannerHtml =
+    appState.workspacePath && hasUntrustedWorkspace
+      ? `
+      <div class="card mcp-trust-banner">
         <div class="row">
-          <strong class="grow">${escapeHtml(srv.name)}</strong>
-          <span class="mono" style="font-size:12px;color:var(--muted)">${escapeHtml(srv.command)} ${escapeHtml(srv.args.join(" "))}</span>
-          <button class="btn btn-ghost btn-sm" data-rm-mcp="${escapeHtml(srv.name)}">Remove</button>
+          <strong class="grow">Review folder MCP tools before running</strong>
+          <button id="mcp-trust-ws-btn" class="btn btn-primary btn-sm">Trust this folder</button>
+        </div>
+        <div style="font-size:12.5px;color:var(--muted);margin-top:4px">
+          This folder defines custom tools in <code>.keel/mcp.json</code>. Keel will not launch them until you inspect the commands below and trust this folder.
         </div>
       </div>
-    `,
-    )
+    `
+      : appState.workspacePath && hasTrustedWorkspace
+        ? `
+      <div class="card">
+        <div class="row">
+          <strong class="grow">Folder MCP tools trusted</strong>
+          <button id="mcp-revoke-ws-btn" class="btn btn-ghost btn-sm">Revoke trust</button>
+        </div>
+        <div style="font-size:12.5px;color:var(--muted);margin-top:4px">
+          Tools in <code>.keel/mcp.json</code> are allowed to run for this folder.
+        </div>
+      </div>
+    `
+        : "";
+
+  const serversHtml = servers
+    .map((srv) => {
+      const scope = srv.scope === "workspace" ? "workspace" : "global";
+      const scopeLabel = scope === "workspace" ? "Folder" : "Global";
+      const untrusted = scope === "workspace" && srv.trusted === false;
+      const dotClass = untrusted ? "starting" : srv.error ? "error" : srv.enabled ? "ready" : "";
+      const tools = Array.isArray(srv.tools) ? srv.tools : [];
+      const toolsHtml = tools.length
+        ? `
+          <details class="mcp-tools-list">
+            <summary>${tools.length} ${tools.length === 1 ? "tool" : "tools"} discovered</summary>
+            <ul>
+              ${tools
+                .map(
+                  (t) =>
+                    `<li><span class="mono">${escapeHtml(t.name)}</span>${t.description ? ` — ${escapeHtml(t.description)}` : ""}</li>`,
+                )
+                .join("")}
+            </ul>
+          </details>
+        `
+        : "";
+      const errorHtml = srv.error
+        ? `<div class="mcp-error">${escapeHtml(srv.error)}</div>`
+        : "";
+      return `
+      <div class="card">
+        <div class="row">
+          <span class="status-dot ${dotClass}"></span>
+          <strong class="grow">${escapeHtml(srv.name)}</strong>
+          <span class="mcp-badge ${untrusted ? "warn" : ""}">${escapeHtml(untrusted ? "Folder · Untrusted" : scopeLabel)}</span>
+          <span class="mono" style="font-size:12px;color:var(--muted)">${escapeHtml(srv.command)} ${escapeHtml((srv.args || []).join(" "))}</span>
+          <button class="btn btn-ghost btn-sm" data-rm-mcp="${escapeHtml(srv.name)}" data-rm-scope="${scope}">Remove</button>
+        </div>
+        ${errorHtml}
+        ${toolsHtml}
+      </div>
+    `;
+    })
     .join("");
 
   els.viewConnectors.innerHTML = `
@@ -1692,6 +1750,8 @@ function renderConnectorsWorkspace() {
         <div style="font-size:12.5px;color:var(--muted)">Keel can read and analyse the CSV files in your folder.</div>
       </div>
 
+      ${trustBannerHtml}
+
       <details class="card">
         <summary class="import-gguf-toggle">Developer: add a custom tool (MCP)</summary>
         <div class="row" style="margin-top:8px">
@@ -1701,10 +1761,11 @@ function renderConnectorsWorkspace() {
         <input id="mcp-args" class="input mono" placeholder="space-separated args" />
         <div class="row">
           <select id="mcp-scope" class="select-field grow">
-            <option value="global">Global (~/.config/keel-desktop/mcp.json)</option>
-            <option value="workspace">Workspace (.keel/mcp.json)</option>
+            <option value="global">Global (app config mcp.json)</option>
+            <option value="workspace" ${appState.workspacePath ? "" : "disabled"}>Workspace (.keel/mcp.json)${appState.workspacePath ? "" : " — pick a folder first"}</option>
           </select>
-          <button id="mcp-add-btn" class="btn btn-primary btn-sm">Add</button>
+          <button id="mcp-refresh-btn" class="btn btn-ghost btn-sm" type="button">Refresh</button>
+          <button id="mcp-add-btn" class="btn btn-primary btn-sm" type="button">Add</button>
         </div>
       </details>
 
@@ -1713,10 +1774,60 @@ function renderConnectorsWorkspace() {
   `;
 
   document.getElementById("conn-pick-ws").onclick = () => els.workspacePillBtn.click();
-  document.getElementById("mcp-add-btn").onclick = async () => {
+  const trustBtn = document.getElementById("mcp-trust-ws-btn");
+  if (trustBtn) {
+    trustBtn.onclick = async () => {
+      try {
+        trustBtn.disabled = true;
+        const updated = await invoke("set_workspace_mcp_trust", {
+          workspacePath: appState.workspacePath,
+          trusted: true,
+        });
+        appState.bootstrap.mcp_servers = updated;
+        renderConnectorsWorkspace();
+      } catch (err) {
+        showToast(friendlyRuntimeError(err));
+        renderConnectorsWorkspace();
+      }
+    };
+  }
+  const revokeBtn = document.getElementById("mcp-revoke-ws-btn");
+  if (revokeBtn) {
+    revokeBtn.onclick = async () => {
+      try {
+        revokeBtn.disabled = true;
+        const updated = await invoke("set_workspace_mcp_trust", {
+          workspacePath: appState.workspacePath,
+          trusted: false,
+        });
+        appState.bootstrap.mcp_servers = updated;
+        renderConnectorsWorkspace();
+      } catch (err) {
+        showToast(friendlyRuntimeError(err));
+        renderConnectorsWorkspace();
+      }
+    };
+  }
+  document.getElementById("mcp-refresh-btn").onclick = async () => {
+    const btn = document.getElementById("mcp-refresh-btn");
     try {
+      btn.disabled = true;
+      const updated = await invoke("refresh_mcp_servers", {
+        workspacePath: appState.workspacePath,
+      });
+      appState.bootstrap.mcp_servers = updated;
+      renderConnectorsWorkspace();
+    } catch (err) {
+      showToast(friendlyRuntimeError(err));
+      renderConnectorsWorkspace();
+    }
+  };
+  document.getElementById("mcp-add-btn").onclick = async () => {
+    const btn = document.getElementById("mcp-add-btn");
+    try {
+      btn.disabled = true;
       const args = document.getElementById("mcp-args").value.trim().split(/\s+/).filter(Boolean);
-      await invoke("save_mcp_server", {
+      const updated = await invoke("save_mcp_server", {
         input: {
           name: document.getElementById("mcp-name").value,
           command: document.getElementById("mcp-cmd").value,
@@ -1724,24 +1835,29 @@ function renderConnectorsWorkspace() {
           scope: document.getElementById("mcp-scope").value,
           workspace_path: appState.workspacePath,
         },
+        workspacePath: appState.workspacePath,
       });
-      await refreshBootstrap();
+      appState.bootstrap.mcp_servers = updated;
       renderConnectorsWorkspace();
     } catch (err) {
       showToast(friendlyRuntimeError(err));
+      btn.disabled = false;
     }
   };
   els.viewConnectors.querySelectorAll("[data-rm-mcp]").forEach((btn) => {
     btn.onclick = async () => {
       try {
-        await invoke("remove_mcp_server", {
+        btn.disabled = true;
+        const updated = await invoke("remove_mcp_server", {
           name: btn.getAttribute("data-rm-mcp"),
+          scope: btn.getAttribute("data-rm-scope") || "global",
           workspacePath: appState.workspacePath,
         });
-        await refreshBootstrap();
+        appState.bootstrap.mcp_servers = updated;
         renderConnectorsWorkspace();
       } catch (err) {
         showToast(friendlyRuntimeError(err));
+        btn.disabled = false;
       }
     };
   });
