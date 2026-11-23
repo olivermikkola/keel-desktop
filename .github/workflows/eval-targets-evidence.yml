@@ -1,0 +1,99 @@
+# Continuous evidence for Published targets — never invents metrics.
+# Scaffold/fail-closed always. Optional dry-run of a human-supplied report.
+name: Eval targets evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      report_path:
+        description: >-
+          Optional repo-relative JSON under docs/eval-results/ to validate with
+          publish_eval_targets.py --dry-run. Leave empty for scaffold-only.
+        required: false
+        default: ""
+        type: string
+      model:
+        description: Model label for --model (required when report_path is set)
+        required: false
+        default: ""
+        type: string
+      hardware:
+        description: Hardware for --hardware (cpu or gpu; required when report_path is set)
+        required: false
+        default: "cpu"
+        type: choice
+        options:
+          - cpu
+          - gpu
+
+permissions:
+  contents: read
+
+concurrency:
+  group: eval-targets-evidence-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Fail-closed scaffold / optional report dry-run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Unit tests for publish_eval_targets fail-closed + TBD scaffold
+        run: python3 scripts/test_publish_eval_targets.py
+
+      - name: Print TBD Published targets table (scaffold)
+        run: python3 scripts/publish_eval_targets.py --scaffold
+
+      - name: Reject report paths outside docs/eval-results/
+        if: ${{ inputs.report_path != '' }}
+        env:
+          REPORT_PATH: ${{ inputs.report_path }}
+        run: |
+          set -euo pipefail
+          case "$REPORT_PATH" in
+            docs/eval-results/*) ;;
+            *)
+              echo "refusing: report_path must be under docs/eval-results/ (got: $REPORT_PATH)" >&2
+              exit 1
+              ;;
+          esac
+          if [[ "$REPORT_PATH" == *..* ]]; then
+            echo "refusing: report_path must not contain .." >&2
+            exit 1
+          fi
+          test -f "$REPORT_PATH" || {
+            echo "refusing: report not found: $REPORT_PATH (do not invent metrics)" >&2
+            exit 1
+          }
+
+      - name: Dry-run apply from measured report (no doc write)
+        if: ${{ inputs.report_path != '' }}
+        env:
+          REPORT_PATH: ${{ inputs.report_path }}
+          MODEL: ${{ inputs.model }}
+          HARDWARE: ${{ inputs.hardware }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$MODEL" ]]; then
+            echo "refusing: model input is required when report_path is set" >&2
+            exit 1
+          fi
+          python3 scripts/publish_eval_targets.py \
+            --report "$REPORT_PATH" \
+            --model "$MODEL" \
+            --hardware "$HARDWARE" \
+            --dry-run
+
+      - name: Upload supplied report as evidence artifact
+        if: ${{ inputs.report_path != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: ${{ inputs.report_path }}
+          if-no-files-found: error
