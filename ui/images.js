@@ -4,7 +4,7 @@ import { escapeHtml } from "./markdown.js";
 export const CAPABILITIES = [
   { id: "text", title: "Assistant", detail: "One text model for Chat, Work, and Code. Chat and Work can search the web with your approval; Chat can send image pixels for vision-capable models.", state: "available" },
   { id: "images", title: "Images", detail: "Generate images with an optional local AUTOMATIC1111 or Forge server.", state: "available" },
-  { id: "audio", title: "Audio", detail: "Settings can mark packs installed and register a local or Whisper.cpp STT runner; checksummed Whisper weight downloads are still ahead.", state: "planned" },
+  { id: "audio", title: "Audio", detail: "Settings can download checksum-pinned audio fixtures and register local or Whisper.cpp STT runners; real Whisper ggml pins are still ahead.", state: "planned" },
   { id: "video", title: "Video", detail: "Video generation backends are planned.", state: "planned" },
 ];
 

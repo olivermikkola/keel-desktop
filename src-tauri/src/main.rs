@@ -184,6 +184,8 @@ fn main() {
             commands::register_audio_pack_runner,
             commands::register_whisper_cpp_runner,
             commands::install_audio_pack_download_stub,
+            commands::download_audio_pack,
+            commands::remove_audio_pack,
             commands::prepare_audio_pack_vram,
             commands::run_audio_stt,
             commands::run_audio_tts,

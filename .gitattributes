@@ -1,2 +1,3 @@
 # Pack fixtures are checksum-pinned; never convert line endings on checkout.
 crates/keel-core/fixtures/packs/** binary
+crates/keel-core/fixtures/audio/** binary

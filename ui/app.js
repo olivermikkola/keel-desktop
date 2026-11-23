@@ -2554,7 +2554,7 @@ function openCustomizeModal() {
     audioCard.className = "card";
     audioCard.innerHTML = `
       <strong>Speech packs</strong>
-      <p class="muted">Local speech-to-text and text-to-speech only. Mark a pack installed, register a local or Whisper.cpp runner, or record a download URL stub. Whisper catalog downloads stay unpinned until a checksummed artifact is published — no fake fetch.</p>
+      <p class="muted">Local speech-to-text and text-to-speech only. Mark a pack installed, register a local or Whisper.cpp runner, download a checksum-pinned fixture, or record a download URL stub. Whisper base stays unpinned until a real ggml URL + SHA-256 are published — no fake fetch.</p>
       <div id="audio-packs-list"><p class="muted">Loading…</p></div>
     `;
     body.appendChild(audioCard);
@@ -2587,6 +2587,13 @@ function openCustomizeModal() {
                   <div class="muted" style="font-size:12px">${escapeHtml(kind)} · ${escapeHtml(status)}</div>
                 </div>
                 <div class="row" style="gap:6px;flex-wrap:wrap;justify-content:flex-end">
+                  ${
+                    pack.sha256 && pack.download_url && !String(pack.download_url).startsWith("keel-pack:unpinned/")
+                      ? pack.installed
+                        ? `<button type="button" class="btn btn-sm btn-ghost" data-audio-remove="${id}">Remove</button>`
+                        : `<button type="button" class="btn btn-sm btn-ghost" data-audio-download="${id}">Download</button>`
+                      : ""
+                  }
                   <button type="button" class="btn btn-sm btn-ghost" data-audio-mark="${id}">Mark installed</button>
                   <button type="button" class="btn btn-sm btn-ghost" data-audio-runner="${id}">Register runner…</button>
                   ${
@@ -2601,6 +2608,33 @@ function openCustomizeModal() {
           })
           .join("");
 
+        slot.querySelectorAll("[data-audio-download]").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            btn.disabled = true;
+            try {
+              await invoke("download_audio_pack", { packId: btn.getAttribute("data-audio-download") });
+              showToast("Audio pack downloaded.");
+              await renderAudioPacks();
+            } catch (err) {
+              showToast(friendlyRuntimeError(err));
+              btn.disabled = false;
+            }
+          });
+        });
+        slot.querySelectorAll("[data-audio-remove]").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            if (!window.confirm("Remove this installed audio pack from disk?")) return;
+            btn.disabled = true;
+            try {
+              await invoke("remove_audio_pack", { packId: btn.getAttribute("data-audio-remove") });
+              showToast("Audio pack removed.");
+              await renderAudioPacks();
+            } catch (err) {
+              showToast(friendlyRuntimeError(err));
+              btn.disabled = false;
+            }
+          });
+        });
         slot.querySelectorAll("[data-audio-mark]").forEach((btn) => {
           btn.addEventListener("click", async () => {
             btn.disabled = true;

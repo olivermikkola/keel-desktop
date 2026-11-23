@@ -2353,6 +2353,45 @@ pub async fn install_audio_pack_download_stub(
     .map_err(|e| e.to_string())?
 }
 
+/// Download a checksum-pinned audio pack (refuses unpinned Whisper placeholders).
+#[tauri::command]
+pub async fn download_audio_pack(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    pack_id: String,
+) -> Result<AudioPackManifest, String> {
+    let _download = state
+        .download_lock
+        .try_lock()
+        .map_err(|_| "Another download is running")?;
+    let data_dir = state.data_dir.clone();
+    let id = pack_id.trim().to_string();
+    audio::download_audio_pack(&data_dir, &id, |prog| {
+        let _ = app.emit("keel://download-progress", prog);
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Remove an installed audio pack directory.
+#[tauri::command]
+pub async fn remove_audio_pack(
+    state: State<'_, AppState>,
+    pack_id: String,
+) -> Result<(), String> {
+    let _download = state
+        .download_lock
+        .try_lock()
+        .map_err(|_| "Wait for the current download to finish before removing a pack")?;
+    let data_dir = state.data_dir.clone();
+    let id = pack_id.trim().to_string();
+    tokio::task::spawn_blocking(move || {
+        audio::remove_audio_pack(&data_dir, &id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Prepare VRAM for an audio catalog pack (real keep-alive unload via [`prepare_pack_vram_for_manifest`]).
 #[tauri::command]
 pub async fn prepare_audio_pack_vram(

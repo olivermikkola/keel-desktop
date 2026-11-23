@@ -1,9 +1,10 @@
 //! Speech-to-text and text-to-speech capability packs.
 //!
-//! Catalog entries ship as stubs. Users can mark a pack installed or register a
-//! local runner binary/script from Settings. Checksummed Whisper weight downloads
-//! and real TTS adapters land later. Remote text-provider auth is a separate
-//! pillar (not wired here).
+//! Catalog entries ship as stubs. Users can mark a pack installed, register a
+//! local / Whisper.cpp runner, or download a **checksum-pinned** artifact when
+//! the catalog lists `download_url` + `sha256`. Whisper base stays on an unpinned
+//! placeholder until a real ggml URL is pinned. Remote text-provider auth is a
+//! separate pillar (not wired here).
 //!
 //! ## Local runner contract (`adapter`: omitted / `"local"`)
 //!
@@ -12,11 +13,11 @@
 //! - `runner.json` — `{ "command": "<path-or-name>", "args": ["…"] }`
 //!
 //! STT invokes: `command …args… <audio_path>` and reads the transcript from stdout.
-//! TTS invokes: `command …args… --text <text> --output <path>`.
+//! TTS invokes: `command …args… --text <text> --output <path>` ([`AudioTtsAdapterKind::Local`]).
 //!
 //! ## Whisper.cpp runner contract (`adapter`: `"whisper_cpp"`)
 //!
-//! `runner.json`:
+//! STT only. `runner.json`:
 //! ```json
 //! {
 //!   "adapter": "whisper_cpp",
@@ -30,8 +31,18 @@
 //! Transcript is read from stdout (trim). No timestamps flags are injected; pass
 //! extras via `args` (for example `["-nt"]`) if the binary needs them.
 //!
+//! ## TTS adapter (`adapter`: omitted / `"local"`)
+//!
+//! [`run_tts`] dispatches through [`TtsAdapter`]. Today only
+//! [`AudioTtsAdapterKind::Local`] exists — there is no second bundled TTS engine
+//! (no Piper binary download). A `whisper_cpp` adapter on a TTS pack is rejected
+//! with a clear error. Local argv contract:
+//! `command …args… --text <text> --output <path>`; the runner must create the
+//! output file.
+//!
 //! Env (optional overrides):
 //! - `KEEL_AUDIO_STT_CMD` — PATH command used when no `runner.json` exists (local adapter)
+//! - `KEEL_AUDIO_TTS_CMD` — PATH command used when no `runner.json` exists (local TTS)
 //! - `KEEL_WHISPER_MODEL` — ggml model path when `runner.json` omits `model`
 //!
 //! Weights are **not** bundled. Missing model paths fail with a clear error; the
@@ -54,12 +65,31 @@ const INSTALL_META: &str = "install.json";
 
 /// Catalog placeholder until a checksummed Whisper artifact URL + SHA-256 are pinned.
 ///
-/// Not fetchable. [`install_audio_pack_download_stub`] refuses it so Settings
-/// cannot pretend a download succeeded.
+/// Not fetchable. [`install_audio_pack_download_stub`] and [`download_audio_pack`]
+/// refuse it so Settings cannot pretend a download succeeded.
 pub const WHISPER_BASE_DOWNLOAD_PLACEHOLDER: &str = "keel-pack:unpinned/stt-whisper-base";
 
 /// Prefix for honest "not pinned yet" catalog download placeholders.
 pub const UNPINNED_PACK_URL_PREFIX: &str = "keel-pack:unpinned/";
+
+/// Tiny checksummed STT fixture used to exercise download / remove (not Whisper weights).
+pub const DEMO_STT_PACK_ID: &str = "stt-demo-fixture";
+pub const DEMO_STT_FILE: &str = "demo-stt.weights";
+pub const DEMO_STT_SHA256: &str =
+    "b3bbdb816ceaf3dccff5669d4e6fe361cdd92ccac7fc027e1015e204262d883e";
+pub const DEMO_STT_BYTES: u64 = 43;
+
+/// Raw GitHub URL for the demo STT fixture on this pillar branch (checksum-pinned).
+pub fn demo_stt_download_url() -> String {
+    format!(
+        "https://raw.githubusercontent.com/olivermikkola/keel-desktop/cursor/v06-audio-packs-adf8/crates/keel-core/fixtures/audio/{DEMO_STT_FILE}"
+    )
+}
+
+/// Demo STT fixture bytes (matches [`DEMO_STT_SHA256`]).
+pub fn demo_stt_bytes() -> &'static [u8] {
+    b"{\"keel_audio_pack\":\"demo-stt\",\"version\":1}\n"
+}
 
 /// Env override for the Whisper.cpp ggml model path when `runner.json` omits `model`.
 pub const KEEL_WHISPER_MODEL_ENV: &str = "KEEL_WHISPER_MODEL";
@@ -124,6 +154,48 @@ impl AudioSttAdapterKind {
     }
 }
 
+/// How [`run_tts`] interprets `runner.json`.
+///
+/// Only [`Self::Local`] is implemented. A second engine is not invented here —
+/// wire a real argv contract before adding another variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioTtsAdapterKind {
+    /// Generic: `command …args… --text <text> --output <path>` (must create the file).
+    #[default]
+    Local,
+}
+
+impl AudioTtsAdapterKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Result<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "" | "local" | "command" | "generic" => Ok(Self::Local),
+            other => bail!(
+                "Unknown TTS adapter '{other}'. Use 'local' (command … --text <text> --output <path>)."
+            ),
+        }
+    }
+
+    /// Map the shared `runner.json` `adapter` field into a TTS kind.
+    ///
+    /// `runner.json` reuses the same `adapter` key as STT ([`AudioSttAdapterKind`]).
+    /// TTS accepts only `local`; STT-only kinds such as `whisper_cpp` fail honestly.
+    pub fn from_runner_adapter(kind: AudioSttAdapterKind) -> Result<Self> {
+        match kind {
+            AudioSttAdapterKind::Local => Ok(Self::Local),
+            AudioSttAdapterKind::WhisperCpp => bail!(
+                "TTS runner adapter 'whisper_cpp' is not supported. Use 'local' (command … --text <text> --output <path>). No second TTS engine is bundled yet."
+            ),
+        }
+    }
+}
+
 /// Pack-manifest shape for optional STT/TTS downloads.
 ///
 /// Whisper's catalog `download_url` is an unpinned placeholder until a
@@ -137,6 +209,15 @@ pub struct AudioPackManifest {
     pub min_vram_mib: u64,
     pub runner_kind: AudioRunnerKind,
     pub download_url: Option<String>,
+    /// Expected SHA-256 of the download artifact when pinned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    /// On-disk file name under the pack dir after a checksummed download.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_name: Option<String>,
+    /// Declared artifact size in bytes (0 when unknown / unpinned).
+    #[serde(default)]
+    pub bytes: u64,
     pub installed: bool,
     /// Absolute or PATH-resolvable command registered for this pack, when set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -149,7 +230,10 @@ pub struct AudioRunnerConfig {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
-    /// STT adapter; omitted / default is [`AudioSttAdapterKind::Local`].
+    /// Shared `runner.json` adapter; omitted / default is local.
+    ///
+    /// STT: [`AudioSttAdapterKind`]. TTS: only [`AudioTtsAdapterKind::Local`]
+    /// (see [`AudioTtsAdapterKind::from_runner_adapter`]).
     #[serde(default, skip_serializing_if = "adapter_is_local")]
     pub adapter: AudioSttAdapterKind,
     /// ggml model path for [`AudioSttAdapterKind::WhisperCpp`] (or set [`KEEL_WHISPER_MODEL_ENV`]).
@@ -187,11 +271,31 @@ pub enum AudioInstallMeta {
     LocalRunner { command: String },
     /// Download URL recorded; bytes are not fetched yet (stub).
     DownloadStub { url: String },
+    /// Checksum-verified artifact downloaded into the pack directory.
+    ChecksummedDownload {
+        url: String,
+        sha256: String,
+        file_name: String,
+    },
 }
 
 /// Stub catalog. Whisper lists an unpinned download placeholder (not fetchable).
+/// [`DEMO_STT_PACK_ID`] is checksum-pinned so download/remove can be exercised.
 pub fn list_audio_packs() -> Vec<AudioPackManifest> {
     vec![
+        AudioPackManifest {
+            id: DEMO_STT_PACK_ID.into(),
+            capability: AudioCapability::Stt,
+            display_name: "Speech to text · Demo fixture (checksummed)".into(),
+            min_vram_mib: 0,
+            runner_kind: AudioRunnerKind::AudioStt,
+            download_url: Some(demo_stt_download_url()),
+            sha256: Some(DEMO_STT_SHA256.into()),
+            file_name: Some(DEMO_STT_FILE.into()),
+            bytes: DEMO_STT_BYTES,
+            installed: false,
+            runner_path: None,
+        },
         AudioPackManifest {
             id: "stt-whisper-base".into(),
             capability: AudioCapability::Stt,
@@ -199,6 +303,9 @@ pub fn list_audio_packs() -> Vec<AudioPackManifest> {
             min_vram_mib: 1024,
             runner_kind: AudioRunnerKind::AudioStt,
             download_url: Some(WHISPER_BASE_DOWNLOAD_PLACEHOLDER.into()),
+            sha256: None,
+            file_name: None,
+            bytes: 0,
             installed: false,
             runner_path: None,
         },
@@ -209,10 +316,31 @@ pub fn list_audio_packs() -> Vec<AudioPackManifest> {
             min_vram_mib: 512,
             runner_kind: AudioRunnerKind::AudioTts,
             download_url: None,
+            sha256: None,
+            file_name: None,
+            bytes: 0,
             installed: false,
             runner_path: None,
         },
     ]
+}
+
+/// True when the catalog entry has a fetchable URL + SHA-256 (not an unpinned placeholder).
+pub fn audio_pack_download_is_pinned(pack: &AudioPackManifest) -> bool {
+    let Some(url) = pack.download_url.as_deref() else {
+        return false;
+    };
+    let Some(sha) = pack.sha256.as_deref() else {
+        return false;
+    };
+    !url.trim().is_empty()
+        && !sha.trim().is_empty()
+        && !is_unpinned_audio_download_url(url)
+        && pack
+            .file_name
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|s| !s.is_empty())
 }
 
 pub fn find_audio_pack(pack_id: &str) -> Option<AudioPackManifest> {
@@ -479,6 +607,78 @@ pub fn install_audio_pack_download_stub(
     Ok(resolve_audio_pack(data_dir, pack))
 }
 
+/// Remove an installed audio pack directory (weights, runner.json, markers).
+pub fn remove_audio_pack(data_dir: &Path, pack_id: &str) -> Result<()> {
+    let _ = ensure_catalog_pack(pack_id)?;
+    let dir = pack_dir(data_dir, pack_id);
+    if !dir.exists() {
+        bail!("No installed audio pack found for `{pack_id}`");
+    }
+    fs::remove_dir_all(&dir).with_context(|| format!("remove {}", dir.display()))?;
+    Ok(())
+}
+
+/// Download a checksum-pinned catalog pack into `{data_dir}/audio-packs/<id>/`.
+///
+/// Requires catalog `download_url` + `sha256` + `file_name`. Unpinned Whisper
+/// placeholders are refused. Does not register a runner — Settings still needs
+/// a local / Whisper.cpp binary to run STT/TTS.
+pub async fn download_audio_pack<F>(
+    data_dir: &Path,
+    pack_id: &str,
+    on_progress: F,
+) -> Result<AudioPackManifest>
+where
+    F: FnMut(crate::models::DownloadProgress),
+{
+    let pack = ensure_catalog_pack(pack_id)?;
+    download_audio_pack_entry(data_dir, &pack, on_progress).await
+}
+
+/// Download using an explicit catalog entry (tests may override `download_url`).
+pub async fn download_audio_pack_entry<F>(
+    data_dir: &Path,
+    pack: &AudioPackManifest,
+    on_progress: F,
+) -> Result<AudioPackManifest>
+where
+    F: FnMut(crate::models::DownloadProgress),
+{
+    if !audio_pack_download_is_pinned(pack) {
+        bail!(
+            "Pack '{}' download is not pinned yet (need http(s) URL + sha256 + file_name). Register a local or Whisper.cpp runner, or wait for a checksummed catalog pin.",
+            pack.id
+        );
+    }
+    let url = pack.download_url.as_deref().expect("pinned");
+    let sha256 = pack.sha256.as_deref().expect("pinned");
+    let file_name = pack.file_name.as_deref().expect("pinned");
+    if file_name.contains('/') || file_name.contains('\\') || file_name == ".." || file_name == "."
+    {
+        bail!("Invalid audio pack file_name '{file_name}'");
+    }
+
+    let dir = pack_dir(data_dir, &pack.id);
+    fs::create_dir_all(&dir).with_context(|| format!("create pack dir {}", dir.display()))?;
+    let dest = dir.join(file_name);
+    if dest.is_file() {
+        let _ = fs::remove_file(&dest);
+    }
+
+    crate::models::download_gguf(url, &dest, Some(sha256), &pack.id, on_progress).await?;
+
+    fs::write(dir.join(INSTALLED_MARKER), b"checksummed\n").context("write install marker")?;
+    write_install_meta(
+        &dir,
+        &AudioInstallMeta::ChecksummedDownload {
+            url: url.to_string(),
+            sha256: sha256.to_string(),
+            file_name: file_name.to_string(),
+        },
+    )?;
+    Ok(resolve_audio_pack(data_dir, pack.clone()))
+}
+
 impl AudioPackManifest {
     /// Convert to the shared pack-scheduling manifest used by [`crate::runtime::plan_pack_vram`].
     pub fn to_pack_manifest(&self) -> crate::packs::PackManifest {
@@ -656,9 +856,56 @@ pub fn run_stt(data_dir: &Path, audio_path: &Path) -> Result<String> {
     Ok(transcript)
 }
 
+/// Build local TTS CLI args after `command` (does not include the binary name).
+///
+/// Contract: `…args… --text <text> --output <path>`.
+pub fn local_tts_argv(config: &AudioRunnerConfig, text: &str, output_path: &Path) -> Vec<String> {
+    let mut argv = config.args.clone();
+    argv.push("--text".into());
+    argv.push(text.to_string());
+    argv.push("--output".into());
+    argv.push(output_path.to_string_lossy().into_owned());
+    argv
+}
+
+/// TTS adapter invoked by [`run_tts`] once a runner is resolved.
+pub trait TtsAdapter {
+    fn synthesize(&self, text: &str, output_path: &Path) -> Result<()>;
+}
+
+/// Default TTS adapter: `command …args… --text <text> --output <path>`.
+pub struct LocalCommandTtsAdapter {
+    pub config: AudioRunnerConfig,
+}
+
+impl TtsAdapter for LocalCommandTtsAdapter {
+    fn synthesize(&self, text: &str, output_path: &Path) -> Result<()> {
+        let argv = local_tts_argv(&self.config, text, output_path);
+        // Fold args into a temporary config so `run_local_command` does not
+        // double-apply `config.args` (already present in argv).
+        let launch = AudioRunnerConfig {
+            command: self.config.command.clone(),
+            args: argv,
+            adapter: AudioSttAdapterKind::Local,
+            model: self.config.model.clone(),
+        };
+        let _ = run_local_command(&launch, &[])?;
+        Ok(())
+    }
+}
+
+/// Pick a [`TtsAdapter`] from `runner.json`, rejecting STT-only adapter kinds.
+pub fn tts_adapter_from_runner(config: AudioRunnerConfig) -> Result<Box<dyn TtsAdapter>> {
+    match AudioTtsAdapterKind::from_runner_adapter(config.adapter)? {
+        AudioTtsAdapterKind::Local => Ok(Box::new(LocalCommandTtsAdapter { config })),
+    }
+}
+
 /// Text-to-speech entry point.
 ///
-/// Requires an installed pack and a registered (or env-overridden) local runner.
+/// Requires an installed pack and a registered (or env-overridden) runner.
+/// Dispatches to [`LocalCommandTtsAdapter`] from `runner.json`'s `adapter`
+/// field (default / only supported kind: local).
 pub fn run_tts(data_dir: &Path, text: &str, output_path: &Path) -> Result<()> {
     let pack = require_installed_audio_pack(data_dir, AudioCapability::Tts)?;
     // VRAM prepare / keep-alive unload runs in the Desktop shell via
@@ -674,19 +921,12 @@ pub fn run_tts(data_dir: &Path, text: &str, output_path: &Path) -> Result<()> {
         }
     }
     let runner = require_runner(data_dir, &pack)?;
-    let _ = run_local_command(
-        &runner,
-        &[
-            "--text".into(),
-            text.to_string(),
-            "--output".into(),
-            output_path.to_string_lossy().into_owned(),
-        ],
-    )?;
+    let command = runner.command.clone();
+    tts_adapter_from_runner(runner)?.synthesize(text, output_path)?;
     if !output_path.exists() {
         bail!(
             "Text-to-speech runner '{}' finished but did not create {}.",
-            runner.command,
+            command,
             output_path.display()
         );
     }
@@ -700,33 +940,35 @@ mod tests {
     #[test]
     fn catalog_lists_stt_and_tts_stubs_not_downloaded() {
         let packs = list_audio_packs();
-        assert_eq!(packs.len(), 2);
-        let stt = packs
+        assert_eq!(packs.len(), 3);
+        let demo = packs
             .iter()
-            .find(|p| p.capability == AudioCapability::Stt)
-            .expect("stt stub");
+            .find(|p| p.id == DEMO_STT_PACK_ID)
+            .expect("demo stt fixture");
+        let whisper = packs
+            .iter()
+            .find(|p| p.id == "stt-whisper-base")
+            .expect("whisper stub");
         let tts = packs
             .iter()
             .find(|p| p.capability == AudioCapability::Tts)
             .expect("tts stub");
-        assert_eq!(stt.capability.id(), CAPABILITY_STT);
-        assert_eq!(tts.capability.id(), CAPABILITY_TTS);
-        assert!(!stt.installed);
-        assert!(!tts.installed);
+        assert!(audio_pack_download_is_pinned(demo));
+        assert_eq!(demo.sha256.as_deref(), Some(DEMO_STT_SHA256));
+        assert_eq!(demo.bytes, DEMO_STT_BYTES);
+        assert_eq!(demo_stt_bytes().len() as u64, DEMO_STT_BYTES);
+        assert!(!audio_pack_download_is_pinned(whisper));
         assert_eq!(
-            stt.download_url.as_deref(),
+            whisper.download_url.as_deref(),
             Some(WHISPER_BASE_DOWNLOAD_PLACEHOLDER)
         );
         assert!(is_unpinned_audio_download_url(
-            stt.download_url.as_deref().unwrap()
-        ));
-        assert!(!is_recordable_audio_download_url(
-            stt.download_url.as_deref().unwrap()
+            whisper.download_url.as_deref().unwrap()
         ));
         assert!(tts.download_url.is_none());
-        assert_eq!(stt.runner_kind, AudioRunnerKind::AudioStt);
+        assert_eq!(whisper.runner_kind, AudioRunnerKind::AudioStt);
         assert_eq!(tts.runner_kind, AudioRunnerKind::AudioTts);
-        assert!(stt.min_vram_mib > 0);
+        assert!(whisper.min_vram_mib > 0);
         assert!(tts.min_vram_mib > 0);
     }
 
@@ -736,7 +978,75 @@ mod tests {
             find_audio_pack("stt-whisper-base").map(|p| p.id),
             Some("stt-whisper-base".into())
         );
+        assert_eq!(
+            find_audio_pack(DEMO_STT_PACK_ID).map(|p| p.id),
+            Some(DEMO_STT_PACK_ID.into())
+        );
         assert!(find_audio_pack("missing").is_none());
+    }
+
+    #[test]
+    fn demo_stt_fixture_matches_pinned_checksum() {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(demo_stt_bytes());
+        assert_eq!(format!("{digest:x}"), DEMO_STT_SHA256);
+        let on_disk = include_bytes!("../fixtures/audio/demo-stt.weights");
+        assert_eq!(on_disk, demo_stt_bytes());
+    }
+
+    #[tokio::test]
+    async fn download_audio_pack_refuses_unpinned_whisper() {
+        let data = tempfile_dir("audio-dl-unpinned");
+        let err = download_audio_pack(&data, "stt-whisper-base", |_| {})
+            .await
+            .expect_err("unpinned whisper must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not pinned yet") && msg.contains("sha256"),
+            "unexpected: {msg}"
+        );
+        let _ = fs::remove_dir_all(&data);
+    }
+
+    #[tokio::test]
+    async fn download_audio_pack_verifies_checksum_over_http() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let data = tempfile_dir("audio-dl-http");
+        let body = demo_stt_bytes();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 4096];
+            let _ = socket.read(&mut request).await.unwrap();
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            socket.write_all(body).await.unwrap();
+        });
+
+        let mut pack = find_audio_pack(DEMO_STT_PACK_ID).unwrap();
+        pack.download_url = Some(format!("http://{addr}/demo-stt.weights"));
+
+        let installed = download_audio_pack_entry(&data, &pack, |_| {})
+            .await
+            .unwrap();
+        server.await.unwrap();
+        assert!(installed.installed);
+        assert!(is_audio_pack_installed(&data, DEMO_STT_PACK_ID));
+        let dest = pack_dir(&data, DEMO_STT_PACK_ID).join(DEMO_STT_FILE);
+        assert_eq!(fs::read(&dest).unwrap(), demo_stt_bytes());
+        remove_audio_pack(&data, DEMO_STT_PACK_ID).unwrap();
+        assert!(!is_audio_pack_installed(&data, DEMO_STT_PACK_ID));
+        let _ = fs::remove_dir_all(&data);
     }
 
     #[test]
@@ -830,10 +1140,83 @@ mod tests {
         perms.set_mode(0o755);
         fs::set_permissions(&script, perms).unwrap();
 
-        register_audio_pack_runner(&dir, "tts-local-en", script.to_str().unwrap(), &[]).unwrap();
+        let pack = register_audio_pack_runner(&dir, "tts-local-en", script.to_str().unwrap(), &[])
+            .unwrap();
+        assert!(pack.installed);
+        assert_eq!(pack.runner_path.as_deref(), script.to_str());
+        let config = read_audio_runner(&dir, "tts-local-en").expect("runner.json");
+        assert_eq!(config.adapter, AudioSttAdapterKind::Local);
+        assert_eq!(
+            AudioTtsAdapterKind::from_runner_adapter(config.adapter).unwrap(),
+            AudioTtsAdapterKind::Local
+        );
+
         let out = dir.join("out.wav");
         run_tts(&dir, "hello world", &out).unwrap();
         assert_eq!(fs::read_to_string(&out).unwrap(), "wav");
+    }
+
+    #[test]
+    fn installed_tts_without_runner_gives_clear_error() {
+        let dir = tempfile_dir("tts-no-runner");
+        mark_audio_pack_installed(&dir, "tts-local-en").unwrap();
+        let out = dir.join("out.wav");
+        let err = run_tts(&dir, "hello", &out).unwrap_err().to_string();
+        assert!(
+            err.contains("no local runner is registered"),
+            "unexpected: {err}"
+        );
+    }
+
+    #[test]
+    fn local_tts_argv_follows_documented_contract() {
+        let config = AudioRunnerConfig {
+            command: "tts.sh".into(),
+            args: vec!["--voice".into(), "en".into()],
+            adapter: AudioSttAdapterKind::Local,
+            model: None,
+        };
+        let argv = local_tts_argv(&config, "hello world", Path::new("/tmp/out.wav"));
+        assert_eq!(
+            argv,
+            vec![
+                "--voice".to_string(),
+                "en".into(),
+                "--text".into(),
+                "hello world".into(),
+                "--output".into(),
+                "/tmp/out.wav".into(),
+            ]
+        );
+    }
+
+    #[test]
+    fn tts_adapter_rejects_whisper_cpp_kind() {
+        let config = AudioRunnerConfig {
+            command: "tts.sh".into(),
+            args: Vec::new(),
+            adapter: AudioSttAdapterKind::WhisperCpp,
+            model: None,
+        };
+        let err = tts_adapter_from_runner(config).unwrap_err().to_string();
+        assert!(
+            err.contains("whisper_cpp") && err.contains("not supported"),
+            "unexpected: {err}"
+        );
+    }
+
+    #[test]
+    fn tts_adapter_kind_parse_accepts_local_only() {
+        assert_eq!(
+            AudioTtsAdapterKind::parse("local").unwrap(),
+            AudioTtsAdapterKind::Local
+        );
+        assert_eq!(
+            AudioTtsAdapterKind::parse("").unwrap(),
+            AudioTtsAdapterKind::Local
+        );
+        let err = AudioTtsAdapterKind::parse("piper").unwrap_err().to_string();
+        assert!(err.contains("Unknown TTS adapter"), "unexpected: {err}");
     }
 
     #[test]
