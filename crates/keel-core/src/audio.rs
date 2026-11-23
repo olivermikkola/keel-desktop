@@ -209,7 +209,9 @@ impl AudioSttAdapterKind {
             "" | "local" | "command" | "generic" => Ok(Self::Local),
             "whisper_cpp" | "whisper-cpp" | "whisper" => Ok(Self::WhisperCpp),
             "piper" => Ok(Self::Piper),
-            other => bail!("Unknown runner adapter '{other}'. Use 'local', 'whisper_cpp', or 'piper'."),
+            other => {
+                bail!("Unknown runner adapter '{other}'. Use 'local', 'whisper_cpp', or 'piper'.")
+            }
         }
     }
 }
@@ -1005,9 +1007,7 @@ where
         )
         .await
         .context("download Piper voice config sidecar (.onnx.json)")?;
-        let got = fs::metadata(&json_dest)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let got = fs::metadata(&json_dest).map(|m| m.len()).unwrap_or(0);
         if got != PIPER_EN_KUSAL_Q8_JSON_BYTES {
             bail!(
                 "Piper sidecar '{}' has unexpected size {got} (expected {PIPER_EN_KUSAL_Q8_JSON_BYTES})",
@@ -1920,8 +1920,8 @@ mod tests {
         )
         .unwrap();
         assert!(pack.installed);
-        let raw =
-            fs::read_to_string(pack_dir(&dir, PIPER_EN_KUSAL_Q8_PACK_ID).join(RUNNER_FILE)).unwrap();
+        let raw = fs::read_to_string(pack_dir(&dir, PIPER_EN_KUSAL_Q8_PACK_ID).join(RUNNER_FILE))
+            .unwrap();
         assert!(raw.contains("piper"));
         assert!(raw.contains("voice.onnx"));
 
