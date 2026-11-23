@@ -1111,6 +1111,28 @@ pub async fn pick_model_file(app: AppHandle) -> Result<Option<String>, String> {
     .map_err(|error| error.to_string())?
 }
 
+/// Pick a local audio clip for Settings → Try STT (no download).
+#[tauri::command]
+pub async fn pick_audio_file(app: AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    tokio::task::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_title("Choose a local audio clip for speech-to-text")
+            .add_filter("Audio", &["wav", "mp3", "flac", "ogg", "m4a"])
+            .blocking_pick_file()
+            .map(|selection| {
+                selection
+                    .into_path()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .map_err(|error| error.to_string())
+            })
+            .transpose()
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 pub async fn download_huggingface_gguf(
     app: AppHandle,
@@ -2442,17 +2464,34 @@ pub async fn run_audio_stt(
 ///
 /// Calls real [`prepare_pack_vram_for_manifest`] first so a VRAM-hungry TTS pack
 /// can unload keep-alive before the local runner starts.
+///
+/// Omit or blank `output_path` to write under `{data_dir}/audio-try/try-tts.wav`
+/// (Settings → Try TTS). Returns the path used.
 #[tauri::command]
 pub async fn run_audio_tts(
     state: State<'_, AppState>,
     text: String,
-    output_path: String,
-) -> Result<(), String> {
+    output_path: Option<String>,
+) -> Result<String, String> {
     prepare_vram_for_audio_capability(&state, audio::AudioCapability::Tts).await?;
     let data_dir = state.data_dir.clone();
+    let resolved = match output_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        Some(path) => PathBuf::from(path),
+        None => {
+            let dir = data_dir.join("audio-try");
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            dir.join("try-tts.wav")
+        }
+    };
+    let out_display = resolved.to_string_lossy().into_owned();
     tokio::task::spawn_blocking(move || {
-        audio::run_tts(&data_dir, &text, Path::new(&output_path)).map_err(|e| e.to_string())
+        audio::run_tts(&data_dir, &text, &resolved).map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())??;
+    Ok(out_display)
 }

@@ -1,10 +1,12 @@
+import { capabilityBadgeLabel } from "./audio.js";
 import { escapeHtml } from "./markdown.js";
 
 // No media weights or runtimes are installed until a user chooses to configure them.
+// Audio is "available" for Settings packs + Try STT/TTS only — not a chat-mode audio product.
 export const CAPABILITIES = [
   { id: "text", title: "Assistant", detail: "One text model for Chat, Work, and Code. Chat and Work can search the web with your approval; Chat can send image pixels for vision-capable models.", state: "available" },
   { id: "images", title: "Images", detail: "Generate images with an optional local AUTOMATIC1111 or Forge server.", state: "available" },
-  { id: "audio", title: "Audio", detail: "Settings can download checksum-pinned Whisper tiny q5_1 and Piper en_US kusal q8 voices, register local / Whisper.cpp / Piper runners, and list recent local STT/TTS artifacts under the data directory. A fuller generation UX is still ahead.", state: "planned" },
+  { id: "audio", title: "Audio", detail: "Settings packs: download checksum-pinned Whisper tiny q5_1 and Piper en_US kusal q8, register local / Whisper.cpp / Piper runners, Try STT (local file dialog) / Try TTS (short sample), and list artifacts. Not a chat-mode audio product yet.", state: "available" },
   { id: "video", title: "Video", detail: "Video generation backends are planned.", state: "planned" },
 ];
 
@@ -24,7 +26,7 @@ export function createImageWorkspace({ invoke, getWorkspace, getEndpoint, refres
       <p>Keep Keel light. Your assistant is ready for a text model; media tools are optional.</p></div>
       <div class="capability-grid">${CAPABILITIES.map((cap) => `
         <article class="capability-card ${cap.id === "images" ? "selected" : ""}">
-          <div class="row"><h2>${cap.title}</h2><span class="capability-badge">${cap.state === "planned" ? "Planned" : cap.id === "images" ? "Optional" : "Built in"}</span></div>
+          <div class="row"><h2>${cap.title}</h2><span class="capability-badge">${capabilityBadgeLabel(cap)}</span></div>
           <p>${cap.detail}</p>${cap.id === "text" ? '<button class="btn btn-sm" id="tool-models">Choose text model</button>' : ""}
         </article>`).join("")}</div>
       <div class="image-workspace">

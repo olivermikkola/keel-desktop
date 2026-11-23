@@ -1,5 +1,12 @@
 import { createEveryday } from "./everyday.js";
 import { createImageWorkspace } from "./images.js";
+import {
+  AUDIO_TRY_STT_INPUT_HELP,
+  AUDIO_TRY_TTS_INPUT_HELP,
+  AUDIO_TRY_TTS_SAMPLE,
+  formatAudioTrySttSuccess,
+  formatAudioTryTtsSuccess,
+} from "./audio.js";
 import { assistantStatus, connectedExternalLocation, friendlyRuntimeError, friendlySetupError, isFirstRun, isRemoteModelServer, modelLocation, modelTierLabel, modelToWake, serverDataNotice, speedSettingsCopy, answerTimePhrase, modelCheckIntro } from "./onboarding.js";
 import { MODES, modeForPreset, isRuntimeLive, promptBlockReason } from "./modes.js";
 import { escapeHtml, renderMarkdown } from "./markdown.js";
@@ -2574,6 +2581,13 @@ function openCustomizeModal() {
       <strong>Speech packs</strong>
       <p class="muted">Local speech-to-text and text-to-speech only. Mark a pack installed, register a local / Whisper.cpp / Piper runner, download a checksum-pinned fixture (Whisper tiny q5_1 or Piper en_US kusal q8), or record a download URL stub. Whisper base stays unpinned until a real ggml URL + SHA-256 are published — no fake fetch.</p>
       <div id="audio-packs-list"><p class="muted">Loading…</p></div>
+      <strong style="display:block;margin-top:14px">Try STT / TTS</strong>
+      <p class="muted">${escapeHtml(AUDIO_TRY_STT_INPUT_HELP)} ${escapeHtml(AUDIO_TRY_TTS_INPUT_HELP)} Needs an installed pack with a registered runner; missing pack or runner surfaces the same messages as the core runner.</p>
+      <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
+        <button type="button" class="btn btn-sm btn-ghost" id="audio-try-stt">Try STT</button>
+        <button type="button" class="btn btn-sm btn-ghost" id="audio-try-tts">Try TTS</button>
+      </div>
+      <p id="audio-try-status" class="muted" role="status" style="margin-top:8px"></p>
       <strong style="display:block;margin-top:14px">Recent audio artifacts</strong>
       <p class="muted">Local STT transcripts and TTS wav copies written under the data directory after a successful run. Paths only — no cloud upload or fake player.</p>
       <div id="audio-artifacts-list"><p class="muted">Loading…</p></div>
@@ -2583,6 +2597,60 @@ function openCustomizeModal() {
       </div>
     `;
     body.appendChild(audioCard);
+
+    const audioTryStatus = audioCard.querySelector("#audio-try-status");
+    const setAudioTryStatus = (message, { ok = false } = {}) => {
+      audioTryStatus.textContent = message || "";
+      audioTryStatus.style.color = ok ? "var(--ok, inherit)" : "";
+    };
+    const wireAudioTryControls = () => {
+      audioCard.querySelector("#audio-try-stt").addEventListener("click", async () => {
+        const btn = audioCard.querySelector("#audio-try-stt");
+        btn.disabled = true;
+        setAudioTryStatus("Choose a local audio clip…");
+        try {
+          const picked = await invoke("pick_audio_file");
+          if (!picked) {
+            setAudioTryStatus("Try STT cancelled — no file selected.");
+            return;
+          }
+          setAudioTryStatus(`Running STT on ${picked}…`);
+          const transcript = await invoke("run_audio_stt", { audioPath: picked });
+          const ok = formatAudioTrySttSuccess(transcript);
+          setAudioTryStatus(ok, { ok: true });
+          showToast(ok);
+          await renderAudioArtifacts();
+        } catch (err) {
+          // Preserve core pack/runner messages (do not rewrite into model-runtime copy).
+          const msg = String(err ?? "").replace(/^Error:\s*/i, "").trim() || "STT failed.";
+          setAudioTryStatus(msg);
+          showToast(msg);
+        } finally {
+          btn.disabled = false;
+        }
+      });
+      audioCard.querySelector("#audio-try-tts").addEventListener("click", async () => {
+        const btn = audioCard.querySelector("#audio-try-tts");
+        btn.disabled = true;
+        setAudioTryStatus(`Running TTS (“${AUDIO_TRY_TTS_SAMPLE}”)…`);
+        try {
+          const outputPath = await invoke("run_audio_tts", {
+            text: AUDIO_TRY_TTS_SAMPLE,
+            outputPath: null,
+          });
+          const ok = formatAudioTryTtsSuccess(outputPath);
+          setAudioTryStatus(ok, { ok: true });
+          showToast(ok);
+          await renderAudioArtifacts();
+        } catch (err) {
+          const msg = String(err ?? "").replace(/^Error:\s*/i, "").trim() || "TTS failed.";
+          setAudioTryStatus(msg);
+          showToast(msg);
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    };
 
     const renderAudioArtifacts = async () => {
       const slot = audioCard.querySelector("#audio-artifacts-list");
@@ -2633,6 +2701,7 @@ function openCustomizeModal() {
       }
     });
     renderAudioArtifacts();
+    wireAudioTryControls();
     const renderAudioPacks = async () => {
       const slot = audioCard.querySelector("#audio-packs-list");
       try {
