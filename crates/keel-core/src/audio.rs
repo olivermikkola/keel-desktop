@@ -63,14 +63,22 @@ const RUNNER_FILE: &str = "runner.json";
 const INSTALLED_MARKER: &str = ".installed";
 const INSTALL_META: &str = "install.json";
 
-/// Catalog placeholder until a checksummed Whisper artifact URL + SHA-256 are pinned.
+/// Catalog placeholder for a larger Whisper base pin (not fetchable yet).
 ///
-/// Not fetchable. [`install_audio_pack_download_stub`] and [`download_audio_pack`]
-/// refuse it so Settings cannot pretend a download succeeded.
+/// [`install_audio_pack_download_stub`] and [`download_audio_pack`] refuse it.
 pub const WHISPER_BASE_DOWNLOAD_PLACEHOLDER: &str = "keel-pack:unpinned/stt-whisper-base";
 
 /// Prefix for honest "not pinned yet" catalog download placeholders.
 pub const UNPINNED_PACK_URL_PREFIX: &str = "keel-pack:unpinned/";
+
+/// Checksum-pinned Whisper.cpp tiny q5_1 weights (Hugging Face `ggerganov/whisper.cpp`).
+pub const WHISPER_TINY_Q5_PACK_ID: &str = "stt-whisper-tiny-q5";
+pub const WHISPER_TINY_Q5_FILE: &str = "ggml-tiny-q5_1.bin";
+pub const WHISPER_TINY_Q5_SHA256: &str =
+    "818710568da3ca15689e31a743197b520007872ff9576237bda97bd1b469c3d7";
+pub const WHISPER_TINY_Q5_BYTES: u64 = 32_152_673;
+pub const WHISPER_TINY_Q5_DOWNLOAD_URL: &str =
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_1.bin";
 
 /// Tiny checksummed STT fixture used to exercise download / remove (not Whisper weights).
 pub const DEMO_STT_PACK_ID: &str = "stt-demo-fixture";
@@ -279,8 +287,7 @@ pub enum AudioInstallMeta {
     },
 }
 
-/// Stub catalog. Whisper lists an unpinned download placeholder (not fetchable).
-/// [`DEMO_STT_PACK_ID`] is checksum-pinned so download/remove can be exercised.
+/// Catalog: demo fixture + pinned Whisper tiny q5_1 + unpinned Whisper base stub + TTS stub.
 pub fn list_audio_packs() -> Vec<AudioPackManifest> {
     vec![
         AudioPackManifest {
@@ -297,9 +304,22 @@ pub fn list_audio_packs() -> Vec<AudioPackManifest> {
             runner_path: None,
         },
         AudioPackManifest {
+            id: WHISPER_TINY_Q5_PACK_ID.into(),
+            capability: AudioCapability::Stt,
+            display_name: "Speech to text · Whisper tiny q5_1".into(),
+            min_vram_mib: 512,
+            runner_kind: AudioRunnerKind::AudioStt,
+            download_url: Some(WHISPER_TINY_Q5_DOWNLOAD_URL.into()),
+            sha256: Some(WHISPER_TINY_Q5_SHA256.into()),
+            file_name: Some(WHISPER_TINY_Q5_FILE.into()),
+            bytes: WHISPER_TINY_Q5_BYTES,
+            installed: false,
+            runner_path: None,
+        },
+        AudioPackManifest {
             id: "stt-whisper-base".into(),
             capability: AudioCapability::Stt,
-            display_name: "Speech to text · Whisper base (stub)".into(),
+            display_name: "Speech to text · Whisper base (unpinned)".into(),
             min_vram_mib: 1024,
             runner_kind: AudioRunnerKind::AudioStt,
             download_url: Some(WHISPER_BASE_DOWNLOAD_PLACEHOLDER.into()),
@@ -843,7 +863,16 @@ pub fn run_stt(data_dir: &Path, audio_path: &Path) -> Result<String> {
     if !audio_path.exists() {
         bail!("Audio file not found: {}", audio_path.display());
     }
-    let runner = require_runner(data_dir, &pack)?;
+    let mut runner = require_runner(data_dir, &pack)?;
+    // Prefer checksummed pack weights when Whisper.cpp has no explicit model path.
+    if runner.adapter == AudioSttAdapterKind::WhisperCpp && runner.model.is_none() {
+        if let Some(name) = pack.file_name.as_deref() {
+            let candidate = pack_dir(data_dir, &pack.id).join(name);
+            if candidate.is_file() {
+                runner.model = Some(candidate.to_string_lossy().into_owned());
+            }
+        }
+    }
     let command = runner.command.clone();
     let transcript = stt_adapter_from_runner(runner).transcribe(audio_path)?;
     if transcript.is_empty() {
@@ -940,15 +969,19 @@ mod tests {
     #[test]
     fn catalog_lists_stt_and_tts_stubs_not_downloaded() {
         let packs = list_audio_packs();
-        assert_eq!(packs.len(), 3);
+        assert_eq!(packs.len(), 4);
         let demo = packs
             .iter()
             .find(|p| p.id == DEMO_STT_PACK_ID)
             .expect("demo stt fixture");
-        let whisper = packs
+        let tiny = packs
+            .iter()
+            .find(|p| p.id == WHISPER_TINY_Q5_PACK_ID)
+            .expect("whisper tiny q5");
+        let whisper_base = packs
             .iter()
             .find(|p| p.id == "stt-whisper-base")
-            .expect("whisper stub");
+            .expect("whisper base stub");
         let tts = packs
             .iter()
             .find(|p| p.capability == AudioCapability::Tts)
@@ -957,19 +990,72 @@ mod tests {
         assert_eq!(demo.sha256.as_deref(), Some(DEMO_STT_SHA256));
         assert_eq!(demo.bytes, DEMO_STT_BYTES);
         assert_eq!(demo_stt_bytes().len() as u64, DEMO_STT_BYTES);
-        assert!(!audio_pack_download_is_pinned(whisper));
+        assert!(audio_pack_download_is_pinned(tiny));
+        assert_eq!(tiny.sha256.as_deref(), Some(WHISPER_TINY_Q5_SHA256));
+        assert_eq!(tiny.bytes, WHISPER_TINY_Q5_BYTES);
         assert_eq!(
-            whisper.download_url.as_deref(),
+            tiny.download_url.as_deref(),
+            Some(WHISPER_TINY_Q5_DOWNLOAD_URL)
+        );
+        assert!(!audio_pack_download_is_pinned(whisper_base));
+        assert_eq!(
+            whisper_base.download_url.as_deref(),
             Some(WHISPER_BASE_DOWNLOAD_PLACEHOLDER)
         );
         assert!(is_unpinned_audio_download_url(
-            whisper.download_url.as_deref().unwrap()
+            whisper_base.download_url.as_deref().unwrap()
         ));
         assert!(tts.download_url.is_none());
-        assert_eq!(whisper.runner_kind, AudioRunnerKind::AudioStt);
+        assert_eq!(tiny.runner_kind, AudioRunnerKind::AudioStt);
         assert_eq!(tts.runner_kind, AudioRunnerKind::AudioTts);
-        assert!(whisper.min_vram_mib > 0);
+        assert!(tiny.min_vram_mib > 0);
         assert!(tts.min_vram_mib > 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn whisper_cpp_uses_downloaded_pack_weights_when_model_omitted() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile_dir("whisper-pack-weights");
+        let weights = pack_dir(&dir, WHISPER_TINY_Q5_PACK_ID).join(WHISPER_TINY_Q5_FILE);
+        fs::create_dir_all(weights.parent().unwrap()).unwrap();
+        fs::write(&weights, b"fake-ggml").unwrap();
+        fs::write(
+            pack_dir(&dir, WHISPER_TINY_Q5_PACK_ID).join(INSTALLED_MARKER),
+            b"checksummed\n",
+        )
+        .unwrap();
+
+        let script = dir.join("fake-whisper.sh");
+        // argv: command -m <model> -f <audio> → $2 is model
+        fs::write(&script, "#!/bin/sh\nprintf '%s\\n' \"$2\"\n").unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+
+        // Register without model — run_stt should pick pack weights.
+        let config = AudioRunnerConfig {
+            command: script.to_str().unwrap().into(),
+            args: Vec::new(),
+            adapter: AudioSttAdapterKind::WhisperCpp,
+            model: None,
+        };
+        let pack_path = pack_dir(&dir, WHISPER_TINY_Q5_PACK_ID);
+        fs::write(
+            pack_path.join(RUNNER_FILE),
+            serde_json::to_string_pretty(&config).unwrap(),
+        )
+        .unwrap();
+
+        let wav = dir.join("clip.wav");
+        fs::write(&wav, b"RIFF").unwrap();
+        let out = run_stt(&dir, &wav).unwrap();
+        assert!(
+            out.contains(WHISPER_TINY_Q5_FILE),
+            "expected downloaded weights path in argv/transcript, got {out}"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

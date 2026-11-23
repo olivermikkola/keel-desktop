@@ -84,7 +84,8 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  setTimeout(()=>{job.status='succeeded';job.artifact_path='assets/keel-test.png';files.push(job.artifact_path);emit('keel://image-job',job);},250);break;}
  case 'list_audio_packs': result=window.__audioPacks || (window.__audioPacks=[
   {id:'stt-demo-fixture',capability:'stt',display_name:'Speech to text · Demo fixture (checksummed)',min_vram_mib:0,runner_kind:'audio_stt',download_url:'https://example.test/demo-stt.weights',sha256:'b3bbdb816ceaf3dccff5669d4e6fe361cdd92ccac7fc027e1015e204262d883e',file_name:'demo-stt.weights',bytes:43,installed:false,runner_path:null},
-  {id:'stt-whisper-base',capability:'stt',display_name:'Speech to text · Whisper base (stub)',min_vram_mib:1024,runner_kind:'audio_stt',download_url:'keel-pack:unpinned/stt-whisper-base',sha256:null,file_name:null,bytes:0,installed:false,runner_path:null},
+  {id:'stt-whisper-tiny-q5',capability:'stt',display_name:'Speech to text · Whisper tiny q5_1',min_vram_mib:512,runner_kind:'audio_stt',download_url:'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_1.bin',sha256:'818710568da3ca15689e31a743197b520007872ff9576237bda97bd1b469c3d7',file_name:'ggml-tiny-q5_1.bin',bytes:32152673,installed:false,runner_path:null},
+  {id:'stt-whisper-base',capability:'stt',display_name:'Speech to text · Whisper base (unpinned)',min_vram_mib:1024,runner_kind:'audio_stt',download_url:'keel-pack:unpinned/stt-whisper-base',sha256:null,file_name:null,bytes:0,installed:false,runner_path:null},
   {id:'tts-local-en',capability:'tts',display_name:'Text to speech · English (stub)',min_vram_mib:512,runner_kind:'audio_tts',download_url:null,sha256:null,file_name:null,bytes:0,installed:false,runner_path:null}
  ]);break;
  case 'mark_audio_pack_installed': {
