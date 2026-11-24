@@ -292,7 +292,7 @@ pub async fn import_keel_session(
         let mut picker = app
             .dialog()
             .file()
-            .set_title("Open a Keel CLI session")
+            .set_title("Open a Keel Code session")
             .add_filter("Keel session logs", &["jsonl"]);
         // Prefer the CLI's default journal folder when it exists (~/.keel/sessions).
         if let Some(sessions) = keel_core::harnesses::default_keel_sessions_dir() {
@@ -1284,7 +1284,7 @@ pub async fn send_message(
             return Err("Open the attachment's folder and refer to its filename, or use Work for attachments.".into());
         }
         if !session.messages.is_empty() && session.keel_session_log.is_none() {
-            return Err("Start a new Code thread to use the Keel CLI. This thread belongs to the previous engine.".into());
+            return Err("Start a new Code thread to use Keel Code (CLI). This thread belongs to the previous engine.".into());
         }
         let log = session.keel_session_log.get_or_insert_with(|| {
             state

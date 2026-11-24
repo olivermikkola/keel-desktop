@@ -96,7 +96,7 @@ export function createEveryday(api) {
         } else {
           const hint = document.createElement("p");
           hint.className = "muted";
-          hint.textContent = "Code + Keel CLI creates a JSONL journal you can show or export here.";
+          hint.textContent = "Code + Keel Code (CLI) creates a JSONL journal you can show or export here.";
           actions.after(hint);
         }
       }

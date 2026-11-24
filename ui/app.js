@@ -2968,8 +2968,8 @@ function openCustomizeModal() {
       })
       .join("");
     const harnessHint = b.config.harness_mode === "keel-cli"
-      ? `<p class="muted">Code uses the Keel CLI. Finish the current turn before resuming the same journal in a terminal.</p>`
-      : `<p class="muted">Select Keel CLI to share Code journals with a current CLI installed on PATH.</p>`;
+      ? `<p class="muted">Code uses Keel Code (<code>keel</code>). Finish the current turn before resuming the same journal in a terminal.</p>`
+      : `<p class="muted">Select Keel Code (CLI) to share Code journals with a current <code>keel</code> binary installed on PATH.</p>`;
     const card = document.createElement("div");
     card.className = "card";
     card.innerHTML = `

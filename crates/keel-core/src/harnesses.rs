@@ -106,12 +106,12 @@ pub fn detect_harnesses() -> Vec<HarnessOption> {
     let keel_bin = find_on_path("keel");
     list.push(HarnessOption {
         id: "keel-cli".to_string(),
-        name: "Keel CLI".to_string(),
+        name: "Keel Code (CLI)".to_string(),
         description: if keel_bin.is_some() {
-            "Requires a current Keel CLI. Streams tools, requests approvals in the app, and resumes the same JSONL journal in the terminal."
+            "Requires a current Keel Code CLI (`keel`). Streams tools, requests approvals in the app, and resumes the same JSONL journal in the terminal."
                 .to_string()
         } else {
-            "Canonical coding engine. Install the `keel` CLI on PATH to use it from Code."
+            "Canonical coding engine. Install Keel Code (`keel`) on PATH to use it from Code."
                 .to_string()
         },
         available: keel_bin.is_some(),
