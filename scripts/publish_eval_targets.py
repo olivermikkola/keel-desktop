@@ -178,8 +178,32 @@ def published_targets_section(doc: str) -> str:
     return table
 
 
-def assert_scaffold_all_tbd(table: str) -> None:
-    """Fail closed if any metric cell is filled without going through measurement."""
+def verified_results_by_row(results_dir: Path) -> dict[tuple[str, str], dict[str, str]]:
+    """Load and verify all held_out JSON reports under results_dir keyed by (Model, Hardware)."""
+    if not results_dir.is_dir():
+        return {}
+    by_row: dict[tuple[str, str], dict[str, str]] = {}
+    for report_path in sorted(results_dir.glob("*.json")):
+        report = load_report(report_path)
+        report_model = report.get("model")
+        report_hw = report.get("hardware")
+        if not isinstance(report_model, str) or report_hw not in ("cpu", "gpu", "metal"):
+            continue
+        hw_label = "CPU" if report_hw == "cpu" else "GPU"
+        for model_label, aliases in PUBLISHED_MODELS.items():
+            if report_model == model_label or report_model in aliases:
+                by_row[(model_label, hw_label)] = {
+                    "ttft": fmt_seconds(report.get("pack_p50_ttft_seconds")),
+                    "p50": fmt_seconds(report.get("pack_p50_seconds")),
+                    "success": fmt_rate(report.get("pack_success_rate")),
+                    "rss": fmt_rss(report.get("peak_rss_mb")),
+                }
+                break
+    return by_row
+
+
+def assert_scaffold_all_tbd(table: str, results_dir: Path | None = None) -> None:
+    """Fail closed if any metric cell is filled without a matching verified report."""
     row_re = re.compile(
         r"^\| (?P<model>.+?) \| (?P<hw>CPU|GPU) \| "
         r"(?P<ttft>[^|]+) \| (?P<p50>[^|]+) \| (?P<success>[^|]+) \| (?P<rss>[^|]+) \|$",
@@ -195,17 +219,32 @@ def assert_scaffold_all_tbd(table: str) -> None:
             "Published targets rows do not match expected model×hardware scaffold: "
             f"missing={sorted(expected - found)} unexpected={sorted(found - expected)}"
         )
+    verified = verified_results_by_row(results_dir) if results_dir is not None else {}
     invented: list[str] = []
     for match in rows:
+        model_label = match.group("model").strip()
+        hw_label = match.group("hw")
+        actual = {
+            key: match.group(key).strip()
+            for key in ("ttft", "p50", "success", "rss")
+        }
+        if all(val == "TBD" for val in actual.values()):
+            continue
+        expected_cells = verified.get((model_label, hw_label))
+        if expected_cells is None:
+            for label, key in zip(METRIC_HEADERS, ("ttft", "p50", "success", "rss"), strict=True):
+                if actual[key] != "TBD":
+                    invented.append(f"{model_label} / {hw_label} {label}={actual[key]!r}")
+            continue
         for label, key in zip(METRIC_HEADERS, ("ttft", "p50", "success", "rss"), strict=True):
-            cell = match.group(key).strip()
-            if cell != "TBD":
+            if actual[key] != expected_cells[key]:
                 invented.append(
-                    f"{match.group('model').strip()} / {match.group('hw')} {label}={cell!r}"
+                    f"{model_label} / {hw_label} {label}={actual[key]!r} "
+                    f"(report expects {expected_cells[key]!r})"
                 )
     if invented:
         raise SystemExit(
-            "refusing scaffold: Published targets still contain non-TBD metric cells "
+            "refusing scaffold: Published targets contain unverified non-TBD metric cells "
             "(do not invent numbers; fill only via measured --report). Offenders: "
             + "; ".join(invented)
         )
@@ -245,13 +284,13 @@ def check_report_identity(report: dict[str, Any], model: str, hardware: str) -> 
 def run_scaffold(doc_path: Path) -> int:
     text = doc_path.read_text(encoding="utf-8")
     table = published_targets_section(text)
-    assert_scaffold_all_tbd(table)
-    print("# Published targets scaffold (metric cells TBD until measured)")
+    assert_scaffold_all_tbd(table, results_dir=doc_path.parent / "eval-results")
+    print("# Published targets (verified against docs/eval-results; unmeasured cells stay TBD)")
     print(table)
     print()
     print(
-        "No metrics invented. Fill cells only after held_out runs "
-        "(KEEL_EVAL_RUNS≥5) via --report. See Continuous evidence in "
+        "No metrics invented. Every filled row matches a verified held_out report "
+        "(KEEL_EVAL_RUNS≥5); unmeasured cells stay TBD. See Continuous evidence in "
         f"{doc_path}."
     )
     return 0

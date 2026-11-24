@@ -1,0 +1,563 @@
+{
+  "case_filter": null,
+  "cases": [
+    {
+      "case": "friendly_email",
+      "p50_seconds": 0.922816525,
+      "p50_ttft_seconds": 0.126783075,
+      "passed": 5,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "Hi there! I'd be happy to help you draft that email. Here's a friendly two-sentence alternative:\n\n\"I'm sorry, but I won't be able to make the meeting tomorrow, so I'd love to suggest Friday instead. Let me know what works best for you!\"\n\nWould you like me to adjust the tone or add any specific details?",
+          "case": "friendly_email",
+          "passed": true,
+          "run": 1,
+          "seconds": 2.155566656,
+          "ttft_seconds": 0.429669248
+        },
+        {
+          "answer": "Hi there,\n\nI appreciate you reaching out about the meeting, but I'm unable to make it tomorrow. Would you like to reschedule on Friday instead?\n\nLet me know what works best for you!",
+          "case": "friendly_email",
+          "passed": true,
+          "run": 2,
+          "seconds": 1.144376691,
+          "ttft_seconds": 0.14484295
+        },
+        {
+          "answer": "Hi there,\n\nI appreciate you reaching out, but I won't be able to make the meeting tomorrow. Would Friday work better for us?\n\nBest,",
+          "case": "friendly_email",
+          "passed": true,
+          "run": 3,
+          "seconds": 0.86435811,
+          "ttft_seconds": 0.121319059
+        },
+        {
+          "answer": "Hi there,  \n\nI appreciate the offer to meet tomorrow, but I need to decline that for now. Would you be open to rescheduling to Friday instead?",
+          "case": "friendly_email",
+          "passed": true,
+          "run": 4,
+          "seconds": 0.922816525,
+          "ttft_seconds": 0.126783075
+        },
+        {
+          "answer": "Hi there!  \n\nI appreciate the offer to meet tomorrow, but I'm currently unavailable at that time. Would you be open to scheduling instead on Friday?",
+          "case": "friendly_email",
+          "passed": true,
+          "run": 5,
+          "seconds": 0.867023425,
+          "ttft_seconds": 0.122504858
+        }
+      ],
+      "success_rate": 1.0
+    },
+    {
+      "case": "document_facts",
+      "p50_seconds": 0.924318812,
+      "p50_ttft_seconds": 0.183485008,
+      "passed": 5,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "The budget is 4,800 euros and the launch date is 14 May 2027. Source: harbor-brief.txt.",
+          "case": "document_facts",
+          "passed": true,
+          "run": 1,
+          "seconds": 0.830565294,
+          "ttft_seconds": 0.184616956
+        },
+        {
+          "answer": "The budget is 4,800 euros and the launch date is 14 May 2027, per the attached brief \"harbor-brief.txt\".",
+          "case": "document_facts",
+          "passed": true,
+          "run": 2,
+          "seconds": 0.924318812,
+          "ttft_seconds": 0.183485008
+        },
+        {
+          "answer": "The attached brief is **harbor-brief.txt**. It lists the budget as **4,800 euros** and the launch date as **14 May 2027**.",
+          "case": "document_facts",
+          "passed": true,
+          "run": 3,
+          "seconds": 0.994271357,
+          "ttft_seconds": 0.184003434
+        },
+        {
+          "answer": "The budget is 4,800 euros and the launch date is 14 May 2027, per the file harbor-brief.txt.",
+          "case": "document_facts",
+          "passed": true,
+          "run": 4,
+          "seconds": 0.850213401,
+          "ttft_seconds": 0.18087849
+        },
+        {
+          "answer": "The budget is 4,800 euros and the launch date is 14 May 2027, according to the attached brief \"harbor-brief.txt\".",
+          "case": "document_facts",
+          "passed": true,
+          "run": 5,
+          "seconds": 0.956024242,
+          "ttft_seconds": 0.18112281
+        }
+      ],
+      "success_rate": 1.0
+    },
+    {
+      "case": "csv_total",
+      "p50_seconds": 1.198129845,
+      "p50_ttft_seconds": 0.863751376,
+      "passed": 5,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "The sum of the revenue column in sales.csv is **100**.",
+          "case": "csv_total",
+          "passed": true,
+          "run": 1,
+          "seconds": 1.6767078130000002,
+          "ttft_seconds": 1.3588001570000001
+        },
+        {
+          "answer": "The exact total of the revenue column in sales.csv is **100**.",
+          "case": "csv_total",
+          "passed": true,
+          "run": 2,
+          "seconds": 1.201187929,
+          "ttft_seconds": 0.860320564
+        },
+        {
+          "answer": "The sum of the revenue column in sales.csv is **100**.",
+          "case": "csv_total",
+          "passed": true,
+          "run": 3,
+          "seconds": 1.186683105,
+          "ttft_seconds": 0.86840739
+        },
+        {
+          "answer": "The sum of the revenue column in sales.csv is **100**.",
+          "case": "csv_total",
+          "passed": true,
+          "run": 4,
+          "seconds": 1.1906714680000001,
+          "ttft_seconds": 0.863751376
+        },
+        {
+          "answer": "The exact total of the revenue column in sales.csv is **100**.",
+          "case": "csv_total",
+          "passed": true,
+          "run": 5,
+          "seconds": 1.198129845,
+          "ttft_seconds": 0.856433293
+        }
+      ],
+      "success_rate": 1.0
+    },
+    {
+      "case": "code_fix",
+      "p50_seconds": 2.977011271,
+      "p50_ttft_seconds": 1.848532193,
+      "passed": 5,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "The fix is staged: `calculator.py` now returns `a + b` instead of `a - b`, so `add(2, 3)` will return `5`. Ready for your review.",
+          "case": "code_fix",
+          "passed": true,
+          "run": 1,
+          "seconds": 3.908490999,
+          "ttft_seconds": 2.807901439
+        },
+        {
+          "answer": "Done. The fix changes the `add` function from `return a - b` to `return a + b`, so `add(2, 3)` will now correctly return `5`.",
+          "case": "code_fix",
+          "passed": true,
+          "run": 2,
+          "seconds": 2.7891320349999997,
+          "ttft_seconds": 1.7954696700000001
+        },
+        {
+          "answer": "Done. The fix changes `return a - b` to `return a + b`, so `add(2, 3)` will return 5 instead of 1.",
+          "case": "code_fix",
+          "passed": true,
+          "run": 3,
+          "seconds": 2.746567171,
+          "ttft_seconds": 1.848532193
+        },
+        {
+          "answer": "Done. The fix is staged: `calculator.py` line 2 was changed from `return a - b` to `return a + b`, which will make `add(2, 3)` return `5`.",
+          "case": "code_fix",
+          "passed": true,
+          "run": 4,
+          "seconds": 3.466811145,
+          "ttft_seconds": 2.29033996
+        },
+        {
+          "answer": "The fix is staged. The `add` function currently returns `a - b`, which I've changed to `return a + b` so that `add(2, 3)` returns `5`. Ready for your review.",
+          "case": "code_fix",
+          "passed": true,
+          "run": 5,
+          "seconds": 2.977011271,
+          "ttft_seconds": 1.8018035129999999
+        }
+      ],
+      "success_rate": 1.0
+    },
+    {
+      "case": "saved_preference",
+      "p50_seconds": 0.654884826,
+      "p50_ttft_seconds": 0.350247717,
+      "passed": 5,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "How about a spinach and chickpeas salad with a lemon-tahini dressing?",
+          "case": "saved_preference",
+          "passed": true,
+          "run": 1,
+          "seconds": 0.753012535,
+          "ttft_seconds": 0.351454436
+        },
+        {
+          "answer": "How about a fresh green smoothie with some berries and spinach?",
+          "case": "saved_preference",
+          "passed": true,
+          "run": 2,
+          "seconds": 0.656915984,
+          "ttft_seconds": 0.352394439
+        },
+        {
+          "answer": "How about a fresh green smoothie with some berries and spinach?",
+          "case": "saved_preference",
+          "passed": true,
+          "run": 3,
+          "seconds": 0.649467823,
+          "ttft_seconds": 0.3482144
+        },
+        {
+          "answer": "How about a fresh green smoothie with some berries and spinach?",
+          "case": "saved_preference",
+          "passed": true,
+          "run": 4,
+          "seconds": 0.654884826,
+          "ttft_seconds": 0.350247717
+        },
+        {
+          "answer": "How about a fresh green salad with grilled vegetables?",
+          "case": "saved_preference",
+          "passed": true,
+          "run": 5,
+          "seconds": 0.579325163,
+          "ttft_seconds": 0.346128922
+        }
+      ],
+      "success_rate": 1.0
+    },
+    {
+      "case": "preference_conflict",
+      "p50_seconds": 0.424980891,
+      "p50_ttft_seconds": 0.160449379,
+      "passed": 5,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "How about a big salad with grilled vegetables?",
+          "case": "preference_conflict",
+          "passed": true,
+          "run": 1,
+          "seconds": 0.375308146,
+          "ttft_seconds": 0.160693506
+        },
+        {
+          "answer": "How about a vegetable salad with some grilled vegetables?",
+          "case": "preference_conflict",
+          "passed": true,
+          "run": 2,
+          "seconds": 0.392710453,
+          "ttft_seconds": 0.158738315
+        },
+        {
+          "answer": "How about a fresh green salad with some chickpeas and a lemon-tahini dressing.",
+          "case": "preference_conflict",
+          "passed": true,
+          "run": 3,
+          "seconds": 0.608208905,
+          "ttft_seconds": 0.160449379
+        },
+        {
+          "answer": "How about a fresh green smoothie with some berries?",
+          "case": "preference_conflict",
+          "passed": true,
+          "run": 4,
+          "seconds": 0.424980891,
+          "ttft_seconds": 0.160856279
+        },
+        {
+          "answer": "How about a big bowl of greens with a lean protein and some fresh herbs.",
+          "case": "preference_conflict",
+          "passed": true,
+          "run": 5,
+          "seconds": 0.531605484,
+          "ttft_seconds": 0.157276945
+        }
+      ],
+      "success_rate": 1.0
+    },
+    {
+      "case": "csv_region_filter",
+      "p50_seconds": 1.200858616,
+      "p50_ttft_seconds": 1.003473346,
+      "passed": 5,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "The West region revenue is **50**.",
+          "case": "csv_region_filter",
+          "passed": true,
+          "run": 1,
+          "seconds": 1.200858616,
+          "ttft_seconds": 1.005418499
+        },
+        {
+          "answer": "The West region revenue is **50**.",
+          "case": "csv_region_filter",
+          "passed": true,
+          "run": 2,
+          "seconds": 1.194443859,
+          "ttft_seconds": 0.998197083
+        },
+        {
+          "answer": "The West region revenue is **50**.",
+          "case": "csv_region_filter",
+          "passed": true,
+          "run": 3,
+          "seconds": 1.199042585,
+          "ttft_seconds": 1.003473346
+        },
+        {
+          "answer": "The exact revenue for the West region is **50**.",
+          "case": "csv_region_filter",
+          "passed": true,
+          "run": 4,
+          "seconds": 1.26932574,
+          "ttft_seconds": 0.99965034
+        },
+        {
+          "answer": "The West region revenue is **50**.",
+          "case": "csv_region_filter",
+          "passed": true,
+          "run": 5,
+          "seconds": 1.204428363,
+          "ttft_seconds": 1.00777824
+        }
+      ],
+      "success_rate": 1.0
+    },
+    {
+      "case": "multi_file_code",
+      "p50_seconds": 10.168258031,
+      "p50_ttft_seconds": 1.1045121,
+      "passed": 3,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "The staged edit is ready. It changes `double(n)` in `util.py` from `return n - n` to `return n + 2`. With this change, `main.py` will print `double(2) + 1 = 4 + 1 = 5` as requested.",
+          "case": "multi_file_code",
+          "passed": true,
+          "run": 1,
+          "seconds": 10.168258031,
+          "ttft_seconds": 2.503616494
+        },
+        {
+          "answer": "Actually, let me verify the math: `double(2) + 1` needs to equal `5`, so `double(2)` must be `4`. The current edit returns `n + 2`, which gives `4`. That's correct.\n\nHere are the staged edits:\n\n1. **util.py**: `double(n)` now returns `n + 2` (so `double(2)` = 4).\n2. **main.py**: Unchanged \u2014 `print(double(2) + 1)` will print `5`.",
+          "case": "multi_file_code",
+          "passed": false,
+          "run": 2,
+          "seconds": 12.188685968,
+          "ttft_seconds": 4.364458208
+        },
+        {
+          "answer": "Done. The staged edit changes `double` to return `n + n`, so `double(2) + 1` becomes `5`.",
+          "case": "multi_file_code",
+          "passed": true,
+          "run": 3,
+          "seconds": 5.876478282,
+          "ttft_seconds": 1.093379158
+        },
+        {
+          "answer": "Done. The staged edit changes `double` from returning `n - n` (which is always 0) to returning `n + 2`. This makes `double(2) = 4`, and `double(2) + 1` in `main.py` prints `5` as required.",
+          "case": "multi_file_code",
+          "passed": true,
+          "run": 4,
+          "seconds": 10.756287853,
+          "ttft_seconds": 1.1045121
+        },
+        {
+          "answer": "The current code uses `double(n)` which returns `n - n` (i.e., 0). To make `main.py` print `5`, `double(2) + 1` must equal `5`, so `double(2)` must return `4`. I'll stage a fix in `util.py` to make `double` return `n + 2` instead of `n - n`.",
+          "case": "multi_file_code",
+          "passed": false,
+          "run": 5,
+          "seconds": 3.223465397,
+          "ttft_seconds": 1.084269564
+        }
+      ],
+      "success_rate": 0.6
+    },
+    {
+      "case": "buried_fact_recall",
+      "p50_seconds": 0.441898269,
+      "p50_ttft_seconds": 0.392490667,
+      "passed": 5,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "CEDAR",
+          "case": "buried_fact_recall",
+          "passed": true,
+          "run": 1,
+          "seconds": 0.444174956,
+          "ttft_seconds": 0.393671083
+        },
+        {
+          "answer": "CEDAR",
+          "case": "buried_fact_recall",
+          "passed": true,
+          "run": 2,
+          "seconds": 0.440099929,
+          "ttft_seconds": 0.390223909
+        },
+        {
+          "answer": "CEDAR",
+          "case": "buried_fact_recall",
+          "passed": true,
+          "run": 3,
+          "seconds": 0.44098397,
+          "ttft_seconds": 0.390261114
+        },
+        {
+          "answer": "CEDAR",
+          "case": "buried_fact_recall",
+          "passed": true,
+          "run": 4,
+          "seconds": 0.442568072,
+          "ttft_seconds": 0.392761342
+        },
+        {
+          "answer": "CEDAR",
+          "case": "buried_fact_recall",
+          "passed": true,
+          "run": 5,
+          "seconds": 0.441898269,
+          "ttft_seconds": 0.392490667
+        }
+      ],
+      "success_rate": 1.0
+    },
+    {
+      "case": "unknown_from_brief",
+      "p50_seconds": 0.463428055,
+      "p50_ttft_seconds": 0.1811984285,
+      "passed": 4,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "The attached brief does not mention a legal counsel's name.",
+          "case": "unknown_from_brief",
+          "passed": true,
+          "run": 1,
+          "seconds": 0.463428055,
+          "ttft_seconds": 0.180040346
+        },
+        {
+          "case": "unknown_from_brief",
+          "error": "Your local AI engine stopped responding. Try sending your message again, or pick another model.",
+          "passed": false,
+          "run": 2,
+          "seconds": 0.001993929
+        },
+        {
+          "answer": "The brief does not mention a legal counsel's name.",
+          "case": "unknown_from_brief",
+          "passed": true,
+          "run": 3,
+          "seconds": 0.443782647,
+          "ttft_seconds": 0.182983455
+        },
+        {
+          "answer": "The attached brief does not mention a legal counsel's name. The only source provided (harbor-brief.txt) states the project details: approved budget of 4,800 euros, launch date of 14 May 2027, and an audience of local cafes.",
+          "case": "unknown_from_brief",
+          "passed": true,
+          "run": 4,
+          "seconds": 1.488469506,
+          "ttft_seconds": 0.18124711
+        },
+        {
+          "answer": "The legal counsel's name is not mentioned in the attached brief.",
+          "case": "unknown_from_brief",
+          "passed": true,
+          "run": 5,
+          "seconds": 0.487623698,
+          "ttft_seconds": 0.181149747
+        }
+      ],
+      "success_rate": 0.8
+    },
+    {
+      "case": "long_session_compaction",
+      "p50_seconds": 2.025840027,
+      "p50_ttft_seconds": 1.969243085,
+      "passed": 5,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "MAPLE",
+          "case": "long_session_compaction",
+          "passed": true,
+          "run": 1,
+          "seconds": 2.017599799,
+          "ttft_seconds": 1.960581265
+        },
+        {
+          "answer": "MAPLE",
+          "case": "long_session_compaction",
+          "passed": true,
+          "run": 2,
+          "seconds": 2.028443283,
+          "ttft_seconds": 1.971693697
+        },
+        {
+          "answer": "MAPLE",
+          "case": "long_session_compaction",
+          "passed": true,
+          "run": 3,
+          "seconds": 2.033810737,
+          "ttft_seconds": 1.9733511780000002
+        },
+        {
+          "answer": "MAPLE",
+          "case": "long_session_compaction",
+          "passed": true,
+          "run": 4,
+          "seconds": 2.025840027,
+          "ttft_seconds": 1.969243085
+        },
+        {
+          "answer": "MAPLE",
+          "case": "long_session_compaction",
+          "passed": true,
+          "run": 5,
+          "seconds": 2.017366761,
+          "ttft_seconds": 1.9601154790000002
+        }
+      ],
+      "success_rate": 1.0
+    }
+  ],
+  "hardware": "cpu",
+  "model": "minicpm5-2b",
+  "note": "Small opt-in task checks, not a comparison with Claude or a broad quality benchmark. Read answers as well as pass flags.",
+  "pack": "held_out",
+  "pack_p50_seconds": 1.144376691,
+  "pack_p50_ttft_seconds": 0.3932162125,
+  "pack_success_rate": 0.9454545454545454,
+  "runs": 5,
+  "peak_rss_mb": 745.2
+}

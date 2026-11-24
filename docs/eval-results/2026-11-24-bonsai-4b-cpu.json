@@ -1,0 +1,564 @@
+{
+  "case_filter": null,
+  "cases": [
+    {
+      "case": "friendly_email",
+      "p50_seconds": 2.42127698,
+      "p50_ttft_seconds": 0.6489573,
+      "passed": 4,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "Hi there, I'd be happy to help you draft that! Here's a friendly two-sentence email:\n\nSubject: Meeting Scheduling\n\nHi [Name],\n\nI won't be able to make the meeting tomorrow, but I'd love to connect with you on Friday instead. Let me know if that works for your schedule!\n\nBest,\n[Your Name]",
+          "case": "friendly_email",
+          "passed": true,
+          "run": 1,
+          "seconds": 4.708424917,
+          "ttft_seconds": 1.618946964
+        },
+        {
+          "answer": "Hi there, I'd be happy to help you draft that email. Would you like me to search for any specific details about your meeting or Friday's availability first? Or would you like me to just draft it now?",
+          "case": "friendly_email",
+          "passed": false,
+          "run": 2,
+          "seconds": 2.42127698,
+          "ttft_seconds": 0.6759411
+        },
+        {
+          "answer": "Hi there, I'd love to meet, but tomorrow is too busy for me so could we swap to Friday instead? Let me know if that works for you.",
+          "case": "friendly_email",
+          "passed": true,
+          "run": 3,
+          "seconds": 1.9398080439999998,
+          "ttft_seconds": 0.648259359
+        },
+        {
+          "answer": "Hi there, I'd love to schedule a meeting with you, but I'm unable to meet tomorrow due to a prior commitment. Would you be open to rescheduling for this Friday instead?",
+          "case": "friendly_email",
+          "passed": true,
+          "run": 4,
+          "seconds": 2.113666868,
+          "ttft_seconds": 0.643105625
+        },
+        {
+          "answer": "Hi there, I'd be happy to help with that! Here is a draft for your email:\n\n\"Hi there, I'm afraid I won't be able to make the meeting tomorrow, but I'd love to schedule it for Friday instead. Let me know if that works for you!\"",
+          "case": "friendly_email",
+          "passed": true,
+          "run": 5,
+          "seconds": 2.976032657,
+          "ttft_seconds": 0.6489573
+        }
+      ],
+      "success_rate": 0.8
+    },
+    {
+      "case": "document_facts",
+      "p50_seconds": 1.591716381,
+      "p50_ttft_seconds": 0.453520891,
+      "passed": 5,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "Budget: 4,800 euros\nLaunch date: 14 May 2027\n\nSource: harbor-brief.txt",
+          "case": "document_facts",
+          "passed": true,
+          "run": 1,
+          "seconds": 1.644892907,
+          "ttft_seconds": 0.474137623
+        },
+        {
+          "answer": "Budget: 4,800 euros\nLaunch date: 14 May 2027\n\nSource: harbor-brief.txt",
+          "case": "document_facts",
+          "passed": true,
+          "run": 2,
+          "seconds": 1.614650219,
+          "ttft_seconds": 0.458913401
+        },
+        {
+          "answer": "Budget: 4,800 euros\nLaunch date: 14 May 2027\nSource: harbor-brief.txt",
+          "case": "document_facts",
+          "passed": true,
+          "run": 3,
+          "seconds": 1.591269516,
+          "ttft_seconds": 0.446405344
+        },
+        {
+          "answer": "Budget: 4,800 euros\nLaunch date: 14 May 2027\nSource: harbor-brief.txt",
+          "case": "document_facts",
+          "passed": true,
+          "run": 4,
+          "seconds": 1.5827006890000002,
+          "ttft_seconds": 0.451250699
+        },
+        {
+          "answer": "Budget: 4,800 euros\nLaunch date: 14 May 2027\n\nSource: harbor-brief.txt",
+          "case": "document_facts",
+          "passed": true,
+          "run": 5,
+          "seconds": 1.591716381,
+          "ttft_seconds": 0.453520891
+        }
+      ],
+      "success_rate": 1.0
+    },
+    {
+      "case": "csv_total",
+      "p50_seconds": 3.287218516,
+      "p50_ttft_seconds": 2.767946192,
+      "passed": 5,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "The sum of revenue in sales.csv is **100**.",
+          "case": "csv_total",
+          "passed": true,
+          "run": 1,
+          "seconds": 4.638687836,
+          "ttft_seconds": 4.134673146
+        },
+        {
+          "answer": "The sum of revenue in sales.csv is 100.",
+          "case": "csv_total",
+          "passed": true,
+          "run": 2,
+          "seconds": 3.317540405,
+          "ttft_seconds": 2.799214642
+        },
+        {
+          "answer": "The sum of revenue in sales.csv is **100**.",
+          "case": "csv_total",
+          "passed": true,
+          "run": 3,
+          "seconds": 3.287218516,
+          "ttft_seconds": 2.767946192
+        },
+        {
+          "answer": "The sum of revenue in sales.csv is 100.",
+          "case": "csv_total",
+          "passed": true,
+          "run": 4,
+          "seconds": 3.243557747,
+          "ttft_seconds": 2.7312733380000003
+        },
+        {
+          "answer": "The sum of revenue in sales.csv is 100.",
+          "case": "csv_total",
+          "passed": true,
+          "run": 5,
+          "seconds": 3.269748826,
+          "ttft_seconds": 2.751226697
+        }
+      ],
+      "success_rate": 1.0
+    },
+    {
+      "case": "code_fix",
+      "p50_seconds": 6.54924453,
+      "p50_ttft_seconds": 4.24378945,
+      "passed": 5,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "Edit staged. Change `return a - b` to `return a + b` in `calculator.py`.",
+          "case": "code_fix",
+          "passed": true,
+          "run": 1,
+          "seconds": 7.186943468,
+          "ttft_seconds": 6.28234213
+        },
+        {
+          "answer": "Edit staged: changed `return a - b` to `return a + b` in `calculator.py`. Please review and approve before applying.",
+          "case": "code_fix",
+          "passed": true,
+          "run": 2,
+          "seconds": 6.54924453,
+          "ttft_seconds": 1.653405095
+        },
+        {
+          "answer": "Edit staged: Changed `return a - b` to `return a + b` in `calculator.py`. Apply when ready.",
+          "case": "code_fix",
+          "passed": true,
+          "run": 3,
+          "seconds": 5.284845882,
+          "ttft_seconds": 4.24378945
+        },
+        {
+          "answer": "Edit staged: changed `return a - b` to `return a + b` in `calculator.py`. Review and apply when ready.",
+          "case": "code_fix",
+          "passed": true,
+          "run": 4,
+          "seconds": 5.423343629,
+          "ttft_seconds": 4.303458176
+        },
+        {
+          "answer": "Edit staged: Changed `return a - b` to `return a + b` in `calculator.py`. Review and apply when ready.",
+          "case": "code_fix",
+          "passed": true,
+          "run": 5,
+          "seconds": 6.5742808010000005,
+          "ttft_seconds": 1.630109908
+        }
+      ],
+      "success_rate": 1.0
+    },
+    {
+      "case": "saved_preference",
+      "p50_seconds": 1.631522168,
+      "p50_ttft_seconds": 1.197423222,
+      "passed": 0,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "Grilled chicken salad with avocado and vinaigrette.",
+          "case": "saved_preference",
+          "passed": false,
+          "run": 1,
+          "seconds": 1.679957399,
+          "ttft_seconds": 1.236939277
+        },
+        {
+          "answer": "A quick vegetarian lunch is a grilled chicken wrap with avocado and hummus.",
+          "case": "saved_preference",
+          "passed": false,
+          "run": 2,
+          "seconds": 1.790895346,
+          "ttft_seconds": 1.200696852
+        },
+        {
+          "answer": "Grilled chicken salad with avocado and vinaigrette.",
+          "case": "saved_preference",
+          "passed": false,
+          "run": 3,
+          "seconds": 1.631522168,
+          "ttft_seconds": 1.197423222
+        },
+        {
+          "answer": "Grilled chicken salad with avocado.",
+          "case": "saved_preference",
+          "passed": false,
+          "run": 4,
+          "seconds": 1.4723645410000001,
+          "ttft_seconds": 1.194708661
+        },
+        {
+          "answer": "Grilled chicken salad with olive oil and lemon dressing.",
+          "case": "saved_preference",
+          "passed": false,
+          "run": 5,
+          "seconds": 1.620758456,
+          "ttft_seconds": 1.195041438
+        }
+      ],
+      "success_rate": 0.0
+    },
+    {
+      "case": "preference_conflict",
+      "p50_seconds": 0.863614655,
+      "p50_ttft_seconds": 0.478656584,
+      "passed": 1,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "Grilled chicken salad with quinoa.",
+          "case": "preference_conflict",
+          "passed": false,
+          "run": 1,
+          "seconds": 0.807709199,
+          "ttft_seconds": 0.486400733
+        },
+        {
+          "answer": "Grilled chicken salad with quinoa and avocado.",
+          "case": "preference_conflict",
+          "passed": false,
+          "run": 2,
+          "seconds": 0.855900281,
+          "ttft_seconds": 0.475219551
+        },
+        {
+          "answer": "Grilled chicken salad with quinoa and avocado.",
+          "case": "preference_conflict",
+          "passed": false,
+          "run": 3,
+          "seconds": 0.863614655,
+          "ttft_seconds": 0.472885835
+        },
+        {
+          "answer": "Grilled chicken salad with olive oil and lemon dressing.",
+          "case": "preference_conflict",
+          "passed": false,
+          "run": 4,
+          "seconds": 0.914428837,
+          "ttft_seconds": 0.479854118
+        },
+        {
+          "answer": "Roasted sweet potato salad with chickpeas and lemon dressing.",
+          "case": "preference_conflict",
+          "passed": true,
+          "run": 5,
+          "seconds": 0.988185697,
+          "ttft_seconds": 0.478656584
+        }
+      ],
+      "success_rate": 0.2
+    },
+    {
+      "case": "csv_region_filter",
+      "p50_seconds": 3.288357362,
+      "p50_ttft_seconds": 2.921939038,
+      "passed": 5,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "The West region revenue is exactly 50.",
+          "case": "csv_region_filter",
+          "passed": true,
+          "run": 1,
+          "seconds": 3.403293567,
+          "ttft_seconds": 3.001993769
+        },
+        {
+          "answer": "The West region revenue is **50**.",
+          "case": "csv_region_filter",
+          "passed": true,
+          "run": 2,
+          "seconds": 3.276482103,
+          "ttft_seconds": 2.91838506
+        },
+        {
+          "answer": "The West region revenue is exactly **50**.",
+          "case": "csv_region_filter",
+          "passed": true,
+          "run": 3,
+          "seconds": 3.314355158,
+          "ttft_seconds": 2.921939038
+        },
+        {
+          "answer": "The exact West region revenue is **50**.",
+          "case": "csv_region_filter",
+          "passed": true,
+          "run": 4,
+          "seconds": 3.285763205,
+          "ttft_seconds": 2.893587646
+        },
+        {
+          "answer": "The West region revenue is **50**.",
+          "case": "csv_region_filter",
+          "passed": true,
+          "run": 5,
+          "seconds": 3.288357362,
+          "ttft_seconds": 2.932663253
+        }
+      ],
+      "success_rate": 1.0
+    },
+    {
+      "case": "multi_file_code",
+      "p50_seconds": 11.225331494,
+      "p50_ttft_seconds": 2.816167772,
+      "passed": 5,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "Edit staged. Please review and apply if correct.",
+          "case": "multi_file_code",
+          "passed": true,
+          "run": 1,
+          "seconds": 8.851476074,
+          "ttft_seconds": 2.816167772
+        },
+        {
+          "answer": "Edit staged: Changed `return n - n` to `return n + 2` in `util.py`. This makes `double(2) = 4`, so `main.py` prints `4 + 1 = 5`.",
+          "case": "multi_file_code",
+          "passed": true,
+          "run": 2,
+          "seconds": 16.126617136,
+          "ttft_seconds": 2.828900154
+        },
+        {
+          "answer": "Edit staged. Review and apply when ready.",
+          "case": "multi_file_code",
+          "passed": true,
+          "run": 3,
+          "seconds": 11.781905062,
+          "ttft_seconds": 2.854165195
+        },
+        {
+          "answer": "Edit staged. Please review and confirm.",
+          "case": "multi_file_code",
+          "passed": true,
+          "run": 4,
+          "seconds": 11.225331494,
+          "ttft_seconds": 2.8098256790000002
+        },
+        {
+          "answer": "Edit staged. Review and apply when ready.",
+          "case": "multi_file_code",
+          "passed": true,
+          "run": 5,
+          "seconds": 9.006159086,
+          "ttft_seconds": 2.811577846
+        }
+      ],
+      "success_rate": 1.0
+    },
+    {
+      "case": "buried_fact_recall",
+      "p50_seconds": 1.765153369,
+      "p50_ttft_seconds": 1.685669917,
+      "passed": 5,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "CEDAR",
+          "case": "buried_fact_recall",
+          "passed": true,
+          "run": 1,
+          "seconds": 2.200833411,
+          "ttft_seconds": 2.120397586
+        },
+        {
+          "answer": "CEDAR",
+          "case": "buried_fact_recall",
+          "passed": true,
+          "run": 2,
+          "seconds": 1.765153369,
+          "ttft_seconds": 1.685669917
+        },
+        {
+          "answer": "CEDAR",
+          "case": "buried_fact_recall",
+          "passed": true,
+          "run": 3,
+          "seconds": 1.781018376,
+          "ttft_seconds": 1.7040784009999999
+        },
+        {
+          "answer": "CEDAR",
+          "case": "buried_fact_recall",
+          "passed": true,
+          "run": 4,
+          "seconds": 1.749044133,
+          "ttft_seconds": 1.671377565
+        },
+        {
+          "answer": "CEDAR",
+          "case": "buried_fact_recall",
+          "passed": true,
+          "run": 5,
+          "seconds": 1.7360084439999999,
+          "ttft_seconds": 1.6595354960000002
+        }
+      ],
+      "success_rate": 1.0
+    },
+    {
+      "case": "unknown_from_brief",
+      "p50_seconds": 1.7843607179999998,
+      "p50_ttft_seconds": 1.306637839,
+      "passed": 5,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "The provided brief does not contain information about a legal counsel's name.",
+          "case": "unknown_from_brief",
+          "passed": true,
+          "run": 1,
+          "seconds": 1.010619749,
+          "ttft_seconds": 0.458071485
+        },
+        {
+          "answer": "The provided brief does not contain the legal counsel's name.",
+          "case": "unknown_from_brief",
+          "passed": true,
+          "run": 2,
+          "seconds": 1.7843607179999998,
+          "ttft_seconds": 1.310678135
+        },
+        {
+          "answer": "The provided brief does not contain the legal counsel's name.",
+          "case": "unknown_from_brief",
+          "passed": true,
+          "run": 3,
+          "seconds": 1.77351227,
+          "ttft_seconds": 1.306637839
+        },
+        {
+          "answer": "The attached brief does not contain information about a legal counsel's name.",
+          "case": "unknown_from_brief",
+          "passed": true,
+          "run": 4,
+          "seconds": 1.849185643,
+          "ttft_seconds": 1.296845715
+        },
+        {
+          "answer": "The attached brief does not contain information about a legal counsel's name.",
+          "case": "unknown_from_brief",
+          "passed": true,
+          "run": 5,
+          "seconds": 1.8386551180000001,
+          "ttft_seconds": 1.308377739
+        }
+      ],
+      "success_rate": 1.0
+    },
+    {
+      "case": "long_session_compaction",
+      "p50_seconds": 4.601673574,
+      "p50_ttft_seconds": 4.512214488,
+      "passed": 5,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "MAPLE",
+          "case": "long_session_compaction",
+          "passed": true,
+          "run": 1,
+          "seconds": 4.601673574,
+          "ttft_seconds": 4.512214488
+        },
+        {
+          "answer": "MAPLE",
+          "case": "long_session_compaction",
+          "passed": true,
+          "run": 2,
+          "seconds": 4.6131875959999995,
+          "ttft_seconds": 4.528827755
+        },
+        {
+          "answer": "MAPLE",
+          "case": "long_session_compaction",
+          "passed": true,
+          "run": 3,
+          "seconds": 4.580696245,
+          "ttft_seconds": 4.49489008
+        },
+        {
+          "answer": "MAPLE",
+          "case": "long_session_compaction",
+          "passed": true,
+          "run": 4,
+          "seconds": 4.590398503,
+          "ttft_seconds": 4.507883918
+        },
+        {
+          "answer": "MAPLE",
+          "case": "long_session_compaction",
+          "passed": true,
+          "run": 5,
+          "seconds": 4.648930238,
+          "ttft_seconds": 4.563065778
+        }
+      ],
+      "success_rate": 1.0
+    }
+  ],
+  "hardware": "cpu",
+  "model": "bonsai-4b",
+  "note": "Small opt-in task checks, not a comparison with Claude or a broad quality benchmark. Read answers as well as pass flags.",
+  "pack": "held_out",
+  "pack_p50_seconds": 2.42127698,
+  "pack_p50_ttft_seconds": 1.6595354960000002,
+  "pack_success_rate": 0.8181818181818182,
+  "runs": 5,
+  "peak_rss_mb": 2159.2
+}
