@@ -11,7 +11,7 @@ to leave it. No account, no subscription, no cloud fallback.
 
 Keel Desktop is the everyday app of the Keel family. Chat and Work use Desktop's
 local model runtime. Code can use that runtime or the separate
-Keel CLI on supported setups. [Keel product vision](https://github.com/olivermikkola/keel/blob/main/docs/VISION.md)
+Keel Code (`keel`) on supported setups. [Keel product vision](https://github.com/olivermikkola/keel-code/blob/main/docs/VISION.md)
 
 Built with **Tauri 2**, **Rust**, and **llama.cpp** (`llama-server`), carrying the **Keel** small-model harness and workspace (Ink, Slate, and warm Paper light themes) from Keel Mobile onto the desktop without iOS memory or sandbox restrictions.
 
@@ -123,7 +123,7 @@ cargo run -p keel-core --bin keel-desktop-cli -- --help
 
 `keel-desktop-cli` exposes model information and one-shot prompts through
 Desktop's local engine. For a terminal coding session, use the Keel CLI.
-[Keel CLI](https://github.com/olivermikkola/keel)
+[Keel Code](https://github.com/olivermikkola/keel-code)
 
 ## Repository layout
 
@@ -137,11 +137,11 @@ scripts            Local check and verification scripts
 ## The Keel family
 
 One engine, focused surfaces — the canonical positioning is the
-[Keel product vision](https://github.com/olivermikkola/keel/blob/main/docs/VISION.md).
+[Keel product vision](https://github.com/olivermikkola/keel-code/blob/main/docs/VISION.md).
 
 | Product | What it is |
 | --- | --- |
-| [Keel](https://github.com/olivermikkola/keel) | CLI + TUI coding agent for small local models — Code mode's canonical engine |
+| [Keel Code](https://github.com/olivermikkola/keel-code) | CLI + TUI coding agent (`keel`) for small local models — Code mode's canonical engine |
 | **Keel Desktop** (this repo) | Everyday local-AI app: Chat, Work, Images, Code |
 | [Keel Mobile](https://moesystems.com/keel-mobile/) | Standalone on-device iPhone agent — the model runs on the phone |
 | [Keel Mobile for Android](https://github.com/olivermikkola/keel-mobile-android) | On-device Android agent, source-build pre-alpha |
