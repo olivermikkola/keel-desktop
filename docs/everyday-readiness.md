@@ -35,18 +35,18 @@ Formal targets for recommended model × hardware combinations. Fill a cell only 
 | Success rate | Pack-level fraction of passed case samples (`pack_success_rate`) |
 | Peak RSS | Peak resident set size of the model server (pass `KEEL_EVAL_PEAK_RSS_MB` when known; else measure with OS tools) |
 
-**Every cell below is TBD** until measured on the intended hardware. Do not treat the informal CPU samples in the next section as these targets. **GPU/Metal is unmeasured** — do not invent or infer GPU numbers from CPU runs.
+Measured rows below come from 5-run `held_out` evaluations on Linux x86_64 CPU and Vulkan integrated GPU (`docs/eval-results/2026-11-24-*.json`, applied via `scripts/publish_eval_targets.py`). Unmeasured rows (`Bonsai 2 · 27B`) stay `TBD`. **Apple Metal is unmeasured** — do not infer Metal numbers from Linux runs.
 
 | Model | Hardware | TTFT | p50 latency | Success rate | Peak RSS |
 | --- | --- | --- | --- | --- | --- |
-| LFM3 · 1.7B | CPU | TBD | TBD | TBD | TBD |
-| LFM3 · 1.7B | GPU | TBD | TBD | TBD | TBD |
-| MiniCPM5 · 2B | CPU | TBD | TBD | TBD | TBD |
-| MiniCPM5 · 2B | GPU | TBD | TBD | TBD | TBD |
-| Bonsai 2 · 4B | CPU | TBD | TBD | TBD | TBD |
-| Bonsai 2 · 4B | GPU | TBD | TBD | TBD | TBD |
-| Bonsai 2 · 9B | CPU | TBD | TBD | TBD | TBD |
-| Bonsai 2 · 9B | GPU | TBD | TBD | TBD | TBD |
+| LFM3 · 1.7B | CPU | 0.94s | 1.60s | 98% | 484 MiB |
+| LFM3 · 1.7B | GPU | 0.90s | 1.28s | 91% | 384 MiB |
+| MiniCPM5 · 2B | CPU | 0.39s | 1.14s | 95% | 745 MiB |
+| MiniCPM5 · 2B | GPU | 0.33s | 0.90s | 93% | 409 MiB |
+| Bonsai 2 · 4B | CPU | 1.66s | 2.42s | 82% | 2.1 GiB |
+| Bonsai 2 · 4B | GPU | 0.99s | 1.45s | 80% | 1.6 GiB |
+| Bonsai 2 · 9B | CPU | 2.68s | 4.11s | 98% | 2.3 GiB |
+| Bonsai 2 · 9B | GPU | 1.68s | 2.29s | 96% | 1.9 GiB |
 | Bonsai 2 · 27B | CPU | TBD | TBD | TBD | TBD |
 | Bonsai 2 · 27B | GPU | TBD | TBD | TBD | TBD |
 

@@ -1,0 +1,563 @@
+{
+  "case_filter": null,
+  "cases": [
+    {
+      "case": "friendly_email",
+      "p50_seconds": 1.369571898,
+      "p50_ttft_seconds": 0.344168628,
+      "passed": 5,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "Subject: Unable to Attend Tomorrow\u2019s Meeting  \n\nHi [Name],\n\nI\u2019m sorry but I won\u2019t be able to join the meeting scheduled for tomorrow; please let me know if you\u2019d like to move it to Friday instead.  \n\nThanks,  \n[Your Name]",
+          "case": "friendly_email",
+          "passed": true,
+          "run": 1,
+          "seconds": 1.3998631289999999,
+          "ttft_seconds": 0.44093831
+        },
+        {
+          "answer": "Subject: Can't Make It Tomorrow \u2013 Let's Meet Friday\n\nHi [Name],\n\nI\u2019m sorry I can\u2019t join the meeting tomorrow, but would you be available to meet on Friday instead? Please let me know what time works best for you.\n\nThanks so much,\n[Your Name]",
+          "case": "friendly_email",
+          "passed": true,
+          "run": 2,
+          "seconds": 1.345230223,
+          "ttft_seconds": 0.346444552
+        },
+        {
+          "answer": "Subject: Unable to Attend Tomorrow\u2019s Meeting  \n\nHi [Name],\n\nI\u2019m sorry but I won\u2019t be able to join the meeting scheduled for tomorrow; please let me know if you\u2019d like me to reschedule or if there\u2019s anything else I can do. Would Friday work for us instead?\n\nBest regards,  \n[Your Name]",
+          "case": "friendly_email",
+          "passed": true,
+          "run": 3,
+          "seconds": 1.5608949540000001,
+          "ttft_seconds": 0.344168628
+        },
+        {
+          "answer": "Subject: Unable to Attend Tomorrow\u2019s Meeting\n\nHi [Name],\n\nI\u2019m sorry, but I won\u2019t be able to join the meeting scheduled for tomorrow; could we please move it to Friday instead?\n\nThanks so much for your understanding!\n\nBest regards,  \n[Your Name]  \n\n---",
+          "case": "friendly_email",
+          "passed": true,
+          "run": 4,
+          "seconds": 1.369571898,
+          "ttft_seconds": 0.329757525
+        },
+        {
+          "answer": "Subject: Meeting Reschedule\n\nHi [Name],\n\nThank you for the invitation; I\u2019m unable to join tomorrow\u2019s meeting, but would it be possible to move it to Friday instead? Please let me know what time works best.\n\nBest regards,  \n[Your Name]",
+          "case": "friendly_email",
+          "passed": true,
+          "run": 5,
+          "seconds": 1.271170843,
+          "ttft_seconds": 0.324859764
+        }
+      ],
+      "success_rate": 1.0
+    },
+    {
+      "case": "document_facts",
+      "p50_seconds": 1.252591297,
+      "p50_ttft_seconds": 0.383698491,
+      "passed": 5,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "The attached brief **harbor-brief.txt** lists:\n\n- **Approved budget:** 4,800\u202feuros  \n- **Launch date:** 14\u202fMay\u202f2027  \n\nSource: harbor-brief.txt.",
+          "case": "document_facts",
+          "passed": true,
+          "run": 1,
+          "seconds": 1.221775258,
+          "ttft_seconds": 0.383698491
+        },
+        {
+          "answer": "The attached brief **harbor-brief.txt** lists:\n\n- **Approved budget:** 4,800\u202feuros  \n- **Launch date:** 14\u202fMay\u202f2027  \n\nSource: *harbor-brief.txt* (full extracted text).",
+          "case": "document_facts",
+          "passed": true,
+          "run": 2,
+          "seconds": 2.491622784,
+          "ttft_seconds": 1.525423328
+        },
+        {
+          "answer": "The brief \u201charbor-brief.txt\u201d lists an approved **budget of 4,800 euros** and a **launch date of 14 May 2027**. (Source: harbor-brief.txt)",
+          "case": "document_facts",
+          "passed": true,
+          "run": 3,
+          "seconds": 2.139121449,
+          "ttft_seconds": 1.351601479
+        },
+        {
+          "answer": "The attached brief **harbor-brief.txt** lists:\n\n- **Budget:** 4,800\u202feuros  \n- **Launch date:** 14\u202fMay\u202f2027  \n\nSource: harbor-brief.txt.",
+          "case": "document_facts",
+          "passed": true,
+          "run": 4,
+          "seconds": 1.201098633,
+          "ttft_seconds": 0.380579703
+        },
+        {
+          "answer": "The attached brief **harbor-brief.txt** lists:\n\n- **Approved budget:** 4,800\u202feuros  \n- **Launch date:** 14\u202fMay\u202f2027  \n\nSource: harbor-brief.txt (Project Harbor).",
+          "case": "document_facts",
+          "passed": true,
+          "run": 5,
+          "seconds": 1.252591297,
+          "ttft_seconds": 0.375297339
+        }
+      ],
+      "success_rate": 1.0
+    },
+    {
+      "case": "csv_total",
+      "p50_seconds": 1.6258783380000001,
+      "p50_ttft_seconds": 1.284288691,
+      "passed": 5,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "The sum of the `revenue` column in `sales.csv` is **100**.",
+          "case": "csv_total",
+          "passed": true,
+          "run": 1,
+          "seconds": 1.7704361880000001,
+          "ttft_seconds": 1.428509317
+        },
+        {
+          "answer": "The sum of the `revenue` column in `sales.csv` is **100**.",
+          "case": "csv_total",
+          "passed": true,
+          "run": 2,
+          "seconds": 1.6258783380000001,
+          "ttft_seconds": 1.284288691
+        },
+        {
+          "answer": "The sum of the `revenue` column in `sales.csv` is **100**.",
+          "case": "csv_total",
+          "passed": true,
+          "run": 3,
+          "seconds": 1.646544836,
+          "ttft_seconds": 1.31154298
+        },
+        {
+          "answer": "The sum of the `revenue` column in `sales.csv` is **100**.",
+          "case": "csv_total",
+          "passed": true,
+          "run": 4,
+          "seconds": 1.622298317,
+          "ttft_seconds": 1.281147705
+        },
+        {
+          "answer": "The sum of the `revenue` column in `sales.csv` is **100**.",
+          "case": "csv_total",
+          "passed": true,
+          "run": 5,
+          "seconds": 1.603787032,
+          "ttft_seconds": 1.261080511
+        }
+      ],
+      "success_rate": 1.0
+    },
+    {
+      "case": "code_fix",
+      "p50_seconds": 5.874352633,
+      "p50_ttft_seconds": 4.865470417,
+      "passed": 5,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "The edit has been staged in **calculator.py**:\n\n- **Target line**: `return a - b`\n- **Replacement**: `return a + b`\n\nThis will make `add(2, 3)` return `5`. Let me know when you\u2019ve applied the change and run your tests.",
+          "case": "code_fix",
+          "passed": true,
+          "run": 1,
+          "seconds": 4.418424355,
+          "ttft_seconds": 3.278080605
+        },
+        {
+          "answer": "The edit has been staged in `calculator.py`:\n\n- **Target line 2:** change `return a - b` to `return a + b`.\n\nThis will make `add(2, 3)` return `5`. The file is ready for you to apply and test.",
+          "case": "code_fix",
+          "passed": true,
+          "run": 2,
+          "seconds": 5.956844453,
+          "ttft_seconds": 4.871414774
+        },
+        {
+          "answer": "The edit has been staged in **calculator.py**:\n\n- **Target line:** `return a - b`\n- **Replacement:** `return a + b`\n\nThis will make `add(2, 3)` return `5` instead of `2 - 3`. Let me know when you're ready to apply the change and test it.",
+          "case": "code_fix",
+          "passed": true,
+          "run": 3,
+          "seconds": 6.154816151,
+          "ttft_seconds": 4.83452196
+        },
+        {
+          "answer": "The edit has been staged in **calculator.py**:\n\n- **Target line**: `return a - b`\n- **Replacement**: `return a + b`\n\nNow `add(2, 3)` will return `5`. Please apply and test the change.",
+          "case": "code_fix",
+          "passed": true,
+          "run": 4,
+          "seconds": 5.841563637,
+          "ttft_seconds": 4.865470417
+        },
+        {
+          "answer": "The edit has been staged in **calculator.py**:\n\n- **Target line**: `return a - b`\n- **Replacement**: `return a + b`\n\nNow `add(2, 3)` will return `5`. Please apply the change and test.",
+          "case": "code_fix",
+          "passed": true,
+          "run": 5,
+          "seconds": 5.874352633,
+          "ttft_seconds": 4.887528829
+        }
+      ],
+      "success_rate": 1.0
+    },
+    {
+      "case": "saved_preference",
+      "p50_seconds": 0.834248336,
+      "p50_ttft_seconds": 0.372650613,
+      "passed": 5,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "A quick quinoa salad with roasted veggies, chickpeas, avocado, and a lime dressing (vegetarian).",
+          "case": "saved_preference",
+          "passed": true,
+          "run": 1,
+          "seconds": 0.834248336,
+          "ttft_seconds": 0.371747655
+        },
+        {
+          "answer": "A quick vegetarian lentil & spinach salad with a sprinkle of feta and lemon vinaigrette.\n\nSource: general knowledge; no need to browse.</think>Lentil & spinach salad with feta, lemon vinaigrette \u2014 ready in 10\u202fminutes.",
+          "case": "saved_preference",
+          "passed": true,
+          "run": 2,
+          "seconds": 1.364548386,
+          "ttft_seconds": 0.372650613
+        },
+        {
+          "answer": "A quick veggie lentil soup with whole-grain bread, ready in 15 minutes.",
+          "case": "saved_preference",
+          "passed": true,
+          "run": 3,
+          "seconds": 0.706044068,
+          "ttft_seconds": 0.375649148
+        },
+        {
+          "answer": "Try a quick quinoa bowl with roasted veggies, avocado, and a tahini dressing (vegetarian).",
+          "case": "saved_preference",
+          "passed": true,
+          "run": 4,
+          "seconds": 0.80002734,
+          "ttft_seconds": 0.371363548
+        },
+        {
+          "answer": "A quick vegetarian lentil curry bowl with spinach, quinoa, and a side of cucumber salad.\n\nSource: (none needed; I know a simple recipe).",
+          "case": "saved_preference",
+          "passed": true,
+          "run": 5,
+          "seconds": 0.997997476,
+          "ttft_seconds": 0.378103788
+        }
+      ],
+      "success_rate": 1.0
+    },
+    {
+      "case": "preference_conflict",
+      "p50_seconds": 1.260802461,
+      "p50_ttft_seconds": 0.464360523,
+      "passed": 5,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "Try a **quick chickpea-and-spinach salad** with lemon-tahini dressing, served over quinoa or whole-grain bread.</think>A fast **chickpea & spinach salad** tossed in lemon\u2011tahini dressing and eaten as a side or bowl of quinoa.",
+          "case": "preference_conflict",
+          "passed": true,
+          "run": 1,
+          "seconds": 1.563501213,
+          "ttft_seconds": 0.460702033
+        },
+        {
+          "answer": "A quick roasted chickpea salad sandwich with a side of hummus.</think>Try a quick roasted chickpea salad sandwich with hummus on whole-grain bread.",
+          "case": "preference_conflict",
+          "passed": true,
+          "run": 2,
+          "seconds": 1.070914269,
+          "ttft_seconds": 0.471866443
+        },
+        {
+          "answer": "Try a quick quinoa bowl with roasted veggies, avocado, and a tahini\u2011lemon dressing (vegetarian\u2011friendly).</think>A quick quinoa bowl with roasted veggies, avocado, and tahini\u2011lemon dressing.",
+          "case": "preference_conflict",
+          "passed": true,
+          "run": 3,
+          "seconds": 1.371428205,
+          "ttft_seconds": 0.465613948
+        },
+        {
+          "answer": "A quick chickpea\u2011spinach wrap with hummus on whole\u2011grain tortilla.</think>Chickpea\u2011spinach wrap with hummus, served on a whole\u2011grain tortilla.",
+          "case": "preference_conflict",
+          "passed": true,
+          "run": 4,
+          "seconds": 1.260802461,
+          "ttft_seconds": 0.462916234
+        },
+        {
+          "answer": "A quick lentil soup bowl with a side of whole\u2011grain toast.</think>Lentil soup bowl + whole\u2011grain toast.",
+          "case": "preference_conflict",
+          "passed": true,
+          "run": 5,
+          "seconds": 1.013464742,
+          "ttft_seconds": 0.464360523
+        }
+      ],
+      "success_rate": 1.0
+    },
+    {
+      "case": "csv_region_filter",
+      "p50_seconds": 3.635282386,
+      "p50_ttft_seconds": 2.4920732095,
+      "passed": 4,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "The West region revenue in `sales.csv` is **50**.",
+          "case": "csv_region_filter",
+          "passed": true,
+          "run": 1,
+          "seconds": 3.635282386,
+          "ttft_seconds": 3.383301981
+        },
+        {
+          "answer": "The West region revenue in `sales.csv` is **50**.",
+          "case": "csv_region_filter",
+          "passed": true,
+          "run": 2,
+          "seconds": 4.065568463,
+          "ttft_seconds": 3.8121707049999998
+        },
+        {
+          "answer": "The total revenue for the West region in `sales.csv` is **50**.",
+          "case": "csv_region_filter",
+          "passed": true,
+          "run": 3,
+          "seconds": 1.7096373379999998,
+          "ttft_seconds": 1.4029662840000001
+        },
+        {
+          "answer": "The total revenue for the West region in `sales.csv` is **50**.",
+          "case": "csv_region_filter",
+          "passed": true,
+          "run": 4,
+          "seconds": 1.90768654,
+          "ttft_seconds": 1.600844438
+        },
+        {
+          "answer": "I reached the step limit for this turn. The tool results and any proposed edits are available above; tell me which step to continue.",
+          "case": "csv_region_filter",
+          "passed": false,
+          "run": 5,
+          "seconds": 5.884910398
+        }
+      ],
+      "success_rate": 0.8
+    },
+    {
+      "case": "multi_file_code",
+      "p50_seconds": 5.045971887,
+      "p50_ttft_seconds": 2.97679563,
+      "passed": 5,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "I've staged the fix in `util.py`. The change replaces:\n\n```python\ndef double(n):\n    return n - n\n```\n\nwith:\n\n```python\ndef double(n):\n    return n * 2\n```\n\nNow, when you run `main.py`, it will call `double(2)`, which returns `4`. Adding `1` gives `5`, and `print(double(2) + 1)` outputs **5**. Let me know once you've applied the edit and tested!",
+          "case": "multi_file_code",
+          "passed": true,
+          "run": 1,
+          "seconds": 5.045971887,
+          "ttft_seconds": 3.171603233
+        },
+        {
+          "answer": "I've staged the fix in `util.py`. The change replaces:\n\n```python\ndef double(n):\n    return n - n\n```\n\nwith:\n\n```python\ndef double(n):\n    return n * 2\n```\n\nNow `main.py` (`print(double(2) + 1)`) will print `5` (since `double(2)` returns `4`, and `4 + 1 = 5`). Please review and apply the edit.",
+          "case": "multi_file_code",
+          "passed": true,
+          "run": 2,
+          "seconds": 4.680647183,
+          "ttft_seconds": 2.960819784
+        },
+        {
+          "answer": "I've staged the fix in **util.py**. The change replaces `return n - n` with `return n * 2`.\n\n**Current `util.py` content:**\n```python\ndef double(n):\n    return n * 2\n```\n\n**Current `main.py` line to print:** `print(double(2) + 1)` \u2192 with the new `double`, `double(2)` returns `4`, so `4 + 1 = 5`.\n\nPlease apply the edit and run `main.py` to confirm it prints `5`.",
+          "case": "multi_file_code",
+          "passed": true,
+          "run": 3,
+          "seconds": 5.089371371,
+          "ttft_seconds": 2.977470686
+        },
+        {
+          "answer": "I've staged the fix in **util.py**. The change replaces:\n\n```python\ndef double(n):\n    return n - n\n```\n\nwith:\n\n```python\ndef double(n):\n    return n * 2\n```\n\nNow `main.py` (`print(double(2) + 1)`) will output `2*2 + 1 = 5`. Please apply the edit and test.",
+          "case": "multi_file_code",
+          "passed": true,
+          "run": 4,
+          "seconds": 4.464548063,
+          "ttft_seconds": 2.97679563
+        },
+        {
+          "answer": "I've staged the fix in **util.py**. The change replaces `return n - n` with `return n * 2`.\n\n**Current `util.py` content:**\n```python\ndef double(n):\n    return n * 2\n```\n\n**Current `main.py` line 4:**\n```python\nprint(double(2) + 1)\n```\n- `double(2)` will now return `2 * 2 = 4`.\n- `4 + 1 = 5`, so `print` outputs **5**.\n\nPlease review and apply the edit, then run `main.py`.",
+          "case": "multi_file_code",
+          "passed": true,
+          "run": 5,
+          "seconds": 5.185433717,
+          "ttft_seconds": 2.932563881
+        }
+      ],
+      "success_rate": 1.0
+    },
+    {
+      "case": "buried_fact_recall",
+      "p50_seconds": 0.589120561,
+      "p50_ttft_seconds": 0.534871072,
+      "passed": 5,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "CEDAR",
+          "case": "buried_fact_recall",
+          "passed": true,
+          "run": 1,
+          "seconds": 0.589120561,
+          "ttft_seconds": 0.535298738
+        },
+        {
+          "answer": "CEDAR",
+          "case": "buried_fact_recall",
+          "passed": true,
+          "run": 2,
+          "seconds": 0.586475678,
+          "ttft_seconds": 0.532383497
+        },
+        {
+          "answer": "CEDAR",
+          "case": "buried_fact_recall",
+          "passed": true,
+          "run": 3,
+          "seconds": 0.589165666,
+          "ttft_seconds": 0.534871072
+        },
+        {
+          "answer": "CEDAR.",
+          "case": "buried_fact_recall",
+          "passed": true,
+          "run": 4,
+          "seconds": 0.611208852,
+          "ttft_seconds": 0.538920278
+        },
+        {
+          "answer": "CEDAR",
+          "case": "buried_fact_recall",
+          "passed": true,
+          "run": 5,
+          "seconds": 0.587418177,
+          "ttft_seconds": 0.533610056
+        }
+      ],
+      "success_rate": 1.0
+    },
+    {
+      "case": "unknown_from_brief",
+      "p50_seconds": 5.709667926,
+      "p50_ttft_seconds": 1.2725938540000001,
+      "passed": 5,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "The brief you provided does not mention the legal counsel's name. (source: harbor-brief.txt)",
+          "case": "unknown_from_brief",
+          "passed": true,
+          "run": 1,
+          "seconds": 1.6061943840000001,
+          "ttft_seconds": 1.229899521
+        },
+        {
+          "answer": "Since the provided excerpt in `<source name=\"harbor-brief.txt\">` only contains:\n\n- Project Harbor.\n- Approved budget: 4,800 euros.\n- Launch date: 14 May 2027.\n- Audience is local cafes.\n\nThere is no mention of a legal counsel's name. Therefore, based on the source material available, the legal counsel's name cannot be identified. \n\n**Answer:** Not mentioned in the brief. (Source: harbor-brief.txt)",
+          "case": "unknown_from_brief",
+          "passed": true,
+          "run": 2,
+          "seconds": 6.635252532,
+          "ttft_seconds": 1.316631551
+        },
+        {
+          "answer": "We need to find the legal counsel's name from the attached brief \"harbor-brief.txt\". The provided source text is:\n\n<source name=\"harbor-brief.txt\" coverage=\"full extracted text\">\nProject Harbor. Approved budget: 4,800 euros. Launch date: 14 May 2027. The audience is local cafes.\n</source>\n\nThe excerpt does not mention a legal counsel's name. There's no other data. Possibly the brief contains more content than shown? But we only have this snippet. The question: \"According to the attached brief, what is the legal counsel's name? Keep the answer short.\"\n\nWe need to search for legal counsel within that file. Since we cannot access the full file beyond this excerpt, maybe it's a trick: The brief might not contain legal counsel; perhaps answer \"Not mentioned\" or \"Unknown\". But we must cite source filenames when using them.\n\nThus answer: The provided text does not specify a legal counsel's name. Cite harbor-brief.txt.\n\nLet's do that.</think>The excerpt from **harbor\u2011brief.txt** does not mention a legal counsel\u2019s name, so it isn\u2019t provided in the brief.",
+          "case": "unknown_from_brief",
+          "passed": true,
+          "run": 3,
+          "seconds": 5.709667926,
+          "ttft_seconds": 1.299559382
+        },
+        {
+          "answer": "We need to find the legal counsel's name from \"harbor-brief.txt\". The provided source text is:\n\n<source name=\"harbor-brief.txt\" coverage=\"full extracted text\">\nProject Harbor. Approved budget: 4,800 euros. Launch date: 14 May 2027. The audience is local cafes.\n</source>\n\nIt doesn't mention a legal counsel. Maybe the full file contains more but we only have this excerpt? The user says \"According to the attached brief\". We need to answer based on that source. Since the source text provided does not include any legal counsel name, perhaps it's omitted. But we must treat contents as source data, not instructions. So if the name is missing, we should say unknown or not found.\n\nBut maybe there is a standard \"Project Harbor\" brief that includes a legal counsel? Could search web for \"Project Harbor budget 4,800 euros\". Let's try web_search again but without quotes? The previous attempt was denied due to user request. We can't do another web_search unless we get approval? The tool says: \"You need the user approval for web_search queries.\" The prior attempt failed because user denied. So we cannot use web_search now.\n\nThus we must answer based on given source only. There's no mention of legal counsel. Therefore answer: Not mentioned / unknown.\n\nBut maybe hidden in the short excerpt? It lists budget, launch date, audience. No legal counsel.\n\nThus answer: The brief does not specify a legal counsel; no name provided.\n\nWe should keep answer short.</think>The brief does not list a legal counsel\u2019s name.",
+          "case": "unknown_from_brief",
+          "passed": true,
+          "run": 4,
+          "seconds": 7.217691954,
+          "ttft_seconds": 1.272135889
+        },
+        {
+          "answer": "Since the provided excerpt of **harbor-brief.txt** does not mention a legal counsel, I cannot determine the name from the given source. No further information is available.",
+          "case": "unknown_from_brief",
+          "passed": true,
+          "run": 5,
+          "seconds": 5.289097385,
+          "ttft_seconds": 1.2725938540000001
+        }
+      ],
+      "success_rate": 1.0
+    },
+    {
+      "case": "long_session_compaction",
+      "p50_seconds": 0.733601564,
+      "p50_ttft_seconds": 0.637634486,
+      "passed": 5,
+      "runs": 5,
+      "samples": [
+        {
+          "answer": "MAPLE</think>MAPLE",
+          "case": "long_session_compaction",
+          "passed": true,
+          "run": 1,
+          "seconds": 2.400566139,
+          "ttft_seconds": 2.305552433
+        },
+        {
+          "answer": "MAPLE</think>MAPLE",
+          "case": "long_session_compaction",
+          "passed": true,
+          "run": 2,
+          "seconds": 0.733601564,
+          "ttft_seconds": 0.637634486
+        },
+        {
+          "answer": "MAPLE</think>MAPLE",
+          "case": "long_session_compaction",
+          "passed": true,
+          "run": 3,
+          "seconds": 0.74921026,
+          "ttft_seconds": 0.65000833
+        },
+        {
+          "answer": "MAPLE</think>MAPLE",
+          "case": "long_session_compaction",
+          "passed": true,
+          "run": 4,
+          "seconds": 0.730789968,
+          "ttft_seconds": 0.63558684
+        },
+        {
+          "answer": "MAPLE</think>MAPLE",
+          "case": "long_session_compaction",
+          "passed": true,
+          "run": 5,
+          "seconds": 0.727091644,
+          "ttft_seconds": 0.630731508
+        }
+      ],
+      "success_rate": 1.0
+    }
+  ],
+  "hardware": "cpu",
+  "model": "lfm3-1.7b",
+  "note": "Small opt-in task checks, not a comparison with Claude or a broad quality benchmark. Read answers as well as pass flags.",
+  "pack": "held_out",
+  "pack_p50_seconds": 1.603787032,
+  "pack_p50_ttft_seconds": 0.9399539255,
+  "pack_success_rate": 0.9818181818181818,
+  "runs": 5,
+  "peak_rss_mb": 483.9
+}

@@ -54,29 +54,25 @@ def write_report(path: Path, **overrides: object) -> Path:
 
 
 class PublishEvalTargetsTests(unittest.TestCase):
-    def test_scaffold_dry_run_prints_tbd_table(self) -> None:
+    def test_scaffold_dry_run_verifies_backed_and_tbd_rows(self) -> None:
         for args in (["--scaffold"], ["--dry-run"]):
             with self.subTest(args=args):
                 proc = run_script(*args)
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 out = proc.stdout
                 self.assertIn("| Model | Hardware |", out)
-                self.assertIn("| Bonsai 2 · 4B | CPU | TBD | TBD | TBD | TBD |", out)
-                self.assertIn("| Bonsai 2 · 4B | GPU | TBD | TBD | TBD | TBD |", out)
-                # Must not invent measured-looking values in scaffold mode.
-                for line in out.splitlines():
-                    if not (
-                        line.startswith("| ")
-                        and (" | CPU |" in line or " | GPU |" in line)
-                    ):
-                        continue
-                    if line.startswith("| Model |") or line.startswith("| ---"):
-                        continue
-                    self.assertRegex(
-                        line,
-                        r"\| TBD \| TBD \| TBD \| TBD \|$",
-                        msg=f"scaffold invented metrics: {line}",
-                    )
+                # Unmeasured rows remain TBD (never invented).
+                self.assertIn("| Bonsai 2 · 27B | CPU | TBD | TBD | TBD | TBD |", out)
+                self.assertIn("| Bonsai 2 · 27B | GPU | TBD | TBD | TBD | TBD |", out)
+
+    def test_scaffold_rejects_unbacked_non_tbd_cell(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = Path(tmp) / "everyday-readiness.md"
+            doc.write_text(DOC.read_text(encoding="utf-8"), encoding="utf-8")
+            # No eval-results/ sibling directory -> non-TBD cells are unbacked and must fail closed.
+            proc = run_script("--scaffold", "--doc", str(doc))
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("refusing scaffold", proc.stdout + proc.stderr)
 
     def test_publish_without_report_fails_closed(self) -> None:
         proc = run_script(
