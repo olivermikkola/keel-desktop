@@ -433,7 +433,7 @@ async def main(port):
         # Discover tab fetches trending models and Scan ~/Models invokes scanner command.
         await page.locator('[data-mfilter="discover"]').click()
         await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='discover_models_cmd')")
-        await page.locator('#view-models').get_by_text('Ternary-Bonsai-2.5-27B', exact=False).wait_for()
+        await page.locator('#view-models').get_by_text('Ternary-Bonsai-2.5-27B', exact=True).wait_for()
         await page.locator('#ws-scan-models').click()
         await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='scan_user_models_folder')")
         await page.locator('[data-mfilter="all"]').click()
