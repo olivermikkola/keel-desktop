@@ -2,6 +2,7 @@
 
 mod commands;
 mod productivity;
+mod updater;
 
 use commands::AppState;
 use keel_core::runtime::RuntimeManager;
@@ -74,6 +75,7 @@ fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(state)
         .setup(move |app| {
             if ui_smoke {
@@ -120,6 +122,8 @@ fn main() {
             productivity::get_setup_plan,
             productivity::setup_local_ai,
             productivity::pause_local_setup,
+            updater::check_app_update,
+            updater::install_app_update,
             commands::connect_image_server,
             commands::list_image_jobs,
             commands::start_image_job,

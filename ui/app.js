@@ -74,6 +74,10 @@ const appState = {
   sendWhenReady: false,
   lastAnswerSeconds: 0,
   lastContextTokens: 0,
+  appUpdate: null,
+  appUpdateDismissed: false,
+  appUpdateBusy: false,
+  appUpdateProgress: null,
   appearance: loadAppearance(),
 };
 
@@ -81,6 +85,7 @@ const els = {
   sidebar: document.getElementById("sidebar"),
   appsList: document.getElementById("apps-list"),
   sessionsList: document.getElementById("sessions-list"),
+  updateBanner: document.getElementById("update-banner"),
   sidebarRuntimeBox: document.getElementById("sidebar-runtime-box"),
   newChatBtn: document.getElementById("new-chat-btn"),
   newAgentBtn: document.getElementById("new-agent-btn"),
@@ -495,6 +500,13 @@ async function init() {
         }
       }
     });
+    await events.listen("keel://app-update-progress", (ev) => {
+      appState.appUpdateProgress = ev.payload;
+      renderUpdateBanner();
+    });
+    setTimeout(() => {
+      checkAppUpdate({ silent: true });
+    }, 2500);
     await events.listen("keel://download-progress", (ev) => {
       const p = ev.payload;
       appState.downloadProgress[p.model_id] = p;
@@ -865,6 +877,87 @@ function renderSidebar() {
     </div>
     <span class="sidebar-runtime-state">${escapeHtml(status.label)}</span>
   `;
+  renderUpdateBanner();
+}
+
+function updateProgressLabel() {
+  const p = appState.appUpdateProgress;
+  if (!p) return "Downloading update…";
+  if (p.done) return "Installing & restarting…";
+  if (p.total_bytes > 0) {
+    const pct = Math.min(100, Math.round((p.downloaded_bytes / p.total_bytes) * 100));
+    return `Downloading… ${pct}%`;
+  }
+  return `Downloading… ${formatBytes(p.downloaded_bytes || 0)}`;
+}
+
+async function checkAppUpdate({ silent = false } = {}) {
+  try {
+    const info = await invoke("check_app_update");
+    appState.appUpdate = info;
+    if (info?.available) appState.appUpdateDismissed = false;
+    renderUpdateBanner();
+    return info;
+  } catch (err) {
+    if (!silent) showToast(friendlyRuntimeError(err));
+    return null;
+  }
+}
+
+async function installOrDownloadAppUpdate() {
+  const info = appState.appUpdate;
+  if (!info?.available || appState.appUpdateBusy) return;
+  if (!info.can_install_in_place) {
+    try {
+      await invoke("open_external_link", { url: info.release_url });
+    } catch (err) {
+      showToast(friendlyRuntimeError(err));
+    }
+    return;
+  }
+  appState.appUpdateBusy = true;
+  appState.appUpdateProgress = null;
+  renderUpdateBanner();
+  try {
+    await invoke("install_app_update");
+  } catch (err) {
+    appState.appUpdateBusy = false;
+    appState.appUpdateProgress = null;
+    renderUpdateBanner();
+    showToast(friendlyRuntimeError(err));
+  }
+}
+
+function renderUpdateBanner() {
+  const banner = els.updateBanner;
+  if (!banner) return;
+  const info = appState.appUpdate;
+  if (!info?.available || appState.appUpdateDismissed) {
+    banner.classList.add("hidden");
+    banner.innerHTML = "";
+    return;
+  }
+  const versionLabel = `v${String(info.version || "").replace(/^v/i, "")}`;
+  const actionLabel = appState.appUpdateBusy
+    ? updateProgressLabel()
+    : info.can_install_in_place
+      ? "Update & restart"
+      : "Download update";
+  banner.classList.remove("hidden");
+  banner.innerHTML = `
+    <div class="update-banner-head">
+      <strong>Keel ${escapeHtml(versionLabel)} available</strong>
+      ${appState.appUpdateBusy ? "" : '<button type="button" id="update-banner-dismiss" class="text-action" aria-label="Dismiss update notice">&times;</button>'}
+    </div>
+    <div class="update-banner-actions">
+      <button type="button" id="update-banner-action" class="btn btn-primary btn-sm grow" ${appState.appUpdateBusy ? "disabled" : ""}>${escapeHtml(actionLabel)}</button>
+    </div>
+  `;
+  banner.querySelector("#update-banner-action")?.addEventListener("click", installOrDownloadAppUpdate);
+  banner.querySelector("#update-banner-dismiss")?.addEventListener("click", () => {
+    appState.appUpdateDismissed = true;
+    renderUpdateBanner();
+  });
 }
 
 function renderHeader() {
@@ -3359,6 +3452,50 @@ function openCustomizeModal() {
         <button id="cust-save" class="btn btn-primary btn-sm">Save settings</button>
       </div>
     `;
+    const updateCard = document.createElement("div");
+    updateCard.className = "card";
+    const renderSettingsUpdate = () => {
+      const info = appState.appUpdate;
+      const statusHtml = !info
+        ? `<p class="muted">You are running Keel Desktop v${escapeHtml(b.version)}.</p>`
+        : info.available
+          ? `<p class="muted">Keel Desktop <strong>v${escapeHtml(String(info.version || "").replace(/^v/i, ""))}</strong> is available (current: v${escapeHtml(info.current_version)}). ${
+              info.can_install_in_place
+                ? "Updates download, verify, and restart right inside Keel."
+                : "Installed via system package — open the release page to download the updated package."
+            }</p>`
+          : `<p class="muted">Keel Desktop v${escapeHtml(info.current_version)} is up to date.</p>`;
+      const installBtn = info?.available
+        ? `<button id="install-app-update-btn" type="button" class="btn btn-primary btn-sm" ${appState.appUpdateBusy ? "disabled" : ""}>${
+            appState.appUpdateBusy
+              ? escapeHtml(updateProgressLabel())
+              : info.can_install_in_place
+                ? "Update & restart"
+                : "Download installer"
+          }</button>`
+        : "";
+      updateCard.innerHTML = `
+        <strong>App updates</strong>
+        ${statusHtml}
+        <div class="row" style="gap:8px;flex-wrap:wrap">
+          <button id="check-app-update-btn" type="button" class="btn btn-sm" ${appState.appUpdateBusy ? "disabled" : ""}>Check for updates</button>
+          ${installBtn}
+          ${info?.available && info.release_url ? `<a class="btn btn-ghost btn-sm" href="#" data-external-link="${escapeHtml(info.release_url)}">Release notes</a>` : ""}
+        </div>
+      `;
+      updateCard.querySelector("#check-app-update-btn")?.addEventListener("click", async (ev) => {
+        ev.target.disabled = true;
+        ev.target.textContent = "Checking…";
+        await checkAppUpdate({ silent: false });
+        renderSettingsUpdate();
+      });
+      updateCard.querySelector("#install-app-update-btn")?.addEventListener("click", async () => {
+        await installOrDownloadAppUpdate();
+        renderSettingsUpdate();
+      });
+    };
+    renderSettingsUpdate();
+    body.appendChild(updateCard);
     card.querySelector("#cust-reset-welcome").onclick = () => {
       try {
         localStorage.removeItem(WELCOME_STORAGE_KEY);

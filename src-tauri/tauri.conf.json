@@ -26,6 +26,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "shortDescription": "Private local AI workspace for chat, documents, and code",
     "longDescription": "Keel Desktop runs private AI models right on your computer for everyday chat, documents, spreadsheets, websites, slides, and code with your approval.",
@@ -55,6 +56,14 @@
           "libgomp.so.1()(64bit)"
         ]
       }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY2QkY0OEI4MzBGRTlCRDcKUldUWG0vNHd1RWkvOWtSWFlUemVvb0xOV3J0R3MrRG5ZZjl3c2M2MlNibW1hVjhaNi9JQ3NxTzYK",
+      "endpoints": [
+        "https://github.com/olivermikkola/keel-desktop/releases/latest/download/latest.json"
+      ]
     }
   }
 }

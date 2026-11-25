@@ -26,6 +26,8 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  case 'set_workspace_mcp_trust': result=[];break;
  case 'export_html_file': result='/test/export.html';break;
  case 'open_models_folder': result=null;break;
+ case 'check_app_update': result=window.__test.fakeUpdate ? {current_version:'0.7.0',available:true,version:'0.8.0',notes:'In-app update test',release_url:'https://github.com/olivermikkola/keel-desktop/releases/tag/v0.8.0',can_install_in_place:true} : {current_version:'0.7.0',available:false,version:null,notes:null,release_url:'https://github.com/olivermikkola/keel-desktop/releases/latest',can_install_in_place:true};break;
+ case 'install_app_update': result=null;break;
  case 'discover_models_cmd': result=[{id:'hf:prism-ml/Ternary-Bonsai-2.5-27B-GGUF',repo_id:'prism-ml/Ternary-Bonsai-2.5-27B-GGUF',name:'Ternary-Bonsai-2.5-27B',author:'prism-ml',likes:420,downloads:12000,trending_score:98.5,file_name:'Ternary-Bonsai-2.5-27B-Q2_0.gguf',resolve_url:'https://huggingface.co/prism-ml/Ternary-Bonsai-2.5-27B-GGUF/resolve/main/Ternary-Bonsai-2.5-27B-Q2_0.gguf',repo_url:'https://huggingface.co/prism-ml/Ternary-Bonsai-2.5-27B-GGUF',bytes:7670000000,quantization:'Q2_0',architecture:'qwen3',context_size:32768}];break;
  case 'scan_user_models_folder': result={folder:'/test/Models',added_ids:[],models:[]};break;
  case 'import_local_gguf': result=null;break;
@@ -317,7 +319,14 @@ async def main(port):
         await page.locator('#audio-try-status').get_by_text('TTS ok', exact=False).wait_for()
         await page.screenshot(path=str(OUTPUT / 'audio-runners.png'))
         await page.locator('#audio-artifacts-list').get_by_text('smoke-stt.txt', exact=False).wait_for()
+        # App updates check in Settings surfaces the 1-click Update & restart banner.
+        await page.evaluate("window.__test.fakeUpdate = true")
+        await page.locator('#check-app-update-btn').click()
+        await page.locator('#install-app-update-btn').get_by_text('Update & restart', exact=True).wait_for()
         await page.locator('#modal-close-btn').click()
+        await page.locator('#update-banner').get_by_text('Keel v0.8.0 available', exact=True).wait_for()
+        await page.locator('#update-banner-dismiss').click()
+        await page.locator('#update-banner').wait_for(state='hidden')
         await page.locator('#prompt-input').fill('Hello Keel')
         await page.locator('#send-btn').click()
         await page.get_by_text('Ready to help.',exact=True).wait_for()
