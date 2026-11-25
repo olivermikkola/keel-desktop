@@ -51,7 +51,13 @@ const appState = {
   selectedEditId: null,
   selectedModelInspectorId: null,
   modelSearchQuery: "",
-  modelFilter: "all", // "all" | "installed" | "gguf"
+  modelFilter: "all", // "all" | "installed" | "discover"
+  discoverModels: [],
+  discoverQuery: "",
+  discoverLoading: false,
+  discoverError: null,
+  discoverOnlyFitting: true,
+  discoverLoaded: false,
   streaming: false,
   streamingText: "",
   streamingThinking: "",
@@ -431,6 +437,58 @@ async function init() {
     });
     await events.listen("keel://image-job", () => images.onJob());
     await events.listen("keel://agent-event", (ev) => handleAgentEvent(ev.payload));
+    await events.listen("tauri://drag-enter", () => {
+      document.querySelector(".models-drop-zone")?.classList.add("drop-active");
+      document.querySelector(".chat-column")?.classList.add("drop-active");
+    });
+    await events.listen("tauri://drag-leave", () => {
+      document.querySelector(".models-drop-zone")?.classList.remove("drop-active");
+      document.querySelector(".chat-column")?.classList.remove("drop-active");
+    });
+    await events.listen("tauri://drag-drop", async (ev) => {
+      document.querySelector(".models-drop-zone")?.classList.remove("drop-active");
+      document.querySelector(".chat-column")?.classList.remove("drop-active");
+      const paths = ev.payload?.paths || [];
+      if (!paths.length) return;
+      const ggufs = paths.filter((p) => String(p).toLowerCase().endsWith(".gguf"));
+      const others = paths.filter((p) => !String(p).toLowerCase().endsWith(".gguf"));
+      if (ggufs.length) {
+        let lastId = null;
+        let lastName = "";
+        for (const path of ggufs) {
+          try {
+            await invoke("import_local_gguf", { path });
+            const base = String(path).split(/[\\/]/).pop() || "model.gguf";
+            lastId = `imported:${base}`;
+            lastName = base.replace(/\.gguf$/i, "");
+          } catch (err) {
+            showToast(friendlyRuntimeError(err));
+          }
+        }
+        if (lastId) {
+          await refreshBootstrap();
+          appState.selectedModelInspectorId = lastId;
+          appState.modelFilter = "all";
+          setActiveView("models");
+          renderAll();
+          showToast(
+            ggufs.length === 1
+              ? `Added ${lastName}. Click Use to start it.`
+              : `Added ${ggufs.length} local models.`,
+          );
+        }
+      }
+      if (others.length) {
+        try {
+          const documents = await invoke("import_documents_from_paths", { paths: others });
+          appState.pendingDocuments.push(...documents);
+          saveDraft();
+          renderAttachmentChips();
+        } catch (err) {
+          showToast(friendlyRuntimeError(err));
+        }
+      }
+    });
     await events.listen("keel://download-progress", (ev) => {
       const p = ev.payload;
       appState.downloadProgress[p.model_id] = p;
@@ -1675,17 +1733,73 @@ async function renderCodeWorktreePane(container, activeEdit) {
   container.appendChild(wrap);
 }
 
+async function loadDiscoverModels(query = appState.discoverQuery) {
+  if (appState.discoverLoading) return;
+  appState.discoverLoading = true;
+  appState.discoverError = null;
+  appState.discoverLoaded = true;
+  renderModelsWorkspace();
+  try {
+    const trimmed = (query || "").trim();
+    const list = await invoke("discover_models_cmd", {
+      query: trimmed || null,
+      limit: 24,
+    });
+    appState.discoverModels = Array.isArray(list) ? list : [];
+  } catch (err) {
+    appState.discoverError = friendlyRuntimeError(err);
+  } finally {
+    appState.discoverLoading = false;
+    if (appState.activeView === "models") renderModelsWorkspace();
+  }
+}
+
+async function downloadHuggingFaceModel(url, label = "model") {
+  if (appState.busyModelId) return;
+  const trimmed = (url || "").trim();
+  if (!trimmed) {
+    showToast("Paste a Hugging Face model link or owner/repo name first.");
+    return;
+  }
+  appState.busyModelId = "hf-custom";
+  appState.busyModelAction = "downloading";
+  renderModelsWorkspace();
+  const progEl = document.getElementById("ws-hf-progress");
+  if (progEl) progEl.textContent = `Resolving ${label}…`;
+  try {
+    const beforeIds = new Set((appState.bootstrap?.models || []).map((m) => m.id));
+    await invoke("download_huggingface_gguf", { url: trimmed });
+    await refreshBootstrap();
+    const added = (appState.bootstrap?.models || []).find((m) => !beforeIds.has(m.id));
+    if (added) {
+      appState.selectedModelInspectorId = added.id;
+      appState.modelFilter = "all";
+    }
+    showToast("Model downloaded. Click Use to start it.");
+  } catch (err) {
+    showToast(friendlyRuntimeError(err));
+  } finally {
+    appState.busyModelId = null;
+    appState.busyModelAction = null;
+    renderAll();
+  }
+}
+
 function renderModelsWorkspace() {
   const b = appState.bootstrap;
   if (!b) return;
   const rt = b.runtime;
-  const filtered = filterModels(b.models, appState.modelSearchQuery, appState.modelFilter);
+  const isDiscover = appState.modelFilter === "discover";
+  const filtered = isDiscover ? [] : filterModels(b.models, appState.modelSearchQuery, appState.modelFilter);
   const inspected =
     b.models.find((m) => m.id === appState.selectedModelInspectorId) ||
     b.models.find((m) => m.id === rt.active_model_id) ||
     b.models.find((m) => m.id === b.config.selected_model_id) ||
     b.models[0];
   const anyBusy = Boolean(appState.busyModelId || appState.waking);
+  const installedFileNames = new Set(
+    b.models.filter((m) => m.installed).map((m) => (m.file_name || "").toLowerCase()),
+  );
 
   const rowsHtml = filtered
     .map((m) => {
@@ -1749,6 +1863,61 @@ function renderModelsWorkspace() {
     })
     .join("");
 
+  let discoverHtml = "";
+  if (isDiscover) {
+    const visibleDiscover = appState.discoverModels.filter((item) => {
+      if (!appState.discoverOnlyFitting) return true;
+      if (!item.bytes) return true;
+      const fit = modelFitLabel(item.bytes, b.system_ram_gb, b.computer?.vram_total_mib || 0);
+      return fit !== "Heavy for your RAM";
+    });
+    if (appState.discoverLoading) {
+      discoverHtml = `<div class="card"><span class="muted">Checking trending GGUF models on Hugging Face…</span></div>`;
+    } else if (appState.discoverError) {
+      discoverHtml = `<div class="card"><div class="muted">${escapeHtml(appState.discoverError)}</div><div><button id="discover-retry-btn" class="btn btn-sm">Try again</button></div></div>`;
+    } else if (!visibleDiscover.length) {
+      discoverHtml = `<div class="card"><span class="muted">${
+        appState.discoverOnlyFitting && appState.discoverModels.length
+          ? "No trending models fit this computer's memory with the fit filter on."
+          : "No GGUF models found. Try another search."
+      }</span></div>`;
+    } else {
+      discoverHtml = visibleDiscover
+        .map((item) => {
+          const fit = item.bytes
+            ? modelFitLabel(item.bytes, b.system_ram_gb, b.computer?.vram_total_mib || 0)
+            : "";
+          const already = installedFileNames.has((item.file_name || "").toLowerCase());
+          const sizeText = item.bytes ? formatBytes(item.bytes) : "Size unknown";
+          const metaParts = [
+            item.author,
+            item.quantization,
+            sizeText,
+            fit || null,
+            item.likes ? `${item.likes} likes` : null,
+          ].filter(Boolean);
+          return `
+            <div class="model-clean-row">
+              <div class="grow">
+                <div class="model-clean-title">
+                  <span>${escapeHtml(item.name)}</span>
+                  <span class="model-badge">${escapeHtml(item.quantization)}</span>
+                </div>
+                <div class="model-clean-sub">${escapeHtml(metaParts.join(" · "))}</div>
+                <div class="model-clean-sub mono" style="font-size:11px;opacity:.75">${escapeHtml(item.file_name)}</div>
+              </div>
+              ${
+                already
+                  ? `<span class="model-badge live">Installed</span>`
+                  : `<button class="pill-action-get" data-discover-dl="${escapeHtml(item.resolve_url)}" data-discover-name="${escapeHtml(item.name)}" ${anyBusy ? "disabled" : ""}>${appState.busyModelId === "hf-custom" ? "Downloading…" : "Download"}</button>`
+              }
+            </div>
+          `;
+        })
+        .join("");
+    }
+  }
+
   const isRunningExternal = rt.state === "external";
   const isRunningLocal = rt.state === "running";
   const inspectedStatus = !inspected
@@ -1772,28 +1941,72 @@ function renderModelsWorkspace() {
   els.viewModels.innerHTML = `
     <div class="models-main-col">
       <div class="model-setup-row"><div><strong>Not sure which one?</strong><p class="muted">Keel picks the right model for this computer and sets everything up automatically.</p></div><button id="models-setup-btn" class="btn ${isRunningLocal || isRunningExternal ? "" : "btn-primary "}btn-sm">Set it up for me</button></div>
+
+      <div class="card models-drop-zone">
+        <div class="row" style="justify-content:space-between;flex-wrap:wrap">
+          <div>
+            <strong>Bring your own model (.gguf)</strong>
+            <div class="muted" style="font-size:12px">Drop a .gguf file anywhere on this window, scan ~/Models, or paste a Hugging Face link or owner/repo.</div>
+          </div>
+          <div class="row">
+            <button id="ws-local-pick" type="button" class="btn btn-primary btn-sm">Choose .gguf…</button>
+            <button id="ws-scan-models" type="button" class="btn btn-sm">Scan ~/Models</button>
+          </div>
+        </div>
+        <div class="row">
+          <input id="ws-hf-url" class="input grow" placeholder="Paste Hugging Face link or repo (e.g. prism-ml/Ternary-Bonsai-2.5-27B-GGUF)" />
+          <button id="ws-hf-dl" class="btn btn-sm" ${anyBusy ? "disabled" : ""}>${appState.busyModelId === "hf-custom" ? "Downloading…" : "Download"}</button>
+        </div>
+        <p id="ws-hf-progress" class="muted" style="margin:0;min-height:14px;font-size:12px"></p>
+      </div>
+
       <div class="models-storage-bar">
         <span>${escapeHtml(storageText)}</span>
         <button id="models-open-folder" type="button" class="btn btn-ghost btn-sm">Open folder</button>
       </div>
       <div class="models-search-bar">
-        <input id="models-search-in" class="input grow" value="${escapeHtml(appState.modelSearchQuery)}" placeholder="Search models" />
+        ${
+          isDiscover
+            ? `<input id="discover-search-in" class="input grow" value="${escapeHtml(appState.discoverQuery)}" placeholder="Search Hugging Face GGUF models (e.g. bonsai 2.5, inkling, qwen)…" />
+               <button id="discover-search-btn" type="button" class="btn btn-sm" ${appState.discoverLoading ? "disabled" : ""}>Search</button>`
+            : `<input id="models-search-in" class="input grow" value="${escapeHtml(appState.modelSearchQuery)}" placeholder="Search models" />`
+        }
         <div class="models-filter-pills">
-          ${["all", "installed"]
+          ${[
+            ["all", "All"],
+            ["installed", "Downloaded"],
+            ["discover", "Discover"],
+          ]
             .map(
-              (f) =>
-                `<button class="viewer-tab ${appState.modelFilter === f ? "active" : ""}" data-mfilter="${f}">${f === "all" ? "All" : "Downloaded"}</button>`,
+              ([f, label]) =>
+                `<button class="viewer-tab ${appState.modelFilter === f ? "active" : ""}" data-mfilter="${f}">${label}</button>`,
             )
             .join("")}
         </div>
       </div>
 
+      ${
+        isDiscover
+          ? `<div class="row" style="justify-content:space-between;font-size:12.5px">
+               <label class="row" style="gap:6px;cursor:pointer;color:var(--muted)">
+                 <input id="discover-only-fit" type="checkbox" ${appState.discoverOnlyFitting ? "checked" : ""} />
+                 <span>Only show models that fit this computer</span>
+               </label>
+               <button id="discover-refresh-btn" type="button" class="btn btn-ghost btn-sm" ${appState.discoverLoading ? "disabled" : ""}>Refresh trending</button>
+             </div>`
+          : ""
+      }
+
       <div class="model-list-clean">
-        ${rowsHtml || `<div class="card">No models match "${escapeHtml(appState.modelSearchQuery)}".</div>`}
+        ${
+          isDiscover
+            ? discoverHtml
+            : rowsHtml || `<div class="card">No models match "${escapeHtml(appState.modelSearchQuery)}".</div>`
+        }
       </div>
 
       <details class="card">
-        <summary class="import-gguf-toggle">Other ways to run AI (Ollama, LM Studio, or local file)</summary>
+        <summary class="import-gguf-toggle">Connect an external server (Ollama, LM Studio, or local file path)</summary>
         <div class="row" style="margin-top:8px">
           <span class="muted">Quick fill:</span>
           <button type="button" class="btn btn-sm" data-ext-preset="http://127.0.0.1:11434/v1">Ollama</button>
@@ -1814,15 +2027,9 @@ function renderModelsWorkspace() {
         </label>
         <p class="muted" id="ws-ext-notice">${serverDataNotice(b.config.external_base_url || "")}</p>
         <div class="row">
-          <button id="ws-local-pick" type="button" class="btn btn-sm">Choose file…</button>
-          <input id="ws-local-gguf" class="input grow mono" placeholder="Or paste a local model file path" />
-          <button id="ws-local-imp" class="btn btn-sm">Import</button>
+          <input id="ws-local-gguf" class="input grow mono" placeholder="Or paste a local .gguf file path" />
+          <button id="ws-local-imp" class="btn btn-sm">Import path</button>
         </div>
-        <div class="row">
-          <input id="ws-hf-url" class="input grow" placeholder="Or paste a direct Hugging Face model link" />
-          <button id="ws-hf-dl" class="btn btn-sm" ${anyBusy ? "disabled" : ""}>${appState.busyModelId === "hf-custom" ? "Downloading…" : "Download"}</button>
-        </div>
-        <p id="ws-hf-progress" class="muted" style="margin:4px 0 0;min-height:16px"></p>
       </details>
     </div>
 
@@ -1843,9 +2050,19 @@ function renderModelsWorkspace() {
               ? escapeHtml(serverDataNotice(rt.base_url || b.config.external_base_url || ""))
               : isRunningLocal
                 ? escapeHtml(modelLocation(rt))
-                : "Off"
+                : rt.state === "error" && rt.error
+                  ? escapeHtml(rt.error)
+                  : "Off"
           }</span>
         </div>
+        ${
+          rt.state === "error" && rt.error_details
+            ? `<details style="margin-top:6px">
+                 <summary class="import-gguf-toggle" style="font-size:12px">Engine log details</summary>
+                 <pre class="mono" style="margin:6px 0 0;padding:8px;border-radius:8px;background:var(--ink);font-size:11px;white-space:pre-wrap;max-height:180px;overflow:auto">${escapeHtml(rt.error_details)}</pre>
+               </details>`
+            : ""
+        }
         <div class="row" style="margin-top:4px">
           ${
             isRunningLocal || isRunningExternal
@@ -1873,19 +2090,57 @@ function renderModelsWorkspace() {
     catch (err) { showToast(friendlyRuntimeError(err)); }
   });
   const searchIn = document.getElementById("models-search-in");
-  searchIn.oninput = () => {
-    const start = searchIn.selectionStart ?? searchIn.value.length;
-    const end = searchIn.selectionEnd ?? start;
-    appState.modelSearchQuery = searchIn.value;
+  if (searchIn) {
+    searchIn.oninput = () => {
+      const start = searchIn.selectionStart ?? searchIn.value.length;
+      const end = searchIn.selectionEnd ?? start;
+      appState.modelSearchQuery = searchIn.value;
+      renderModelsWorkspace();
+      const reFocus = document.getElementById("models-search-in");
+      reFocus?.focus();
+      reFocus?.setSelectionRange(start, end);
+    };
+  }
+  const discoverSearchIn = document.getElementById("discover-search-in");
+  if (discoverSearchIn) {
+    discoverSearchIn.oninput = () => {
+      appState.discoverQuery = discoverSearchIn.value;
+    };
+    discoverSearchIn.onkeydown = (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        loadDiscoverModels(discoverSearchIn.value);
+      }
+    };
+  }
+  document.getElementById("discover-search-btn")?.addEventListener("click", () => {
+    loadDiscoverModels(appState.discoverQuery);
+  });
+  document.getElementById("discover-refresh-btn")?.addEventListener("click", () => {
+    loadDiscoverModels(appState.discoverQuery);
+  });
+  document.getElementById("discover-retry-btn")?.addEventListener("click", () => {
+    loadDiscoverModels(appState.discoverQuery);
+  });
+  document.getElementById("discover-only-fit")?.addEventListener("change", (e) => {
+    appState.discoverOnlyFitting = Boolean(e.target.checked);
     renderModelsWorkspace();
-    const reFocus = document.getElementById("models-search-in");
-    reFocus?.focus();
-    reFocus?.setSelectionRange(start, end);
-  };
+  });
+  els.viewModels.querySelectorAll("[data-discover-dl]").forEach((btn) => {
+    btn.onclick = () =>
+      downloadHuggingFaceModel(
+        btn.getAttribute("data-discover-dl"),
+        btn.getAttribute("data-discover-name") || "model",
+      );
+  });
   els.viewModels.querySelectorAll("[data-mfilter]").forEach((btn) => {
     btn.onclick = () => {
       appState.modelFilter = btn.getAttribute("data-mfilter");
-      renderModelsWorkspace();
+      if (appState.modelFilter === "discover" && !appState.discoverLoaded) {
+        loadDiscoverModels(appState.discoverQuery);
+      } else {
+        renderModelsWorkspace();
+      }
     };
   });
   els.viewModels.querySelectorAll("[data-select-model]").forEach((row) => {
@@ -1947,46 +2202,50 @@ function renderModelsWorkspace() {
   });
 
   document.getElementById("ws-hf-dl").onclick = async () => {
-    if (appState.busyModelId) return;
     const url = document.getElementById("ws-hf-url").value.trim();
-    if (!url) { showToast("Paste a Hugging Face .gguf link first."); return; }
-    appState.busyModelId = "hf-custom";
-    appState.busyModelAction = "downloading";
-    const btn = document.getElementById("ws-hf-dl");
-    if (btn) { btn.disabled = true; btn.textContent = "Downloading…"; }
-    const progEl = document.getElementById("ws-hf-progress");
-    if (progEl) progEl.textContent = "Starting download…";
+    await downloadHuggingFaceModel(url, "model");
+  };
+  document.getElementById("ws-scan-models").onclick = async () => {
     try {
-      await invoke("download_huggingface_gguf", { url });
+      const res = await invoke("scan_user_models_folder");
       await refreshBootstrap();
-      showToast("Model downloaded.");
+      if (res.added_ids?.length) {
+        appState.selectedModelInspectorId = res.added_ids[0];
+        appState.modelFilter = "all";
+        renderAll();
+        showToast(`Added ${res.added_ids.length} model${res.added_ids.length === 1 ? "" : "s"} from ${res.folder}.`);
+      } else {
+        showToast(`No new .gguf models found in ${res.folder}.`);
+      }
     } catch (err) {
       showToast(friendlyRuntimeError(err));
-    } finally {
-      appState.busyModelId = null;
-      appState.busyModelAction = null;
-      renderAll();
     }
   };
   document.getElementById("ws-local-pick").onclick = async () => {
     try {
       const picked = await invoke("pick_model_file");
       if (!picked) return;
-      document.getElementById("ws-local-gguf").value = picked;
       await invoke("import_local_gguf", { path: picked });
+      const base = String(picked).split(/[\\/]/).pop() || "model.gguf";
       await refreshBootstrap();
+      appState.selectedModelInspectorId = `imported:${base}`;
+      appState.modelFilter = "all";
       renderAll();
-      showToast("Model added.");
+      showToast(`Added ${base.replace(/\.gguf$/i, "")}. Click Use to start it.`);
     } catch (err) {
       showToast(friendlyRuntimeError(err));
     }
   };
   document.getElementById("ws-local-imp").onclick = async () => {
     try {
-      await invoke("import_local_gguf", { path: document.getElementById("ws-local-gguf").value });
+      const rawPath = document.getElementById("ws-local-gguf").value.trim();
+      await invoke("import_local_gguf", { path: rawPath });
+      const base = rawPath.split(/[\\/]/).pop() || "model.gguf";
       await refreshBootstrap();
+      appState.selectedModelInspectorId = `imported:${base}`;
+      appState.modelFilter = "all";
       renderAll();
-      showToast("Model added.");
+      showToast(`Added ${base.replace(/\.gguf$/i, "")}. Click Use to start it.`);
     } catch (err) {
       showToast(friendlyRuntimeError(err));
     }

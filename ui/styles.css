@@ -1724,6 +1724,16 @@ body {
   gap: 9px;
 }
 
+.models-drop-zone {
+  border-style: dashed;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.models-drop-zone.drop-active {
+  border-color: var(--accent);
+  background: rgba(122, 168, 149, 0.12);
+}
+
 .row {
   display: flex;
   align-items: center;

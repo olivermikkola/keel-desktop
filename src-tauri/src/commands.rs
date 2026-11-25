@@ -14,8 +14,9 @@ use keel_core::mcp::{
 };
 use keel_core::model_check::{self, ModelCheckReport};
 use keel_core::models::{
-    candidate_models_for_auto_start, catalog_download_url, delete_model_file, download_gguf,
-    list_models, models_dir, parse_huggingface_gguf_url, CatalogModel,
+    candidate_models_for_auto_start, catalog_download_url, default_user_models_dir,
+    delete_model_file, discover_huggingface_models, download_gguf, list_models, models_dir,
+    resolve_huggingface_input, scan_local_ggufs_in_dir, CatalogModel, DiscoveredModel,
 };
 use keel_core::runtime::{
     check_runner_starts, find_llama_server, ModelLaunch, RuntimeManager, RuntimeStatus,
@@ -1155,8 +1156,9 @@ pub async fn download_huggingface_gguf(
         .download_lock
         .try_lock()
         .map_err(|_| "Another download is running")?;
-    let (_repo, _rev, file_name, resolve_url) =
-        parse_huggingface_gguf_url(&url).map_err(|e| e.to_string())?;
+    let (_repo, _rev, file_name, resolve_url) = resolve_huggingface_input(&url)
+        .await
+        .map_err(|e| e.to_string())?;
     keel_core::models::ensure_non_catalog_filename(&file_name).map_err(|e| e.to_string())?;
     let dest = models_dir(&state.data_dir).join(&file_name);
     let id = format!("local:{file_name}");
@@ -1169,6 +1171,62 @@ pub async fn download_huggingface_gguf(
 
     let cfg = state.config.lock().await;
     Ok(list_models(&state.data_dir, &cfg.custom_model_paths))
+}
+
+#[tauri::command]
+pub async fn discover_models_cmd(
+    query: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<DiscoveredModel>, String> {
+    discover_huggingface_models(query.as_deref(), limit.unwrap_or(24))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ScanModelsResult {
+    pub folder: String,
+    pub added_ids: Vec<String>,
+    pub models: Vec<CatalogModel>,
+}
+
+#[tauri::command]
+pub async fn scan_user_models_folder(
+    state: State<'_, AppState>,
+) -> Result<ScanModelsResult, String> {
+    let Some(folder) = default_user_models_dir() else {
+        return Err("No ~/Models folder was found on this computer. Use Choose file or drop a .gguf file onto the window.".to_string());
+    };
+    let folder_for_scan = folder.clone();
+    let paths = tokio::task::spawn_blocking(move || scan_local_ggufs_in_dir(&folder_for_scan, 2))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut cfg = state.config.lock().await;
+    let mut added_ids = Vec::new();
+    for path in paths {
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("custom.gguf")
+            .to_string();
+        let id = format!("imported:{file_name}");
+        let path_str = path.to_string_lossy().to_string();
+        let already_known = cfg.custom_model_paths.values().any(|p| p == &path_str)
+            || cfg.custom_model_paths.contains_key(&id);
+        if !already_known {
+            cfg.custom_model_paths.insert(id.clone(), path_str);
+            added_ids.push(id);
+        }
+    }
+    if !added_ids.is_empty() {
+        save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
+    }
+    Ok(ScanModelsResult {
+        folder: folder.to_string_lossy().to_string(),
+        added_ids,
+        models: list_models(&state.data_dir, &cfg.custom_model_paths),
+    })
 }
 
 #[tauri::command]

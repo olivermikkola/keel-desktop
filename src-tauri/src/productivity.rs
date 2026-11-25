@@ -43,6 +43,29 @@ pub async fn pick_documents(app: AppHandle) -> Result<Vec<Document>, String> {
 }
 
 #[tauri::command]
+pub async fn import_documents_from_paths(paths: Vec<String>) -> Result<Vec<Document>, String> {
+    if paths.len() > 8 {
+        return Err("Drop up to 8 documents at a time".to_string());
+    }
+    tokio::task::spawn_blocking(move || {
+        paths
+            .into_iter()
+            .map(|raw| {
+                let path = std::path::PathBuf::from(raw);
+                keel_core::documents::import_document(&path).map_err(|e| {
+                    format!(
+                        "{}: {e}",
+                        path.file_name().unwrap_or_default().to_string_lossy()
+                    )
+                })
+            })
+            .collect()
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn save_project(
     state: State<'_, AppState>,
     project: Project,
