@@ -16,6 +16,8 @@ pub struct RuntimeStatus {
     pub llama_server_bin: Option<String>,
     pub managed_pid: Option<u32>,
     pub error: Option<String>,
+    #[serde(default)]
+    pub error_details: Option<String>,
 }
 
 /// What was true the last time the managed runner was started.
@@ -138,6 +140,7 @@ pub struct RuntimeManager {
     pub port: u16,
     log_path: Option<PathBuf>,
     last_error: Option<String>,
+    last_error_details: Option<String>,
     loaded: Option<LoadedLaunch>,
 }
 
@@ -160,6 +163,7 @@ impl RuntimeManager {
             port,
             log_path: None,
             last_error: None,
+            last_error_details: None,
             loaded: None,
         }
     }
@@ -290,7 +294,8 @@ impl RuntimeManager {
             .timeout(Duration::from_secs(2))
             .build()?;
 
-        for _ in 0..90 {
+        // Allow up to 120 seconds for large 16 GB+ GGUF models to load on cold disk or GPU.
+        for _ in 0..240 {
             if let Some(ref mut ch) = self.child {
                 if let Ok(Some(_exit)) = ch.try_wait() {
                     self.child = None;
@@ -309,6 +314,7 @@ impl RuntimeManager {
                         .collect::<Vec<_>>()
                         .join("\n");
                     self.last_error = Some(friendly_runner_exit_message(&details, &os_release()));
+                    self.last_error_details = (!details.trim().is_empty()).then_some(details);
                     bail!(
                         "{}",
                         self.last_error
@@ -319,6 +325,8 @@ impl RuntimeManager {
             }
             if let Ok(resp) = client.get(&health_url).send().await {
                 if resp.status().is_success() {
+                    self.last_error = None;
+                    self.last_error_details = None;
                     return Ok(self.status());
                 }
             }
@@ -339,6 +347,7 @@ impl RuntimeManager {
         self.active_context_size = None;
         self.loaded = None;
         self.last_error = None;
+        self.last_error_details = None;
     }
 
     pub fn stop_sync(&mut self) {
@@ -351,6 +360,7 @@ impl RuntimeManager {
         self.active_context_size = None;
         self.loaded = None;
         self.last_error = None;
+        self.last_error_details = None;
     }
 
     pub fn status(&mut self) -> RuntimeStatus {
@@ -383,6 +393,7 @@ impl RuntimeManager {
                     friendly_runner_exit_message(&details, &os_release())
                 };
                 self.last_error = Some(msg);
+                self.last_error_details = (!details.trim().is_empty()).then_some(details);
             }
         }
         let state = if self.child.is_some() {
@@ -403,6 +414,7 @@ impl RuntimeManager {
             llama_server_bin: self.llama_server_bin.clone(),
             managed_pid: self.child.as_ref().and_then(|c| c.id()),
             error: self.last_error.clone(),
+            error_details: self.last_error_details.clone(),
         }
     }
 }

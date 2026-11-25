@@ -26,6 +26,10 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  case 'set_workspace_mcp_trust': result=[];break;
  case 'export_html_file': result='/test/export.html';break;
  case 'open_models_folder': result=null;break;
+ case 'discover_models_cmd': result=[{id:'hf:prism-ml/Ternary-Bonsai-2.5-27B-GGUF',repo_id:'prism-ml/Ternary-Bonsai-2.5-27B-GGUF',name:'Ternary-Bonsai-2.5-27B',author:'prism-ml',likes:420,downloads:12000,trending_score:98.5,file_name:'Ternary-Bonsai-2.5-27B-Q2_0.gguf',resolve_url:'https://huggingface.co/prism-ml/Ternary-Bonsai-2.5-27B-GGUF/resolve/main/Ternary-Bonsai-2.5-27B-Q2_0.gguf',repo_url:'https://huggingface.co/prism-ml/Ternary-Bonsai-2.5-27B-GGUF',bytes:7670000000,quantization:'Q2_0',architecture:'qwen3',context_size:32768}];break;
+ case 'scan_user_models_folder': result={folder:'/test/Models',added_ids:[],models:[]};break;
+ case 'import_local_gguf': result=null;break;
+ case 'import_documents_from_paths': result=(args.paths||[]).map(p=>({id:crypto.randomUUID(),name:String(p).split(/[\\/]/).pop()||'dropped.txt',kind:'txt',text:'Dropped document',truncated:false}));break;
  case 'import_document_from_bytes': result={id:crypto.randomUUID(),name:args.name || 'pasted.txt',kind:'txt',text:'Imported bytes',truncated:false};break;
  case 'create_session': result={id:crypto.randomUUID(),title:'New '+args.preset+' chat',app_preset:args.preset,workspace_path:args.workspacePath,project_id:args.projectId || null,pinned:false,messages:[],staged_edits:[],updated_at:Date.now()/1000};sessions.unshift(result);break;
  case 'load_session_cmd':result=sessions.find(s=>s.id===args.id);break;
@@ -426,6 +430,13 @@ async def main(port):
         models_text = await page.locator('#view-models').inner_text()
         for jargon in ('GGUF', 'Q4', 'Q2_0', 'OpenAI', 'llama-server'):
             assert jargon not in models_text, (jargon, models_text)
+        # Discover tab fetches trending models and Scan ~/Models invokes scanner command.
+        await page.locator('[data-mfilter="discover"]').click()
+        await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='discover_models_cmd')")
+        await page.locator('#view-models').get_by_text('Ternary-Bonsai-2.5-27B', exact=True).wait_for()
+        await page.locator('#ws-scan-models').click()
+        await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='scan_user_models_folder')")
+        await page.locator('[data-mfilter="all"]').click()
         await page.locator('#ws-ext-url').evaluate('(el) => { el.closest("details").open = true; }')
         await page.locator('#ws-ext-url').fill('https://models.example.com/v1')
         await page.locator('#ws-ext-name').fill('shared-qwen')
