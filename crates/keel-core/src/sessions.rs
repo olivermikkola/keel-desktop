@@ -251,6 +251,112 @@ pub fn list_sessions(data_dir: &Path) -> Vec<SessionSummary> {
     out
 }
 
+pub fn tidy_chat_title(raw: &str, limit: usize) -> String {
+    const OPENERS: &[&[&str]] = &[
+        &["i", "want", "you", "to"],
+        &["i'd", "like", "you", "to"],
+        &["can", "you"],
+        &["could", "you"],
+        &["would", "you"],
+        &["will", "you"],
+        &["help", "me"],
+        &["please"],
+        &["hey"],
+        &["hi"],
+        &["hello"],
+    ];
+    const TRAILING_FILLERS: &[&str] = &[
+        "a", "an", "and", "the", "of", "to", "for", "in", "on", "with", "my", "or",
+    ];
+
+    fn bare(word: &str) -> String {
+        word.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'')
+            .to_lowercase()
+    }
+
+    let first_line = raw
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    if first_line.is_empty() || limit == 0 {
+        return String::new();
+    }
+
+    let mut words: Vec<&str> = Vec::new();
+    for word in first_line.split_whitespace() {
+        if let Some(prev) = words.last() {
+            if prev.eq_ignore_ascii_case(word) {
+                continue;
+            }
+        }
+        words.push(word);
+    }
+
+    loop {
+        let mut stripped = false;
+        for opener in OPENERS {
+            if opener.len() < words.len()
+                && words.iter().zip(opener.iter()).all(|(w, o)| bare(w) == *o)
+            {
+                words.drain(..opener.len());
+                stripped = true;
+                break;
+            }
+        }
+        if !stripped {
+            break;
+        }
+    }
+
+    let full = words.join(" ");
+    let mut kept: Vec<&str> = Vec::new();
+    let mut len = 0usize;
+    for word in &words {
+        let wlen = word.chars().count();
+        let next_len = if kept.is_empty() {
+            wlen
+        } else {
+            len + 1 + wlen
+        };
+        if next_len > limit {
+            break;
+        }
+        kept.push(word);
+        len = next_len;
+    }
+
+    let mut title = if kept.is_empty() {
+        words
+            .first()
+            .map(|w| w.chars().take(limit).collect::<String>())
+            .unwrap_or_default()
+    } else {
+        if kept.len() < words.len() {
+            while kept.len() > 1
+                && kept
+                    .last()
+                    .is_some_and(|w| TRAILING_FILLERS.contains(&bare(w).as_str()))
+            {
+                kept.pop();
+            }
+        }
+        kept.join(" ")
+    };
+
+    if title.is_empty() {
+        title = full.chars().take(limit).collect();
+    }
+
+    let trimmed =
+        title.trim_matches(|c: char| matches!(c, '?' | '!' | '.' | ',' | ';' | ':' | ' '));
+    let mut chars = trimmed.chars();
+    match chars.next() {
+        Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
+        None => String::new(),
+    }
+}
+
 pub fn recover_interrupted(data: &Path) -> anyhow::Result<()> {
     for summary in list_sessions(data) {
         let mut session = load_session(data, &summary.id)?;
@@ -325,5 +431,22 @@ mod tests {
             Some("/kept/llama-server")
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tidies_automatic_chat_titles() {
+        assert_eq!(
+            tidy_chat_title("Can you please make a a yellow yacht photo?", 60),
+            "Make a yellow yacht photo"
+        );
+        assert_eq!(
+            tidy_chat_title("Hey, could you summarize the quarterly financial report for the board of directors", 32),
+            "Summarize the quarterly"
+        );
+        assert_eq!(
+            tidy_chat_title("\n\n  fix login timeout\nmore details on line 2", 48),
+            "Fix login timeout"
+        );
+        assert_eq!(tidy_chat_title("   ", 48), "");
     }
 }

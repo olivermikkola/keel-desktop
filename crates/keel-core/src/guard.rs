@@ -24,6 +24,22 @@ pub fn split_thinking(raw: &str) -> (String, String) {
         if !in_think {
             let next_fence = rest.find("```");
             let next_think = if in_fence { None } else { rest.find("<think>") };
+            let next_close = if in_fence {
+                None
+            } else {
+                rest.find("</think>")
+            };
+            // Some chat templates prefill `<think>` in the prompt so the model emits only `</think>`.
+            if let Some(c) = next_close {
+                let before_fence = next_fence.is_none_or(|f| c < f);
+                let before_open = next_think.is_none_or(|t| c < t);
+                if before_fence && before_open && thinking.is_empty() && !visible.contains("```") {
+                    visible.push_str(&rest[..c]);
+                    thinking = std::mem::take(&mut visible).trim().to_string();
+                    rest = &rest[c + "</think>".len()..];
+                    continue;
+                }
+            }
             match (next_fence, next_think) {
                 (Some(f), Some(t)) if f < t => {
                     visible.push_str(&rest[..f + 3]);
@@ -209,6 +225,15 @@ mod tests {
         let (think, vis) = split_thinking("<think>step 1\nstep 2</think>\nHello there.");
         assert_eq!(think, "step 1\nstep 2");
         assert_eq!(vis, "Hello there.");
+
+        let (think_ws, vis_ws) = split_thinking("  \n<think>reason</think>\nAnswer");
+        assert_eq!(think_ws, "reason");
+        assert_eq!(vis_ws, "Answer");
+
+        let (think_prefilled, vis_prefilled) =
+            split_thinking("checking options first\n</think>\nFinal reply.");
+        assert_eq!(think_prefilled, "checking options first");
+        assert_eq!(vis_prefilled, "Final reply.");
     }
 
     #[test]

@@ -316,9 +316,11 @@ fn infer_column_types(col_count: usize, records: &[Vec<String>]) -> Vec<ColType>
 }
 
 fn load_csv_into_table(conn: &Connection, table_name: &str, raw: &str) -> Result<()> {
+    // Strip a UTF-8 BOM (common in Excel/Numbers exports) so the first column name matches SQL queries.
+    let clean = raw.strip_prefix('\u{feff}').unwrap_or(raw);
     let mut reader = csv::ReaderBuilder::new()
         .flexible(true)
-        .from_reader(raw.as_bytes());
+        .from_reader(clean.as_bytes());
     let headers = reader.headers()?.clone();
     if headers.is_empty() {
         return Ok(());
@@ -465,6 +467,20 @@ mod tests {
         )
         .unwrap();
         assert!(files_out.contains("sales.csv | csv"), "{files_out}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn strips_utf8_bom_from_csv_headers() {
+        let dir = std::env::temp_dir().join(format!("keel_sql_bom_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("export.csv"), "\u{feff}id,total\n1,42.5\n2,19.0\n").unwrap();
+
+        let out = run_sql_in_workspace(Some(&dir), "SELECT id, total FROM export ORDER BY id ASC")
+            .unwrap();
+        assert!(out.contains("id | total"), "{out}");
+        assert!(out.contains("1 | 42.5"), "{out}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

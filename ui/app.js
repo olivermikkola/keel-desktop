@@ -18,9 +18,13 @@ import {
   TONE_MODES,
   countStagedEdits,
   detectViewerForPreset,
+  estimateSessionTokens,
   filterModels,
+  findReusableEmptySession,
   formatBytes,
+  formatContextMeter,
   formatRelativeTime,
+  formatTokenCount,
   modelFitLabel,
   normalizeAppearance,
   shortPath,
@@ -69,6 +73,7 @@ const appState = {
   waking: false,
   sendWhenReady: false,
   lastAnswerSeconds: 0,
+  lastContextTokens: 0,
   appearance: loadAppearance(),
 };
 
@@ -112,6 +117,7 @@ const els = {
   viewerContent: document.getElementById("viewer-content"),
   telemetryLeft: document.getElementById("telemetry-left"),
   telemetryRight: document.getElementById("telemetry-right"),
+  contextMeterPill: document.getElementById("context-meter-pill"),
   modalBackdrop: document.getElementById("modal-backdrop"),
   modalTitle: document.getElementById("modal-title"),
   modalBody: document.getElementById("modal-body"),
@@ -569,6 +575,26 @@ function hasViewerContent() {
 async function createNewSession(preset = "chat", workspacePath = appState.workspacePath) {
   if (appState.streaming) return;
   saveDraft();
+  const reusableId = findReusableEmptySession(appState.bootstrap?.sessions || [], {
+    currentSession: appState.session,
+    preset,
+    workspacePath,
+    projectId: appState.activeProjectId,
+  });
+  if (reusableId) {
+    if (appState.session?.id !== reusableId) {
+      await loadSession(reusableId);
+      return;
+    }
+    appState.lastContextTokens = 0;
+    appState.activeView = modeForPreset(preset);
+    appState.viewerOpen = hasViewerContent();
+    appState.viewerTab = appState.activeView === "code" ? "code" : "preview";
+    renderAll();
+    els.promptInput?.focus();
+    return;
+  }
+  appState.lastContextTokens = 0;
   appState.session = await invoke("create_session", {
     preset,
     workspacePath,
@@ -594,6 +620,7 @@ function activeWorkspacePath() {
 async function loadSession(id) {
   if (appState.streaming) return;
   saveDraft();
+  appState.lastContextTokens = 0;
   appState.session = await invoke("load_session_cmd", { id });
   appState.activeProjectId = appState.session.project_id || null;
   appState.searchResults = null;
@@ -887,6 +914,7 @@ function renderHeader() {
       : `${counts.applied} applied`;
   els.diffsPillBtn.classList.toggle("has-pending", counts.pending > 0);
   els.telemetryRight.textContent = `Keel v${b.version}`;
+  renderContextMeter();
   if (!appState.streaming) {
     const took = answerTimePhrase(appState.lastAnswerSeconds);
     const live = `${location} · ${appState.session?.messages.length || 0} messages${took ? ` · ${took}` : ""}`;
@@ -903,6 +931,37 @@ function renderHeader() {
   els.publishPrBtn.classList.toggle("hidden", mode !== "code" || !appState.workspacePath);
   els.newChatBtn.disabled = appState.streaming;
   els.newAgentBtn.disabled = appState.streaming;
+}
+
+function activeContextBudget(b) {
+  if (!b) return 0;
+  const rt = b.runtime;
+  if (rt?.active_context_size > 0) return rt.active_context_size;
+  const selected = b.models?.find((m) => m.id === (rt?.active_model_id || b.config?.selected_model_id));
+  const modelMax = selected?.context_size || 8192;
+  const configured = b.config?.context_window || 0;
+  const desired = configured > 0 ? configured : (b.system_ram_gb >= 16 ? 16384 : 8192);
+  return Math.min(desired, Math.max(modelMax, 2048));
+}
+
+function renderContextMeter() {
+  const pill = els.contextMeterPill;
+  const b = appState.bootstrap;
+  if (!pill || !b) return;
+  const used = appState.lastContextTokens || estimateSessionTokens(appState.session?.messages || []);
+  const meter = formatContextMeter(used, activeContextBudget(b));
+  if (!meter) {
+    pill.textContent = "";
+    pill.classList.add("hidden");
+    pill.classList.remove("is-high");
+    return;
+  }
+  pill.textContent = meter.label;
+  pill.classList.remove("hidden");
+  pill.classList.toggle("is-high", meter.isHigh);
+  pill.title = meter.isHigh
+    ? `Conversation memory is ${meter.percent}% full. Older turns summarize automatically when needed.`
+    : `Conversation memory used (${meter.percent}%). Older turns summarize automatically when full.`;
 }
 
 function closeModelSwitcher() {
@@ -1075,11 +1134,12 @@ function renderModelSwitcher() {
     for (const m of healthy) {
       const isActive = rt.state === "running" && rt.active_model_id === m.id;
       const tier = tierLabel(m);
+      const ctxLabel = isActive && rt.active_context_size ? ` · ${formatTokenCount(rt.active_context_size)} context` : "";
       html += `
         <button type="button" class="switcher-item ${isActive ? "active" : ""}" data-switch-model="${escapeHtml(m.id)}" role="menuitem" ${busy ? "disabled" : ""}>
           <span class="switcher-item-main">
             <strong>${escapeHtml(m.name)}</strong>
-            <span class="switcher-item-sub">${tier ? `${escapeHtml(tier)} · ` : ""}${formatBytes(m.bytes)}</span>
+            <span class="switcher-item-sub">${tier ? `${escapeHtml(tier)} · ` : ""}${formatBytes(m.bytes)}${escapeHtml(ctxLabel)}</span>
           </span>
           <span class="switcher-check">${isActive ? "✓" : ""}</span>
         </button>
@@ -1106,6 +1166,7 @@ function renderModelSwitcher() {
   if (isRuntimeLive(rt)) {
     html += `<button type="button" class="switcher-item" id="switcher-stop" role="menuitem"><span>Turn AI off</span></button>`;
   }
+  html += `<button type="button" class="switcher-item" id="switcher-discover" role="menuitem"><span>Discover or add .gguf…</span></button>`;
   html += `<button type="button" class="switcher-item" id="switcher-browse" role="menuitem"><span>Browse &amp; manage models…</span></button>`;
 
   menu.innerHTML = html;
@@ -1139,6 +1200,12 @@ function renderModelSwitcher() {
     } catch (err) {
       showToast(friendlyRuntimeError(err));
     }
+  });
+  menu.querySelector("#switcher-discover")?.addEventListener("click", () => {
+    closeModelSwitcher();
+    appState.modelFilter = "discover";
+    setActiveView("models");
+    if (!appState.discoverLoaded) loadDiscoverModels(appState.discoverQuery);
   });
   menu.querySelector("#switcher-browse")?.addEventListener("click", () => {
     closeModelSwitcher();
@@ -1280,13 +1347,18 @@ function renderMessageHtml(msg) {
     ? `<details class="thinking-box" data-details-id="thinking-${escapeHtml(msg.id)}"><summary>Thinking</summary><pre class="mono">${escapeHtml(msg.thinking)}</pre></details>` : "";
   const toolsHtml = (msg.tool_calls || []).map(renderToolOrEditHtml).join("");
   const lastUser = [...appState.session.messages].reverse().find((m) => m.role === "user");
-  const canRetry = !msg.unsent && msg === appState.session.messages[appState.session.messages.length - 1] && !(msg.tool_calls?.length) && lastUser && !lastUser.unsent;
+  const isLastMsg = msg === appState.session.messages[appState.session.messages.length - 1];
+  const canRetry = !msg.unsent && isLastMsg && !(msg.tool_calls?.length) && lastUser && !lastUser.unsent;
+  const canContinue = !msg.unsent && isLastMsg && msg.status === "failed";
   const retrySendBtn = msg.unsent
     ? `<button class="text-action" data-retry-unsent ${disabled}>Retry send</button>`
     : "";
+  const continueBtn = canContinue
+    ? `<button class="text-action" data-continue-message ${disabled}>Continue</button>`
+    : "";
   return `<div class="msg assistant" data-message-id="${escapeHtml(msg.id)}">${thinkingHtml}${toolsHtml}<div class="bubble markdown-body">${renderMarkdown(msg.content)}</div>
     ${msg.status === "failed" ? '<span class="reply-status">Reply interrupted · partial answer kept</span>' : ""}
-    <div class="message-actions"><button class="text-action" data-copy-message="${escapeHtml(msg.id)}">Copy</button>${retrySendBtn}${canRetry ? `<button class="text-action" data-retry-message="${escapeHtml(lastUser.id)}" ${disabled}>Try again</button>` : ""}</div></div>`;
+    <div class="message-actions"><button class="text-action" data-copy-message="${escapeHtml(msg.id)}">Copy</button>${continueBtn}${retrySendBtn}${canRetry ? `<button class="text-action" data-retry-message="${escapeHtml(lastUser.id)}" ${disabled}>Try again</button>` : ""}</div></div>`;
 }
 
 function handleAgentEvent(ev) {
@@ -1333,6 +1405,9 @@ function handleAgentEvent(ev) {
     const fromServer = Number(ev.elapsed_secs);
     const fromClock = streamingStartedAt ? (Date.now() - streamingStartedAt) / 1000 : 0;
     appState.lastAnswerSeconds = fromServer > 0 ? fromServer : fromClock;
+    const totalUsed = Number(ev.prompt_tokens || 0) + Number(ev.completion_tokens || 0);
+    if (totalUsed > 0) appState.lastContextTokens = totalUsed;
+    renderContextMeter();
     const tps = Number(ev.tokens_per_sec) > 0 ? ` · ${ev.tokens_per_sec.toFixed(1)} tok/s` : "";
     const toks = Number(ev.completion_tokens) > 0 ? ` · ${ev.completion_tokens} tokens` : "";
     const took = answerTimePhrase(appState.lastAnswerSeconds);
@@ -1774,8 +1849,22 @@ async function downloadHuggingFaceModel(url, label = "model") {
     if (added) {
       appState.selectedModelInspectorId = added.id;
       appState.modelFilter = "all";
+      if (!isRuntimeLive(appState.bootstrap?.runtime)) {
+        appState.busyModelAction = "starting";
+        renderAll();
+        try {
+          await invoke("start_model", { modelId: added.id });
+          await refreshBootstrap();
+          showToast(`${added.name} is downloaded and ready.`);
+        } catch (startErr) {
+          showToast(`Downloaded, but couldn't start yet: ${friendlyRuntimeError(startErr)}`);
+        }
+      } else {
+        showToast(`${added.name} downloaded. Click Use to switch to it.`);
+      }
+    } else {
+      showToast("Model downloaded. Click Use to start it.");
     }
-    showToast("Model downloaded. Click Use to start it.");
   } catch (err) {
     showToast(friendlyRuntimeError(err));
   } finally {
@@ -3241,6 +3330,7 @@ function openCustomizeModal() {
           <label><strong>Context window</strong></label>
           <select id="cust-ctx" class="select-field">
             <option value="0" ${!b.config.context_window ? "selected" : ""}>Auto (${b.system_ram_gb >= 16 ? "16K" : "8K"} for this computer)</option>
+            <option value="4096" ${b.config.context_window === 4096 ? "selected" : ""}>4,096 tokens (smallest RAM, coolest)</option>
             <option value="8192" ${b.config.context_window === 8192 ? "selected" : ""}>8,192 tokens (lighter RAM)</option>
             <option value="16384" ${b.config.context_window === 16384 ? "selected" : ""}>16,384 tokens (longer docs)</option>
             <option value="32768" ${b.config.context_window === 32768 ? "selected" : ""}>32,768 tokens (high RAM)</option>
@@ -3557,6 +3647,13 @@ function wireUi() {
       } catch {
         showToast("Could not access clipboard.");
       }
+      return;
+    }
+    const continueBtn = e.target.closest("[data-continue-message]");
+    if (continueBtn && !appState.streaming) {
+      els.promptInput.value = "Continue where you left off.";
+      saveDraft();
+      await sendCurrentPrompt();
       return;
     }
     const retryUnsent = e.target.closest("[data-retry-unsent]");

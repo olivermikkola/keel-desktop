@@ -321,6 +321,7 @@ async def main(port):
         await page.locator('#prompt-input').fill('Hello Keel')
         await page.locator('#send-btn').click()
         await page.get_by_text('Ready to help.',exact=True).wait_for()
+        await page.locator('#context-meter-pill').wait_for(state='visible')
         assert await page.locator('#viewer-pane').is_hidden()
         await page.screenshot(path=str(OUTPUT / 'chat.png'))
         # Attach a source, inspect it, then save explicit cross-conversation preferences.
@@ -451,6 +452,7 @@ async def main(port):
         await page.locator('#telemetry-left').get_by_text('Leaves this computer', exact=False).wait_for()
         # Switcher lets you jump back to built-in local AI in one click.
         await page.locator('#model-pill-btn').click()
+        await page.locator('#switcher-discover').wait_for()
         await page.locator('#switcher-use-builtin').click()
         await page.locator('#model-pill-label').get_by_text('Test local model', exact=False).wait_for()
         await page.locator('[data-view=models]').click()

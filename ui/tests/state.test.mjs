@@ -8,8 +8,11 @@ import {
   TONE_MODES,
   countStagedEdits,
   detectViewerForPreset,
+  estimateSessionTokens,
   filterModels,
+  findReusableEmptySession,
   formatBytes,
+  formatContextMeter,
   formatRelativeTime,
   modelFitLabel,
   normalizeAppearance,
@@ -132,4 +135,58 @@ test("estimates model RAM fit clearly", () => {
   assert.equal(modelFitLabel(2 * gb, 16, 8192), "Fits on graphics");
   assert.equal(modelFitLabel(4 * gb, 16, 3072), "Tight on graphics");
   assert.equal(modelFitLabel(8 * gb, 32, 2048), "Fits easily");
+});
+
+test("formats live context window meter and estimates session tokens", () => {
+  assert.equal(formatContextMeter(0, 8192), null);
+  assert.equal(formatContextMeter(1200, 0), null);
+  assert.deepEqual(formatContextMeter(2400, 8192), {
+    label: "2.4K / 8.2K (29%)",
+    percent: 29,
+    isHigh: false,
+  });
+  assert.deepEqual(formatContextMeter(13000, 16384), {
+    label: "13K / 16K (79%)",
+    percent: 79,
+    isHigh: true,
+  });
+
+  assert.equal(estimateSessionTokens([]), 0);
+  const est = estimateSessionTokens([
+    { role: "user", content: "Hello world".repeat(40), attachments: [{ text: "abc".repeat(100) }] },
+    { role: "assistant", content: "Sure thing".repeat(20) },
+  ]);
+  assert.ok(est > 150 && est < 400, `unexpected estimate ${est}`);
+});
+
+test("reuses an untouched empty session with matching preset, folder, and project", () => {
+  const current = {
+    id: "cur-empty",
+    app_preset: "chat",
+    workspace_path: null,
+    project_id: null,
+    messages: [],
+    staged_edits: [],
+  };
+  assert.equal(
+    findReusableEmptySession([], { currentSession: current, preset: "chat" }),
+    "cur-empty",
+  );
+  assert.equal(
+    findReusableEmptySession(
+      [
+        { id: "used", app_preset: "work", workspace_path: "/p", project_id: null, message_count: 2 },
+        { id: "empty-work", app_preset: "work", workspace_path: "/p", project_id: null, message_count: 0 },
+      ],
+      { currentSession: current, preset: "work", workspacePath: "/p" },
+    ),
+    "empty-work",
+  );
+  assert.equal(
+    findReusableEmptySession(
+      [{ id: "pinned-empty", app_preset: "chat", workspace_path: null, project_id: null, message_count: 0, pinned: true }],
+      { currentSession: { ...current, messages: [{ id: "m1" }] }, preset: "chat" },
+    ),
+    null,
+  );
 });
