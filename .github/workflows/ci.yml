@@ -36,7 +36,7 @@ jobs:
           python-version: '3.12'
       - name: Publish eval targets fail-closed + TBD scaffold
         run: python3 scripts/test_publish_eval_targets.py
-      - name: v0.6.0 taggable version gate
+      - name: v0.7.0 taggable version gate
         run: ./scripts/verify_v06_taggable.sh
       - name: verify_v06_taggable fail-closed regression
         run: python3 scripts/test_verify_v06_taggable.py

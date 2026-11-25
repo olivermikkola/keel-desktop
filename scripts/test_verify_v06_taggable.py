@@ -26,7 +26,7 @@ def run_verify(env: dict[str, str] | None = None) -> subprocess.CompletedProcess
     )
 
 
-def write_fixture(root: Path, *, cargo_version: str = "0.6.0") -> None:
+def write_fixture(root: Path, *, cargo_version: str = "0.7.0") -> None:
     """Minimal tree the taggable gate reads."""
     (root / "Cargo.toml").write_text(
         f'[workspace.package]\nversion = "{cargo_version}"\n',
@@ -35,22 +35,22 @@ def write_fixture(root: Path, *, cargo_version: str = "0.6.0") -> None:
     tauri = root / "src-tauri"
     tauri.mkdir(parents=True)
     (tauri / "tauri.conf.json").write_text(
-        '{"version": "0.6.0"}\n',
+        '{"version": "0.7.0"}\n',
         encoding="utf-8",
     )
     ui = root / "ui"
     ui.mkdir(parents=True)
-    (ui / "index.html").write_text("Keel Desktop 0.6.0\n", encoding="utf-8")
+    (ui / "index.html").write_text("Keel Desktop 0.7.0\n", encoding="utf-8")
     wf = root / ".github" / "workflows"
     wf.mkdir(parents=True)
     (wf / "release.yml").write_text(
-        'on:\n  workflow_dispatch:\n    inputs:\n      tag:\n        default: "v0.6.0"\n',
+        'on:\n  workflow_dispatch:\n    inputs:\n      tag:\n        default: "v0.7.0"\n',
         encoding="utf-8",
     )
     (wf / "eval-targets-evidence.yml").write_text("name: Eval targets evidence\n", encoding="utf-8")
     docs = root / "docs" / "releases"
     docs.mkdir(parents=True)
-    (docs / "v0.6.0.md").write_text("# v0.6.0\n", encoding="utf-8")
+    (docs / "v0.7.0.md").write_text("# v0.7.0\n", encoding="utf-8")
     scripts = root / "scripts"
     scripts.mkdir(parents=True)
     (scripts / "publish_eval_targets.py").write_text("# stub\n", encoding="utf-8")
@@ -79,10 +79,10 @@ class VerifyV06TaggableTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             fixture = Path(tmp)
             write_fixture(fixture)
-            (fixture / "docs" / "releases" / "v0.6.0.md").unlink()
+            (fixture / "docs" / "releases" / "v0.7.0.md").unlink()
             proc = run_verify(env={"KEEL_TAGGABLE_ROOT": str(fixture)})
             self.assertNotEqual(proc.returncode, 0, proc.stdout)
-            self.assertIn("docs/releases/v0.6.0.md", proc.stdout + proc.stderr)
+            self.assertIn("docs/releases/v0.7.0.md", proc.stdout + proc.stderr)
 
 
 if __name__ == "__main__":
