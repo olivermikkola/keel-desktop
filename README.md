@@ -86,6 +86,7 @@ Grab the latest installer from [**GitHub Releases**](https://github.com/olivermi
 - **Ubuntu / Debian:** `.deb` — `sudo apt install ./Keel.Desktop_*_amd64.deb`
 - **Other Linux:** `.AppImage` (needs FUSE 2: `fuse-libs` on Fedora, `libfuse2` on Ubuntu). If the model engine is missing a system library, Keel tells you which one and the command that installs it.
 - **Windows:** `.exe` (NSIS setup) or `.msi`
+- **In-app updates (`v0.7.1+`):** Once installed on macOS, Windows, or Linux AppImage, Keel checks for signed releases in the background (and under **Settings → App updates**) and lets you **Update & restart** right inside the app. Package-managed `.deb`/`.rpm` installs show a 1-click download link.
 
 ### Install locally on Linux (from source)
 
