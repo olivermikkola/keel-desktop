@@ -138,3 +138,74 @@ export function detectViewerForPreset(preset, files = []) {
     null
   );
 }
+
+export function formatTokenCount(count) {
+  const n = Math.max(0, Math.round(Number(count) || 0));
+  if (n >= 1000) {
+    const k = n / 1000;
+    if (k >= 10 || Math.abs(k - Math.round(k)) < 0.05) {
+      return `${Math.round(k)}K`;
+    }
+    return `${k.toFixed(1)}K`;
+  }
+  return String(n);
+}
+
+export function formatContextMeter(usedTokens, contextSize) {
+  const used = Math.max(0, Math.round(Number(usedTokens) || 0));
+  const cap = Math.max(0, Math.round(Number(contextSize) || 0));
+  if (used <= 0 || cap <= 0) return null;
+  const fraction = Math.min(1, used / cap);
+  const percent = Math.round(fraction * 100);
+  return {
+    label: `${formatTokenCount(used)} / ${formatTokenCount(cap)} (${percent}%)`,
+    percent,
+    isHigh: fraction >= 0.75,
+  };
+}
+
+export function estimateSessionTokens(messages = []) {
+  if (!Array.isArray(messages) || messages.length === 0) return 0;
+  let chars = 0;
+  let images = 0;
+  for (const m of messages) {
+    chars += (m?.content || "").length + (m?.thinking || "").length;
+    for (const tc of m?.tool_calls || []) {
+      chars += (tc?.result || "").length + 48;
+    }
+    for (const doc of m?.attachments || []) {
+      chars += Math.min((doc?.text || "").length, 8000);
+      if (doc?.image_data_url) images += 1;
+    }
+  }
+  return Math.round(chars / 4) + messages.length * 12 + images * 768;
+}
+
+export function findReusableEmptySession(
+  sessions = [],
+  { currentSession = null, preset = "chat", workspacePath = null, projectId = null } = {},
+) {
+  const norm = (v) => v || null;
+  const targetWs = norm(workspacePath);
+  const targetProj = norm(projectId);
+  if (
+    currentSession &&
+    (currentSession.messages?.length || 0) === 0 &&
+    (currentSession.staged_edits?.length || 0) === 0 &&
+    currentSession.app_preset === preset &&
+    norm(currentSession.workspace_path) === targetWs &&
+    norm(currentSession.project_id) === targetProj
+  ) {
+    return currentSession.id;
+  }
+  const match = (sessions || []).find(
+    (s) =>
+      s &&
+      (s.message_count || 0) === 0 &&
+      !s.pinned &&
+      s.app_preset === preset &&
+      norm(s.workspace_path) === targetWs &&
+      norm(s.project_id) === targetProj,
+  );
+  return match ? match.id : null;
+}

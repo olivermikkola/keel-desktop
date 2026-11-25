@@ -1356,8 +1356,10 @@ pub async fn send_message(
     };
 
     if session.messages.is_empty() && !input.prompt.trim().is_empty() {
-        let snippet: String = input.prompt.trim().chars().take(48).collect();
-        session.title = snippet;
+        let tidy = keel_core::sessions::tidy_chat_title(&input.prompt, 56);
+        if !tidy.is_empty() {
+            session.title = tidy;
+        }
     }
 
     session.messages.push(UiMessage {
