@@ -1,7 +1,6 @@
 use anyhow::{bail, Context, Result};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -10,11 +9,41 @@ use tokio::process::Command;
 
 use crate::sql_sandbox::run_sql_in_workspace;
 
-const MAX_READ_BYTES: usize = 64 * 1024;
-const MAX_LIST_ENTRIES: usize = 300;
-const MAX_SEARCH_MATCHES: usize = 80;
-const MAX_SHELL_OUTPUT_BYTES: usize = 32 * 1024;
+const DEFAULT_READ_BYTES: usize = 16 * 1024;
+const MAX_RANGE_READ_BYTES: usize = 24 * 1024;
+const DEFAULT_READ_LINES: usize = 250;
+const MAX_LIST_ENTRIES: usize = 200;
+const AGENT_LIST_ENTRIES: usize = 120;
+const MAX_SEARCH_MATCHES: usize = 50;
+const MAX_SHELL_OUTPUT_BYTES: usize = 16 * 1024;
 const SHELL_TIMEOUT_SECS: u64 = 45;
+
+fn is_ignored_dir_name(name: &str) -> bool {
+    matches!(
+        name,
+        ".git"
+            | "target"
+            | "node_modules"
+            | ".venv"
+            | "venv"
+            | "dist"
+            | "build"
+            | "__pycache__"
+            | ".cache"
+            | "cache"
+            | ".pytest_cache"
+            | ".mypy_cache"
+            | ".ruff_cache"
+            | ".next"
+            | ".nuxt"
+            | ".keel"
+            | ".gradle"
+            | ".idea"
+            | ".vscode"
+            | "Pods"
+            | "vendor"
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -129,19 +158,73 @@ pub fn validate_workspace_root(root: &Path) -> Result<PathBuf> {
 }
 
 pub fn list_workspace_files(root: &Path, subdir: Option<&str>) -> Result<String> {
+    list_workspace_files_bounded(root, subdir, None, MAX_LIST_ENTRIES)
+}
+
+/// Sorted breadth-first workspace file listing so top-level files and folders
+/// always appear first instead of being drowned out by one deep subdirectory.
+pub fn list_workspace_files_bounded(
+    root: &Path,
+    subdir: Option<&str>,
+    max_depth: Option<usize>,
+    max_entries: usize,
+) -> Result<String> {
     let start = match subdir {
         Some(s) if !s.trim().is_empty() && s.trim() != "." => confine_path(root, s)?,
         _ => validate_workspace_root(root)?,
     };
     let canon_root = root.canonicalize()?;
+    let limit = max_entries.max(1);
     let mut files = Vec::new();
-    collect_files_recursive(&canon_root, &start, &mut files)?;
-    files.sort();
-    let truncated = files.len() > MAX_LIST_ENTRIES;
-    files.truncate(MAX_LIST_ENTRIES);
+    let mut truncated = false;
+    let mut queue = std::collections::VecDeque::new();
+    queue.push_back((start, 0usize));
+
+    while let Some((dir, depth)) = queue.pop_front() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut children: Vec<_> = entries
+            .flatten()
+            .filter(|entry| !entry.file_type().is_ok_and(|kind| kind.is_symlink()))
+            .collect();
+        children.sort_by_key(|entry| entry.file_name().to_string_lossy().to_ascii_lowercase());
+
+        for entry in children {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if path.is_dir() && is_ignored_dir_name(&name_str) {
+                continue;
+            }
+            if files.len() >= limit {
+                truncated = true;
+                break;
+            }
+            let rel = path
+                .strip_prefix(&canon_root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            if path.is_dir() {
+                files.push(format!("{rel}/"));
+                if max_depth.is_none_or(|d| depth + 1 < d) {
+                    queue.push_back((path, depth + 1));
+                }
+            } else {
+                files.push(rel);
+            }
+        }
+        if truncated {
+            break;
+        }
+    }
+
     let mut out = files.join("\n");
     if truncated {
-        out.push_str(&format!("\n... (truncated at {MAX_LIST_ENTRIES} entries)"));
+        out.push_str(&format!(
+            "\n... (truncated at {limit} entries; pass a subdirectory in `path` to inspect further)"
+        ));
     }
     if out.is_empty() {
         out = "(workspace is empty)".to_string();
@@ -149,42 +232,18 @@ pub fn list_workspace_files(root: &Path, subdir: Option<&str>) -> Result<String>
     Ok(out)
 }
 
-fn collect_files_recursive(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<()> {
-    if out.len() > MAX_LIST_ENTRIES {
-        return Ok(());
-    }
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Ok(());
+pub fn list_workspace_files_for_agent(
+    root: &Path,
+    subdir: Option<&str>,
+    max_depth: Option<usize>,
+) -> Result<String> {
+    let default_depth = if subdir.is_none_or(|s| s.trim().is_empty() || s.trim() == ".") {
+        2
+    } else {
+        3
     };
-    for entry in entries.flatten() {
-        if out.len() > MAX_LIST_ENTRIES {
-            break;
-        }
-        if entry.file_type().is_ok_and(|kind| kind.is_symlink()) {
-            continue;
-        }
-        let path = entry.path();
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if matches!(
-            name_str.as_ref(),
-            ".git" | "target" | "node_modules" | ".venv" | "dist"
-        ) {
-            continue;
-        }
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        if path.is_dir() {
-            out.push(format!("{rel}/"));
-            collect_files_recursive(root, &path, out)?;
-        } else {
-            out.push(rel);
-        }
-    }
-    Ok(())
+    let depth = max_depth.map(|d| d.clamp(1, 6)).unwrap_or(default_depth);
+    list_workspace_files_bounded(root, subdir, Some(depth), AGENT_LIST_ENTRIES)
 }
 
 pub fn read_workspace_file(
@@ -193,70 +252,172 @@ pub fn read_workspace_file(
     start_line: Option<usize>,
     end_line: Option<usize>,
 ) -> Result<String> {
+    use std::io::{BufRead, BufReader};
+
     let path = confine_path(root, rel)?;
     let extension = path
         .extension()
         .and_then(|ext| ext.to_str())
         .unwrap_or_default();
-    let (bytes, extracted_truncated) = if extension.eq_ignore_ascii_case("pdf")
+    let explicit_range = start_line.is_some() || end_line.is_some();
+    let byte_cap = if explicit_range {
+        MAX_RANGE_READ_BYTES
+    } else {
+        DEFAULT_READ_BYTES
+    };
+    let start = start_line.unwrap_or(1).max(1);
+    let requested_end = end_line.unwrap_or_else(|| {
+        if explicit_range {
+            usize::MAX
+        } else {
+            start.saturating_add(DEFAULT_READ_LINES - 1)
+        }
+    });
+
+    let (lines_out, total_lines, shown_end, hit_byte_cap, extracted_truncated) = if extension
+        .eq_ignore_ascii_case("pdf")
         || extension.eq_ignore_ascii_case("docx")
         || crate::documents::is_image_extension(extension)
     {
         let document = crate::documents::import_document(&path)
             .with_context(|| format!("Failed to extract text from {rel}"))?;
-        (document.text.into_bytes(), document.truncated)
-    } else {
-        let mut bytes = Vec::new();
-        std::fs::File::open(&path)
-            .and_then(|file| {
-                file.take((MAX_READ_BYTES + 1) as u64)
-                    .read_to_end(&mut bytes)
-            })
-            .with_context(|| format!("Failed to read {rel}"))?;
-        (bytes, false)
-    };
-    let truncated_bytes = extracted_truncated || bytes.len() > MAX_READ_BYTES;
-    let slice = &bytes[..bytes.len().min(MAX_READ_BYTES)];
-    let text = String::from_utf8_lossy(slice);
-    let lines: Vec<&str> = text.lines().collect();
-    let total = lines.len();
-    let start = start_line.unwrap_or(1).max(1);
-    let end = end_line.unwrap_or(total.max(1)).min(total.max(1));
-
-    let mut out = String::new();
-    for (idx, line) in lines.iter().enumerate() {
-        let ln = idx + 1;
-        if ln >= start && ln <= end {
-            out.push_str(&format!("{ln:>4}: {line}\n"));
+        let all_lines: Vec<&str> = document.text.lines().collect();
+        let total = all_lines.len();
+        let mut out = String::new();
+        let mut last_shown = 0usize;
+        let mut capped = false;
+        for (idx, line) in all_lines.iter().enumerate() {
+            let ln = idx + 1;
+            if ln < start || ln > requested_end {
+                continue;
+            }
+            let formatted = format!("{ln:>4}: {line}\n");
+            if out.len() + formatted.len() > byte_cap && !out.is_empty() {
+                capped = true;
+                break;
+            }
+            out.push_str(&formatted);
+            last_shown = ln;
         }
-    }
+        (out, total, last_shown, capped, document.truncated)
+    } else {
+        let file = std::fs::File::open(&path).with_context(|| format!("Failed to read {rel}"))?;
+        let mut reader = BufReader::new(file);
+        let mut out = String::new();
+        let mut total = 0usize;
+        let mut last_shown = 0usize;
+        let mut capped = false;
+        let mut raw = Vec::new();
+        loop {
+            raw.clear();
+            let n = reader
+                .read_until(b'\n', &mut raw)
+                .with_context(|| format!("Failed to read {rel}"))?;
+            if n == 0 {
+                break;
+            }
+            total += 1;
+            if total < start || total > requested_end || capped {
+                continue;
+            }
+            while matches!(raw.last(), Some(b'\n' | b'\r')) {
+                raw.pop();
+            }
+            let line = String::from_utf8_lossy(&raw);
+            let formatted = format!("{total:>4}: {line}\n");
+            if out.len() + formatted.len() > byte_cap && !out.is_empty() {
+                capped = true;
+                continue;
+            }
+            out.push_str(&formatted);
+            last_shown = total;
+        }
+        (out, total, last_shown, capped, false)
+    };
+
+    let mut out = lines_out;
     if out.is_empty() {
-        out = "(empty file or line range)".to_string();
+        out = if total_lines == 0 {
+            "(empty file)".to_string()
+        } else {
+            format!(
+                "(no lines in range {start}-{} — file has {total_lines} lines)",
+                requested_end.min(total_lines)
+            )
+        };
     }
-    if truncated_bytes {
-        out.push_str(&format!("\n... (file truncated at {MAX_READ_BYTES} bytes)"));
+    let has_more = shown_end > 0 && shown_end < total_lines;
+    if hit_byte_cap || has_more || extracted_truncated {
+        let next_start = shown_end.saturating_add(1);
+        out.push_str(&format!(
+            "\n... (showing lines {start}-{shown_end} of {total_lines} total; pass start_line={next_start} and end_line to read further)"
+        ));
     }
     Ok(out)
 }
 
 pub fn search_workspace_files(root: &Path, pattern: &str) -> Result<String> {
+    search_workspace_files_in(root, pattern, None)
+}
+
+pub fn search_workspace_files_in(
+    root: &Path,
+    pattern: &str,
+    subdir: Option<&str>,
+) -> Result<String> {
     if pattern.trim().is_empty() {
         bail!("Search pattern must not be empty");
     }
     let re = Regex::new(pattern)
         .unwrap_or_else(|_| Regex::new(&regex::escape(pattern)).expect("escaped regex"));
     let canon_root = validate_workspace_root(root)?;
+    let start = match subdir {
+        Some(s) if !s.trim().is_empty() && s.trim() != "." => confine_path(&canon_root, s)?,
+        _ => canon_root.clone(),
+    };
     let mut matches = Vec::new();
-    search_dir(&canon_root, &canon_root, &re, &mut matches);
+    if start.is_file() {
+        search_file(&canon_root, &start, &re, &mut matches);
+    } else {
+        search_dir(&canon_root, &start, &re, &mut matches);
+    }
     if matches.is_empty() {
         return Ok(format!("No matches found for `{pattern}`."));
     }
     let truncated = matches.len() >= MAX_SEARCH_MATCHES;
     let mut out = matches.join("\n");
     if truncated {
-        out.push_str(&format!("\n... (stopped at {MAX_SEARCH_MATCHES} matches)"));
+        out.push_str(&format!(
+            "\n... (stopped at {MAX_SEARCH_MATCHES} matches; narrow `pattern` or pass a subdirectory in `path`)"
+        ));
     }
     Ok(out)
+}
+
+fn search_file(root: &Path, path: &Path, re: &Regex, out: &mut Vec<String>) {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    if meta.len() > 512 * 1024 {
+        return;
+    }
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let rel = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    for (idx, line) in content.lines().enumerate() {
+        if re.is_match(line) {
+            let clipped: String = line.chars().take(140).collect();
+            out.push(format!("{rel}:{}: {clipped}", idx + 1));
+            if out.len() >= MAX_SEARCH_MATCHES {
+                return;
+            }
+        }
+    }
 }
 
 fn search_dir(root: &Path, dir: &Path, re: &Regex, out: &mut Vec<String>) {
@@ -266,48 +427,26 @@ fn search_dir(root: &Path, dir: &Path, re: &Regex, out: &mut Vec<String>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
-    for entry in entries.flatten() {
+    let mut children: Vec<_> = entries
+        .flatten()
+        .filter(|entry| !entry.file_type().is_ok_and(|kind| kind.is_symlink()))
+        .collect();
+    children.sort_by_key(|entry| entry.file_name().to_string_lossy().to_ascii_lowercase());
+
+    for entry in children {
         if out.len() >= MAX_SEARCH_MATCHES {
             break;
-        }
-        if entry.file_type().is_ok_and(|kind| kind.is_symlink()) {
-            continue;
         }
         let path = entry.path();
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
-        if matches!(
-            name_str.as_ref(),
-            ".git" | "target" | "node_modules" | ".venv" | "dist"
-        ) {
-            continue;
-        }
         if path.is_dir() {
+            if is_ignored_dir_name(&name_str) {
+                continue;
+            }
             search_dir(root, &path, re, out);
         } else if path.is_file() {
-            let Ok(meta) = std::fs::metadata(&path) else {
-                continue;
-            };
-            if meta.len() > 512 * 1024 {
-                continue;
-            }
-            let Ok(content) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            let rel = path
-                .strip_prefix(root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .replace('\\', "/");
-            for (idx, line) in content.lines().enumerate() {
-                if re.is_match(line) {
-                    let clipped: String = line.chars().take(180).collect();
-                    out.push(format!("{rel}:{}: {clipped}", idx + 1));
-                    if out.len() >= MAX_SEARCH_MATCHES {
-                        return;
-                    }
-                }
-            }
+            search_file(root, &path, re, out);
         }
     }
 }
@@ -649,11 +788,12 @@ pub fn openai_tool_schemas(
             "type": "function",
             "function": {
                 "name": "list_files",
-                "description": "List files and directories inside the current workspace.",
+                "description": "List files and directories inside the current workspace (breadth-first; top-level entries appear first). Pass a subdirectory in `path` to inspect deeper.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": { "type": "string", "description": "Optional relative subdirectory" }
+                        "path": { "type": "string", "description": "Optional relative subdirectory" },
+                        "max_depth": { "type": "integer", "description": "Optional max folder depth (1-6; default 2 at root, 3 in a subfolder)" }
                     }
                 }
             }
@@ -662,7 +802,7 @@ pub fn openai_tool_schemas(
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read a workspace file with line numbers. Use a relative path such as src/app.js, never an absolute path.",
+                "description": "Read a workspace file with line numbers (defaults to first 250 lines; pass start_line/end_line to read later sections). Use a relative path such as src/app.js, never an absolute path.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -678,11 +818,12 @@ pub fn openai_tool_schemas(
             "type": "function",
             "function": {
                 "name": "search_files",
-                "description": "Search workspace files for text or a regex pattern.",
+                "description": "Search workspace files for text or a regex pattern. Pass optional `path` to restrict search to one subfolder or file.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "pattern": { "type": "string" }
+                        "pattern": { "type": "string" },
+                        "path": { "type": "string", "description": "Optional relative subdirectory or file to search within" }
                     },
                     "required": ["pattern"]
                 }
@@ -868,6 +1009,49 @@ mod tests {
         .unwrap();
         assert_eq!(created.added_lines, 3);
         assert_eq!(created.removed_lines, 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_files_is_breadth_first_and_skips_cache_dirs_and_read_pages_large_files() {
+        let dir = std::env::temp_dir().join(format!("keel_tools_bfs_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("aaa_cache/cache/deep")).unwrap();
+        std::fs::create_dir_all(dir.join("game")).unwrap();
+        for i in 0..150 {
+            std::fs::write(dir.join(format!("aaa_cache/cache/deep/f{i}.txt")), "x").unwrap();
+        }
+        std::fs::write(dir.join("README.md"), "hello").unwrap();
+        std::fs::write(dir.join("game/main.lua"), "print('hi')\n").unwrap();
+
+        let listed = list_workspace_files_for_agent(&dir, None, None).unwrap();
+        assert!(
+            listed.contains("README.md"),
+            "top-level file must appear: {listed}"
+        );
+        assert!(
+            listed.contains("game/main.lua"),
+            "game file must appear: {listed}"
+        );
+        assert!(
+            !listed.contains("f100.txt"),
+            "cache dir must be skipped: {listed}"
+        );
+
+        let searched = search_workspace_files_in(&dir, "print", Some("game")).unwrap();
+        assert!(searched.contains("game/main.lua:1:"));
+
+        // Verify read_workspace_file defaults to 250 lines and can page past line 250 / 64 KB.
+        let big: String = (1..=400)
+            .map(|n| format!("line-{n:04}-{}", "z".repeat(200)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(dir.join("big.txt"), &big).unwrap();
+        let page1 = read_workspace_file(&dir, "big.txt", None, None).unwrap();
+        assert!(page1.contains("of 400 total"));
+        let tail = read_workspace_file(&dir, "big.txt", Some(395), Some(400)).unwrap();
+        assert!(tail.contains("395: line-0395-"));
+        assert!(tail.contains("400: line-0400-"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

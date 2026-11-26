@@ -271,6 +271,11 @@ impl RuntimeManager {
             .arg("--alias")
             .arg(launch.model_id)
             .arg("--jinja");
+        // Quantize KV cache to Q8_0 for 32K+ context windows so long sessions fit in
+        // VRAM/RAM with half the memory footprint and negligible quality loss.
+        if launch.context_size >= 32_768 {
+            command.arg("-ctk").arg("q8_0").arg("-ctv").arg("q8_0");
+        }
         // Graphics-or-processor flags from hardware::advise. They stay out of the UI.
         for arg in launch.offload_args {
             command.arg(arg);

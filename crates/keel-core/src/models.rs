@@ -214,6 +214,126 @@ pub fn ensure_non_catalog_filename(file_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Reads `*.context_length` from a GGUF file header without loading weights.
+/// Skips arrays by seeking so even 20+ GB files parse in under a millisecond.
+pub fn read_gguf_context_length(path: &Path) -> Option<u32> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    fn read_u32<R: Read>(r: &mut R) -> Option<u32> {
+        let mut b = [0u8; 4];
+        r.read_exact(&mut b).ok()?;
+        Some(u32::from_le_bytes(b))
+    }
+    fn read_u64<R: Read>(r: &mut R) -> Option<u64> {
+        let mut b = [0u8; 8];
+        r.read_exact(&mut b).ok()?;
+        Some(u64::from_le_bytes(b))
+    }
+    fn read_string<R: Read>(r: &mut R) -> Option<String> {
+        let len = read_u64(r)?;
+        if len > 1_048_576 {
+            return None;
+        }
+        let mut buf = vec![0u8; len as usize];
+        r.read_exact(&mut buf).ok()?;
+        String::from_utf8(buf).ok()
+    }
+    fn skip_string<R: Read + Seek>(r: &mut R) -> Option<()> {
+        let len = read_u64(r)?;
+        if len > 64 * 1024 * 1024 {
+            return None;
+        }
+        r.seek(SeekFrom::Current(len as i64)).ok()?;
+        Some(())
+    }
+    fn scalar_size(vtype: u32) -> Option<i64> {
+        match vtype {
+            0 | 1 | 7 => Some(1), // uint8, int8, bool
+            2 | 3 => Some(2),     // uint16, int16
+            4..=6 => Some(4),     // uint32, int32, float32
+            10..=12 => Some(8),   // uint64, int64, float64
+            _ => None,
+        }
+    }
+    fn skip_value<R: Read + Seek>(r: &mut R, vtype: u32, depth: u8) -> Option<()> {
+        if depth > 4 {
+            return None;
+        }
+        if let Some(sz) = scalar_size(vtype) {
+            r.seek(SeekFrom::Current(sz)).ok()?;
+            return Some(());
+        }
+        match vtype {
+            8 => skip_string(r),
+            9 => {
+                let elem_type = read_u32(r)?;
+                let count = read_u64(r)?;
+                if count > 4_000_000 {
+                    return None;
+                }
+                if let Some(sz) = scalar_size(elem_type) {
+                    let bytes = (count as i64).checked_mul(sz)?;
+                    r.seek(SeekFrom::Current(bytes)).ok()?;
+                    return Some(());
+                }
+                for _ in 0..count {
+                    skip_value(r, elem_type, depth + 1)?;
+                }
+                Some(())
+            }
+            _ => None,
+        }
+    }
+
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut magic = [0u8; 4];
+    file.read_exact(&mut magic).ok()?;
+    if &magic != b"GGUF" {
+        return None;
+    }
+    let version = read_u32(&mut file)?;
+    if !(2..=3).contains(&version) {
+        return None;
+    }
+    let _tensor_count = read_u64(&mut file)?;
+    let kv_count = read_u64(&mut file)?;
+    if kv_count > 4096 {
+        return None;
+    }
+    for _ in 0..kv_count {
+        let key = read_string(&mut file)?;
+        let vtype = read_u32(&mut file)?;
+        if key.ends_with(".context_length") {
+            let val: Option<u64> = match vtype {
+                4 => read_u32(&mut file).map(u64::from),
+                5 => {
+                    let mut b = [0u8; 4];
+                    file.read_exact(&mut b).ok()?;
+                    u64::try_from(i32::from_le_bytes(b)).ok()
+                }
+                10 => read_u64(&mut file),
+                11 => {
+                    let mut b = [0u8; 8];
+                    file.read_exact(&mut b).ok()?;
+                    u64::try_from(i64::from_le_bytes(b)).ok()
+                }
+                _ => {
+                    skip_value(&mut file, vtype, 0)?;
+                    None
+                }
+            };
+            if let Some(ctx) = val.and_then(|v| u32::try_from(v).ok()) {
+                if ctx >= 512 {
+                    return Some(ctx);
+                }
+            }
+        } else {
+            skip_value(&mut file, vtype, 0)?;
+        }
+    }
+    None
+}
+
 /// Fast integrity check for a local model file: verifies the GGUF header and,
 /// for checksum-pinned catalog models, confirms the file wasn't truncated.
 pub fn validate_gguf_file(
@@ -335,6 +455,11 @@ pub fn list_models(data_dir: &Path, custom_paths: &HashMap<String, String>) -> V
                     if let Ok(meta) = std::fs::metadata(&path) {
                         m.bytes = meta.len();
                     }
+                    if let Some(native_ctx) = read_gguf_context_length(&path) {
+                        if native_ctx > m.context_size {
+                            m.context_size = native_ctx;
+                        }
+                    }
                 }
                 Err(reason) => {
                     m.installed = false;
@@ -365,6 +490,8 @@ pub fn list_models(data_dir: &Path, custom_paths: &HashMap<String, String>) -> V
                     let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
                     let id = format!("local:{}", file_name);
                     let health = validate_gguf_file(&path, None);
+                    let quantization = infer_quant_label(&file_name);
+                    let context_size = read_gguf_context_length(&path).unwrap_or(32_768);
                     models.push(CatalogModel {
                         id,
                         name: file_name.trim_end_matches(".gguf").to_string(),
@@ -373,8 +500,8 @@ pub fn list_models(data_dir: &Path, custom_paths: &HashMap<String, String>) -> V
                         revision: "local".to_string(),
                         bytes,
                         sha256: None,
-                        quantization: "GGUF".to_string(),
-                        context_size: 16_384,
+                        quantization,
+                        context_size,
                         tier: "custom".to_string(),
                         detail: "Your own model file.".to_string(),
                         local_path: Some(path.to_string_lossy().to_string()),
@@ -400,6 +527,8 @@ pub fn list_models(data_dir: &Path, custom_paths: &HashMap<String, String>) -> V
                 .to_string();
             let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
             let health = validate_gguf_file(path, None);
+            let quantization = infer_quant_label(&file_name);
+            let context_size = read_gguf_context_length(path).unwrap_or(32_768);
             models.push(CatalogModel {
                 id: id.clone(),
                 name: file_name.trim_end_matches(".gguf").to_string(),
@@ -408,8 +537,8 @@ pub fn list_models(data_dir: &Path, custom_paths: &HashMap<String, String>) -> V
                 revision: "imported".to_string(),
                 bytes,
                 sha256: None,
-                quantization: "GGUF".to_string(),
-                context_size: 16_384,
+                quantization,
+                context_size,
                 tier: "custom".to_string(),
                 detail: format!("Linked local file: {}", path.display()),
                 local_path: Some(path_str.clone()),
@@ -687,9 +816,10 @@ pub fn infer_quant_label(file_name: &str) -> String {
         .unwrap_or(file_name);
     let upper = stem.to_ascii_uppercase();
     for token in [
-        "Q4_K_M", "Q4_K_S", "Q4_K_L", "Q4_K", "Q5_K_M", "Q5_K_S", "Q6_K", "Q8_0", "Q3_K_M",
-        "Q3_K_S", "Q3_K_L", "Q2_K", "Q2_0", "IQ4_XS", "IQ4_NL", "IQ3_XXS", "IQ3_XS", "IQ3_M",
-        "IQ2_XXS", "IQ2_XS", "PQ2_0", "PTQ1_0", "BF16", "F16",
+        "Q4_K_XL", "Q4_K_M", "Q4_K_S", "Q4_K_L", "Q4_K", "Q5_K_XL", "Q5_K_M", "Q5_K_S", "Q6_K",
+        "Q8_0", "Q3_K_XL", "Q3_K_M", "Q3_K_S", "Q3_K_L", "Q2_K_XL", "Q2_K", "Q2_0", "IQ4_XS",
+        "IQ4_NL", "IQ3_XXS", "IQ3_XS", "IQ3_M", "IQ2_XXS", "IQ2_XS", "PQ2_0", "PTQ1_0", "BF16",
+        "F16",
     ] {
         if upper.contains(token) {
             return token.to_string();
@@ -1152,5 +1282,54 @@ mod tests {
         .is_err());
         assert!(ensure_non_catalog_filename("Ternary-Bonsai-2-4B-Q2_0.gguf").is_err());
         assert!(ensure_non_catalog_filename("my-custom-model.gguf").is_ok());
+    }
+
+    #[test]
+    fn reads_native_context_length_from_gguf_header() {
+        let dir = std::env::temp_dir().join(format!("keel_gguf_ctx_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("Inkling-2-Mini-UD-Q4_K_XL.gguf");
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GGUF");
+        buf.extend_from_slice(&3u32.to_le_bytes()); // version 3
+        buf.extend_from_slice(&0u64.to_le_bytes()); // tensor_count
+        buf.extend_from_slice(&2u64.to_le_bytes()); // kv_count
+                                                    // KV 1: general.architecture = "inkling2_loop" (type 8 = string)
+        let k1 = b"general.architecture";
+        let v1 = b"inkling2_loop";
+        buf.extend_from_slice(&(k1.len() as u64).to_le_bytes());
+        buf.extend_from_slice(k1);
+        buf.extend_from_slice(&8u32.to_le_bytes());
+        buf.extend_from_slice(&(v1.len() as u64).to_le_bytes());
+        buf.extend_from_slice(v1);
+        // KV 2: inkling2_loop.context_length = 1048576 (type 4 = uint32)
+        let k2 = b"inkling2_loop.context_length";
+        buf.extend_from_slice(&(k2.len() as u64).to_le_bytes());
+        buf.extend_from_slice(k2);
+        buf.extend_from_slice(&4u32.to_le_bytes());
+        buf.extend_from_slice(&1_048_576u32.to_le_bytes());
+        buf.resize(128, 0);
+        std::fs::write(&file, &buf).unwrap();
+
+        assert_eq!(read_gguf_context_length(&file), Some(1_048_576));
+        assert_eq!(
+            infer_quant_label("Inkling-2-Mini-UD-Q4_K_XL.gguf"),
+            "Q4_K_XL"
+        );
+
+        let mut custom = HashMap::new();
+        custom.insert(
+            "imported:Inkling-2-Mini-UD-Q4_K_XL.gguf".to_string(),
+            file.to_string_lossy().to_string(),
+        );
+        let models = list_models(&dir, &custom);
+        let imported = models
+            .iter()
+            .find(|m| m.id == "imported:Inkling-2-Mini-UD-Q4_K_XL.gguf")
+            .unwrap();
+        assert_eq!(imported.context_size, 1_048_576);
+        assert_eq!(imported.quantization, "Q4_K_XL");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

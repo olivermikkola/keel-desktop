@@ -1033,7 +1033,8 @@ function activeContextBudget(b) {
   const selected = b.models?.find((m) => m.id === (rt?.active_model_id || b.config?.selected_model_id));
   const modelMax = selected?.context_size || 8192;
   const configured = b.config?.context_window || 0;
-  const desired = configured > 0 ? configured : (b.system_ram_gb >= 16 ? 16384 : 8192);
+  const autoCtx = b.system_ram_gb >= 48 ? 32768 : b.system_ram_gb >= 16 ? 16384 : 8192;
+  const desired = configured > 0 ? configured : autoCtx;
   return Math.min(desired, Math.max(modelMax, 2048));
 }
 
@@ -1498,7 +1499,9 @@ function handleAgentEvent(ev) {
     const fromServer = Number(ev.elapsed_secs);
     const fromClock = streamingStartedAt ? (Date.now() - streamingStartedAt) / 1000 : 0;
     appState.lastAnswerSeconds = fromServer > 0 ? fromServer : fromClock;
-    const totalUsed = Number(ev.prompt_tokens || 0) + Number(ev.completion_tokens || 0);
+    const totalUsed =
+      Number(ev.context_tokens || 0) ||
+      Number(ev.prompt_tokens || 0) + Number(ev.completion_tokens || 0);
     if (totalUsed > 0) appState.lastContextTokens = totalUsed;
     renderContextMeter();
     const tps = Number(ev.tokens_per_sec) > 0 ? ` · ${ev.tokens_per_sec.toFixed(1)} tok/s` : "";
@@ -3422,11 +3425,13 @@ function openCustomizeModal() {
         <div class="advanced-drawer-body">
           <label><strong>Context window</strong></label>
           <select id="cust-ctx" class="select-field">
-            <option value="0" ${!b.config.context_window ? "selected" : ""}>Auto (${b.system_ram_gb >= 16 ? "16K" : "8K"} for this computer)</option>
+            <option value="0" ${!b.config.context_window ? "selected" : ""}>Auto (${b.system_ram_gb >= 48 ? "32K" : b.system_ram_gb >= 16 ? "16K" : "8K"} for this computer)</option>
             <option value="4096" ${b.config.context_window === 4096 ? "selected" : ""}>4,096 tokens (smallest RAM, coolest)</option>
             <option value="8192" ${b.config.context_window === 8192 ? "selected" : ""}>8,192 tokens (lighter RAM)</option>
             <option value="16384" ${b.config.context_window === 16384 ? "selected" : ""}>16,384 tokens (longer docs)</option>
             <option value="32768" ${b.config.context_window === 32768 ? "selected" : ""}>32,768 tokens (high RAM)</option>
+            <option value="65536" ${b.config.context_window === 65536 ? "selected" : ""}>65,536 tokens (64K · large repos)</option>
+            <option value="131072" ${b.config.context_window === 131072 ? "selected" : ""}>131,072 tokens (128K · 64 GB+ RAM)</option>
           </select>
           <label><strong>Engine for Code mode</strong></label>
           <select id="cust-harness" class="select-field">${harnessOptions}</select>
