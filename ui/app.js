@@ -1,4 +1,5 @@
 import { createEveryday } from "./everyday.js";
+import { createArenaCompare } from "./arena.js";
 import { createImageWorkspace } from "./images.js";
 import {
   AUDIO_TRY_STT_INPUT_HELP,
@@ -105,6 +106,7 @@ const els = {
   viewChatCode: document.getElementById("view-chat-code"),
   viewModels: document.getElementById("view-models"),
   viewTools: document.getElementById("view-tools"),
+  viewArena: document.getElementById("view-arena"),
   viewLibrary: document.getElementById("view-library"),
   viewConnectors: document.getElementById("view-connectors"),
   chatScroll: document.getElementById("chat-scroll"),
@@ -136,6 +138,11 @@ const images = createImageWorkspace({
   refresh: refreshBootstrap,
   selectFolder: () => els.workspacePillBtn.click(),
   openModels: () => setActiveView("models"),
+  notice: showToast,
+});
+
+const arena = createArenaCompare({
+  invoke,
   notice: showToast,
 });
 
@@ -752,6 +759,8 @@ function renderAll() {
     everyday.renderLibrary(els.viewLibrary).catch((error) => showToast(String(error)));
   } else if (appState.activeView === "tools") {
     images.render(els.viewTools);
+  } else if (appState.activeView === "arena") {
+    arena.render(els.viewArena);
   } else if (appState.activeView === "connectors") {
     renderConnectorsWorkspace();
   } else {
@@ -768,6 +777,7 @@ function renderViewVisibility() {
   els.viewChatCode.classList.toggle("hidden", !isChatOrCode);
   els.viewModels.classList.toggle("hidden", appState.activeView !== "models");
   els.viewTools.classList.toggle("hidden", appState.activeView !== "tools");
+  els.viewArena.classList.toggle("hidden", appState.activeView !== "arena");
   els.viewLibrary.classList.toggle("hidden", appState.activeView !== "library");
   els.viewConnectors.classList.toggle("hidden", appState.activeView !== "connectors");
 }
