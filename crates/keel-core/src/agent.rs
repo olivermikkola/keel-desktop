@@ -29,7 +29,7 @@ use crate::tools::{
     openai_tool_schemas, read_workspace_file, run_shell_command, search_workspace_files_in,
     validate_workspace_root, StagedEdit, StagedEditKind,
 };
-use crate::web_search::web_search;
+use crate::web_search::{read_url, validate_public_url, web_search};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EndpointUnreachable {
@@ -188,7 +188,7 @@ where
             .allowed_tools()
             .iter()
             .copied()
-            .filter(|name| matches!(*name, "run_sql" | "web_search"))
+            .filter(|name| matches!(*name, "run_sql" | "web_search" | "read_url"))
             .collect()
     };
     let filtered: Vec<&str> = base_allowed
@@ -197,7 +197,7 @@ where
             "run_shell" => has_workspace && allow_shell,
             "list_files" | "read_file" | "search_files" | "propose_edit" | "create_file"
             | "delete_file" | "rename_file" => has_workspace,
-            "run_sql" | "web_search" => true,
+            "run_sql" | "web_search" | "read_url" => true,
             _ => has_workspace,
         })
         .collect();
@@ -723,6 +723,34 @@ where
             }
             Ok((web_search(query).await?, None))
         }
+        "read_url" => {
+            let raw_url = args
+                .get("url")
+                .and_then(|v| v.as_str())
+                .context("Missing `url`")?;
+            let validated = validate_public_url(raw_url)?;
+            let url_str = validated.to_string();
+            if !always_allowed.contains("read_url") {
+                let req_id = uuid::Uuid::new_v4().to_string();
+                let summary = format!("Read web page: `{url_str}`");
+                emit(AgentEvent::ApprovalRequired {
+                    id: req_id.clone(),
+                    tool: "read_url".to_string(),
+                    summary: summary.clone(),
+                    arguments: args.clone(),
+                });
+                match ask_approval(req_id, "read_url".to_string(), summary, args.clone()).await {
+                    ApprovalDecision::AllowOnce => {}
+                    ApprovalDecision::AllowAlways => {
+                        always_allowed.insert("read_url".to_string());
+                    }
+                    ApprovalDecision::Deny => {
+                        bail!("User denied reading `{url_str}`");
+                    }
+                }
+            }
+            Ok((read_url(&url_str).await?, None))
+        }
         other => {
             let info = mcp_lookup
                 .get(other)
@@ -1076,7 +1104,7 @@ fn build_system_prompt(
 
     if preset == AppPreset::Chat {
         parts.push(
-            "Chat tools: `web_search` only (user must approve). No workspace file or shell tools."
+            "Chat tools: `web_search` and `read_url` only (user must approve). No workspace file or shell tools."
                 .to_string(),
         );
     } else if let Some(ws) = workspace {

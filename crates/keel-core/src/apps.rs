@@ -114,7 +114,7 @@ impl AppPreset {
 
     pub fn allowed_tools(self) -> &'static [&'static str] {
         match self {
-            AppPreset::Chat => &["web_search"],
+            AppPreset::Chat => &["web_search", "read_url"],
             AppPreset::Code => &[
                 "list_files",
                 "read_file",
@@ -126,6 +126,7 @@ impl AppPreset {
                 "run_sql",
                 "run_shell",
                 "web_search",
+                "read_url",
             ],
             AppPreset::Websites => &[
                 "list_files",
@@ -136,6 +137,7 @@ impl AppPreset {
                 "delete_file",
                 "rename_file",
                 "web_search",
+                "read_url",
             ],
             AppPreset::General | AppPreset::Sheets => &[
                 "list_files",
@@ -147,6 +149,7 @@ impl AppPreset {
                 "rename_file",
                 "run_sql",
                 "web_search",
+                "read_url",
             ],
             AppPreset::Docs | AppPreset::Study | AppPreset::Slides => &[
                 "list_files",
@@ -157,6 +160,7 @@ impl AppPreset {
                 "delete_file",
                 "rename_file",
                 "web_search",
+                "read_url",
             ],
         }
     }
@@ -253,7 +257,10 @@ mod tests {
             if preset != &AppPreset::Chat {
                 assert!(info.tools.contains(&"read_file".to_string()));
             } else {
-                assert_eq!(info.tools, vec!["web_search".to_string()]);
+                assert_eq!(
+                    info.tools,
+                    vec!["web_search".to_string(), "read_url".to_string()]
+                );
             }
         }
     }

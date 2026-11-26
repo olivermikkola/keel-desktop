@@ -431,6 +431,53 @@ pub async fn list_library(state: State<'_, AppState>) -> Result<Vec<LibraryItem>
 }
 
 #[tauri::command]
+pub async fn list_trashed_threads(
+    state: State<'_, AppState>,
+) -> Result<Vec<SessionSummary>, String> {
+    let dir = state.data_dir.join("trash");
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        if let Ok(raw) = std::fs::read_to_string(&p) {
+            if let Ok(s) = serde_json::from_str::<ChatSession>(&raw) {
+                out.push(SessionSummary {
+                    id: s.id,
+                    title: s.title,
+                    project_id: s.project_id,
+                    pinned: s.pinned,
+                    app_preset: s.app_preset,
+                    workspace_path: s.workspace_path,
+                    message_count: s.messages.len(),
+                    updated_at: s.updated_at,
+                });
+            }
+        }
+    }
+    out.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn empty_trash(state: State<'_, AppState>) -> Result<(), String> {
+    let dir = state.data_dir.join("trash");
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.extension().and_then(|e| e.to_str()) == Some("json") {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn restore_thread(state: State<'_, AppState>, id: String) -> Result<ChatSession, String> {
     projects::valid_id(&id).map_err(|e| e.to_string())?;
     let path = state.data_dir.join("trash").join(format!("{id}.json"));

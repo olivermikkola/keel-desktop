@@ -47,6 +47,8 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  case 'search_threads':result=sessions.filter(s=>(!args.projectId||s.project_id===args.projectId)&&(s.title+' '+s.messages.map(m=>m.content).join(' ')).toLowerCase().includes(args.query.toLowerCase()));break;
  case 'update_thread':{const thread=sessions.find(s=>s.id===args.id);Object.assign(thread,{title:args.title,pinned:args.pinned,project_id:args.projectId});result=thread;break;}
  case 'fork_thread':{const previous=sessions.find(s=>s.id===args.id);const index=previous.messages.findIndex(m=>m.id===args.beforeMessageId);result={...structuredClone(previous),id:crypto.randomUUID(),messages:previous.messages.slice(0,index),staged_edits:[]};sessions.unshift(result);break;}
+ case 'list_trashed_threads':result=[];break;
+ case 'empty_trash':result=null;break;
  case 'list_library':result=files.map(path=>({id:path,name:path,path,kind:path.split('.').pop(),workspace_path:'/test/project',project_id:projects[0]?.id || null,updated_at:Date.now()/1000}));break;
  case 'get_setup_plan':result={memory_bytes:17179869184,runtime_path:null,runtime_asset:{bytes:20000000},recommended_model:{id:'test',name:'Recommended model',detail:'A balanced local assistant',bytes:1000000000}};break;
  case 'setup_local_ai':runtime={...runtime,state:'running',active_model_id:'test'};result=runtime;break;

@@ -175,6 +175,8 @@ fn main() {
             productivity::search_threads,
             productivity::update_thread,
             productivity::fork_thread,
+            productivity::list_trashed_threads,
+            productivity::empty_trash,
             productivity::restore_thread,
             productivity::save_personal_context,
             productivity::export_thread,
