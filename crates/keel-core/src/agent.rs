@@ -25,8 +25,8 @@ use crate::compaction::{compact_messages, ChatTurnMessage};
 use crate::guard::{parse_tool_calls_from_text, split_thinking, CircuitBreaker, RepeatToolGuard};
 use crate::mcp::{invoke_mcp_tool, mcp_tools_to_openai_schemas, McpConfigFile, McpToolInfo};
 use crate::tools::{
-    apply_staged_edit, build_staged_edit, execute_sql_tool, list_workspace_files,
-    openai_tool_schemas, read_workspace_file, run_shell_command, search_workspace_files,
+    apply_staged_edit, build_staged_edit, execute_sql_tool, list_workspace_files_for_agent,
+    openai_tool_schemas, read_workspace_file, run_shell_command, search_workspace_files_in,
     validate_workspace_root, StagedEdit, StagedEditKind,
 };
 use crate::web_search::web_search;
@@ -93,6 +93,8 @@ pub enum AgentEvent {
         thinking: Option<String>,
         prompt_tokens: u64,
         completion_tokens: u64,
+        #[serde(default)]
+        context_tokens: u64,
         tokens_per_sec: f64,
         #[serde(default)]
         elapsed_secs: f64,
@@ -225,6 +227,7 @@ where
     let mut tool_logs = Vec::new();
     let mut total_prompt_tokens = 0u64;
     let mut total_completion_tokens = 0u64;
+    let mut last_step_context_tokens = 0u64;
     let mut total_thinking = String::new();
     let mut final_content = String::new();
     let turn_start = Instant::now();
@@ -236,7 +239,7 @@ where
             .map(|s| s.len() / 4 + 32)
             .unwrap_or(0)
     };
-    let budget = ((params.context_size * 3) / 4)
+    let budget = ((params.context_size * 4) / 5)
         .saturating_sub(tool_schema_tokens)
         .max(1024);
     let steps = params.max_steps.max(1);
@@ -250,9 +253,15 @@ where
             });
         }
 
-        if crate::compaction::estimate_tokens(&messages) > budget {
+        let est_prompt = crate::compaction::estimate_tokens(&messages);
+        if est_prompt > budget {
             bail!("This request is larger than the selected model’s context. Shorten the message or project instructions, or attach a document so Keel can select excerpts.");
         }
+
+        let max_tokens = params
+            .context_size
+            .saturating_sub(est_prompt + tool_schema_tokens)
+            .clamp(512, 4096);
 
         let resp = stream_completion(
             client,
@@ -260,7 +269,9 @@ where
             &params.model_name,
             &messages,
             &tool_schemas,
+            true,
             params.enable_thinking,
+            max_tokens,
             params.api_key.as_deref(),
             &mut emit,
         )
@@ -268,6 +279,9 @@ where
 
         total_prompt_tokens += resp.prompt_tokens;
         total_completion_tokens += resp.completion_tokens;
+        if resp.prompt_tokens > 0 || resp.completion_tokens > 0 {
+            last_step_context_tokens = resp.prompt_tokens + resp.completion_tokens;
+        }
 
         let (inline_think, clean_content) = split_thinking(&resp.content);
         let step_thinking = combine_thinking(&resp.reasoning_content, &inline_think);
@@ -306,6 +320,7 @@ where
         messages.push(ChatTurnMessage {
             role: "assistant".to_string(),
             content: visible_text,
+            reasoning_content: (!step_thinking.is_empty()).then_some(step_thinking),
             tool_call_id: None,
             tool_calls: Some(Value::Array(openai_tool_calls)),
             image_urls: Vec::new(),
@@ -388,6 +403,7 @@ where
             messages.push(ChatTurnMessage {
                 role: "tool".to_string(),
                 content,
+                reasoning_content: None,
                 tool_call_id: Some(tc.id),
                 tool_calls: None,
                 image_urls: Vec::new(),
@@ -405,6 +421,7 @@ where
                     thinking: thinking.clone(),
                     prompt_tokens: total_prompt_tokens,
                     completion_tokens: total_completion_tokens,
+                    context_tokens: last_step_context_tokens,
                     tokens_per_sec: tps,
                     elapsed_secs: secs,
                 });
@@ -421,6 +438,60 @@ where
         }
     }
 
+    // If the model exhausted its tool steps without writing a final answer, run one
+    // final no-tools synthesis pass so all gathered context produces an actual reply.
+    if final_content.trim().is_empty() && !tool_logs.is_empty() {
+        messages.push(ChatTurnMessage::text(
+            "user",
+            "You have reached the tool step limit for this turn. Using the information you already gathered above, write your complete, well-structured answer now without calling any more tools.",
+        ));
+        let (compacted, did_compact) = compact_messages(messages, budget, 6);
+        messages = compacted;
+        if did_compact {
+            emit(AgentEvent::Compacted {
+                note: "Compacted earlier messages to prepare the final summary.".to_string(),
+            });
+        }
+        let est_prompt = crate::compaction::estimate_tokens(&messages);
+        if est_prompt <= budget {
+            let synth_max_tokens = params
+                .context_size
+                .saturating_sub(est_prompt)
+                .clamp(512, 4096);
+            if let Ok(resp) = stream_completion(
+                client,
+                &endpoint,
+                &params.model_name,
+                &messages,
+                &tool_schemas,
+                false,
+                params.enable_thinking,
+                synth_max_tokens,
+                params.api_key.as_deref(),
+                &mut emit,
+            )
+            .await
+            {
+                total_prompt_tokens += resp.prompt_tokens;
+                total_completion_tokens += resp.completion_tokens;
+                if resp.prompt_tokens > 0 || resp.completion_tokens > 0 {
+                    last_step_context_tokens = resp.prompt_tokens + resp.completion_tokens;
+                }
+                let (inline_think, clean_content) = split_thinking(&resp.content);
+                let step_thinking = combine_thinking(&resp.reasoning_content, &inline_think);
+                if !step_thinking.is_empty() {
+                    if !total_thinking.is_empty() {
+                        total_thinking.push('\n');
+                    }
+                    total_thinking.push_str(&step_thinking);
+                }
+                if !clean_content.trim().is_empty() {
+                    final_content = clean_content;
+                }
+            }
+        }
+    }
+
     if final_content.trim().is_empty() {
         final_content = "I reached the step limit for this turn. The tool results and any proposed edits are available above; tell me which step to continue.".into();
     }
@@ -433,6 +504,7 @@ where
         thinking: thinking.clone(),
         prompt_tokens: total_prompt_tokens,
         completion_tokens: total_completion_tokens,
+        context_tokens: last_step_context_tokens,
         tokens_per_sec: tps,
         elapsed_secs: secs,
     });
@@ -469,7 +541,11 @@ where
         "list_files" => {
             let root = workspace.context("No workspace folder is selected")?;
             let sub = args.get("path").and_then(|v| v.as_str());
-            Ok((list_workspace_files(root, sub)?, None))
+            let max_depth = args
+                .get("max_depth")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize);
+            Ok((list_workspace_files_for_agent(root, sub, max_depth)?, None))
         }
         "read_file" => {
             let root = workspace.context("No workspace folder is selected")?;
@@ -493,7 +569,8 @@ where
                 .get("pattern")
                 .and_then(|v| v.as_str())
                 .context("Missing `pattern` argument")?;
-            Ok((search_workspace_files(root, pattern)?, None))
+            let sub = args.get("path").and_then(|v| v.as_str());
+            Ok((search_workspace_files_in(root, pattern, sub)?, None))
         }
         "propose_edit" => {
             let root = workspace.context("No workspace folder is selected")?;
@@ -719,7 +796,9 @@ async fn stream_completion<E>(
     model: &str,
     messages: &[ChatTurnMessage],
     tools: &[Value],
+    allow_tool_use: bool,
     enable_thinking: bool,
+    max_tokens: usize,
     api_key: Option<&str>,
     emit: &mut E,
 ) -> Result<StreamedCompletion>
@@ -734,11 +813,14 @@ where
         "stream_options": { "include_usage": true },
         "chat_template_kwargs": { "enable_thinking": enable_thinking },
         "temperature": 0.5,
-        "max_tokens": 2048
+        "max_tokens": max_tokens
     });
+    if !enable_thinking {
+        body["reasoning_effort"] = json!("none");
+    }
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools.to_vec());
-        body["tool_choice"] = json!("auto");
+        body["tool_choice"] = json!(if allow_tool_use { "auto" } else { "none" });
     }
 
     let auth = crate::remote::bearer_authorization(api_key);
@@ -764,6 +846,7 @@ where
         if let Some(obj) = compat_body.as_object_mut() {
             obj.remove("chat_template_kwargs");
             obj.remove("stream_options");
+            obj.remove("reasoning_effort");
         }
         if let Ok(retry_resp) = authenticated(client.post(endpoint).json(&compat_body))
             .send()
@@ -785,6 +868,7 @@ where
             );
             obj.remove("chat_template_kwargs");
             obj.remove("stream_options");
+            obj.remove("reasoning_effort");
         }
         if let Ok(retry_resp) = authenticated(client.post(endpoint).json(&text_only))
             .send()

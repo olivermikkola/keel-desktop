@@ -46,15 +46,17 @@ pub fn system_ram_gb() -> u64 {
 }
 
 /// Computes the context window to request from `llama-server` for a model.
-/// `configured == 0` picks an automatic RAM-aware window (8K on <16 GB, 16K on >=16 GB),
+/// `configured == 0` picks an automatic RAM-aware window (8K on <16 GB, 16K on 16-47 GB, 32K on >=48 GB),
 /// always clamped to the model's supported `model_max` and a safe 2048 minimum.
 pub fn effective_context_size(model_max: u32, configured: u32, ram_gb: u64) -> u32 {
     let desired = if configured > 0 {
-        configured.clamp(2048, 32768)
+        configured.clamp(2048, 131_072)
+    } else if ram_gb >= 48 {
+        32_768
     } else if ram_gb >= 16 {
-        16384
+        16_384
     } else {
-        8192
+        8_192
     };
     desired.min(model_max.max(2048))
 }
@@ -452,5 +454,8 @@ mod tests {
         assert_eq!(effective_context_size(8192, 0, 32), 8192);
         assert_eq!(effective_context_size(32768, 32768, 8), 32768);
         assert_eq!(effective_context_size(16384, 32768, 32), 16384);
+        assert_eq!(effective_context_size(1_048_576, 0, 60), 32768);
+        assert_eq!(effective_context_size(1_048_576, 65536, 60), 65536);
+        assert_eq!(effective_context_size(1_048_576, 131072, 60), 131072);
     }
 }

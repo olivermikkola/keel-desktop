@@ -1433,6 +1433,7 @@ pub async fn send_message(
                 thinking: None,
                 prompt_tokens: 0,
                 completion_tokens: 0,
+                context_tokens: 0,
                 tokens_per_sec: 0.0,
                 elapsed_secs: started.elapsed().as_secs_f64(),
             },
@@ -1547,7 +1548,7 @@ pub async fn send_message(
             history: history.clone(),
             mcp_config: mcp_cfg.clone(),
             mcp_tools: mcp_tools.clone(),
-            max_steps: 12,
+            max_steps: 20,
             api_key: external_api_key,
         };
 
@@ -1748,6 +1749,7 @@ async fn stream_keel_cli(
                         .and_then(|message| message.thinking.clone()),
                     prompt_tokens: 0,
                     completion_tokens: 0,
+                    context_tokens: 0,
                     tokens_per_sec: 0.0,
                     elapsed_secs: started.elapsed().as_secs_f64(),
                 };

@@ -5,6 +5,8 @@ use serde_json::{json, Value};
 pub struct ChatTurnMessage {
     pub role: String,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -20,6 +22,7 @@ impl ChatTurnMessage {
         Self {
             role: role.into(),
             content: content.into(),
+            reasoning_content: None,
             tool_call_id: None,
             tool_calls: None,
             image_urls: Vec::new(),
@@ -41,6 +44,16 @@ impl ChatTurnMessage {
                 }));
             }
             obj.insert("content".into(), Value::Array(parts));
+        }
+        if let Some(reasoning) = self
+            .reasoning_content
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+        {
+            obj.insert(
+                "reasoning_content".into(),
+                Value::String(reasoning.to_string()),
+            );
         }
         if let Some(id) = &self.tool_call_id {
             obj.insert("tool_call_id".into(), Value::String(id.clone()));
@@ -70,9 +83,10 @@ pub fn estimate_tokens(messages: &[ChatTurnMessage]) -> usize {
                 .as_ref()
                 .map(|v| v.to_string().len())
                 .unwrap_or(0);
+            let reasoning = m.reasoning_content.as_ref().map(|r| r.len()).unwrap_or(0);
             // Budget roughly for vision tokens when image parts are attached.
             let images = m.image_urls.len() * 768;
-            (m.content.len() + tc) / 4 + 8 + images
+            (m.content.len() + tc + reasoning) / 4 + 8 + images
         })
         .sum()
 }
@@ -132,19 +146,69 @@ pub fn compact_messages(
         changed = true;
     }
     if estimate_tokens(&out) > budget_tokens {
-        let non_tool_cost = estimate_tokens(
-            &out.iter()
-                .filter(|m| m.role != "tool")
-                .cloned()
-                .collect::<Vec<_>>(),
-        );
-        let tool_count = out.iter().filter(|m| m.role == "tool").count().max(1);
-        let each = (budget_tokens.saturating_sub(non_tool_cost + tool_count * 32) * 4 / tool_count)
-            .clamp(128, 8000);
-        for message in out.iter_mut().filter(|m| m.role == "tool") {
-            if message.content.chars().count() > each {
-                message.content = format!("{}\n[Tool output shortened to fit context. Read a smaller line range or query fewer rows for details.]",message.content.chars().take(each).collect::<String>());
+        // Protect tool outputs from the latest assistant step so the model always sees
+        // what it just requested. Compact oldest tool outputs first into a fixed,
+        // stable stub so already-compacted prefixes stay KV-cache-friendly.
+        const STABLE_STUB_CHARS: usize = 420;
+        const STUB_SUFFIX: &str =
+            "\n[Earlier tool output compacted to save context. Re-read with a smaller line range if needed.]";
+        let last_assistant = out.iter().rposition(|m| m.role == "assistant");
+        let newest_tool_start = last_assistant.map(|idx| idx + 1).unwrap_or(out.len());
+
+        // Pass 1: compact older tool results (before the latest assistant step) oldest-first.
+        for idx in 0..newest_tool_start {
+            if estimate_tokens(&out) <= budget_tokens {
+                break;
+            }
+            if out[idx].role == "tool"
+                && !out[idx].content.ends_with(STUB_SUFFIX)
+                && out[idx].content.chars().count() > STABLE_STUB_CHARS + STUB_SUFFIX.len()
+            {
+                let head: String = out[idx].content.chars().take(STABLE_STUB_CHARS).collect();
+                out[idx].content = format!("{head}{STUB_SUFFIX}");
                 changed = true;
+            }
+        }
+
+        // Pass 2: if still over budget, drop reasoning_content from older assistant steps
+        // (keeping the most recent assistant step's reasoning intact when possible).
+        if estimate_tokens(&out) > budget_tokens {
+            let keep_reasoning_idx = last_assistant.unwrap_or(out.len());
+            for (idx, message) in out.iter_mut().enumerate() {
+                if idx == keep_reasoning_idx {
+                    continue;
+                }
+                if message.role == "assistant" && message.reasoning_content.is_some() {
+                    message.reasoning_content = None;
+                    changed = true;
+                }
+            }
+        }
+
+        // Pass 3: only if even the latest tool outputs alone blow past the budget,
+        // trim them proportionally to fit without dropping the user request.
+        if estimate_tokens(&out) > budget_tokens {
+            let non_tool_cost = estimate_tokens(
+                &out.iter()
+                    .filter(|m| m.role != "tool")
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            );
+            let recent_tools: Vec<usize> = (newest_tool_start..out.len())
+                .filter(|&i| out[i].role == "tool")
+                .collect();
+            let tool_count = recent_tools.len().max(1);
+            let each = (budget_tokens.saturating_sub(non_tool_cost + tool_count * 32) * 4
+                / tool_count)
+                .clamp(256, 12_000);
+            for idx in recent_tools {
+                if out[idx].content.chars().count() > each {
+                    let head: String = out[idx].content.chars().take(each).collect();
+                    out[idx].content = format!(
+                        "{head}\n[Tool output shortened to fit context. Read a smaller line range or query fewer rows for details.]"
+                    );
+                    changed = true;
+                }
             }
         }
     }
@@ -216,5 +280,81 @@ mod tests {
         assert_eq!(parts[0]["type"], "text");
         assert_eq!(parts[1]["type"], "image_url");
         assert_eq!(parts[1]["image_url"]["url"], "data:image/png;base64,abc");
+    }
+
+    #[test]
+    fn compacts_oldest_tool_outputs_first_and_preserves_newest_and_reasoning() {
+        let mut msgs = vec![
+            ChatTurnMessage::text("system", "You are Keel."),
+            ChatTurnMessage::text("user", "Inspect the project."),
+            ChatTurnMessage {
+                role: "assistant".into(),
+                content: String::new(),
+                reasoning_content: Some("First I will list files.".into()),
+                tool_call_id: None,
+                tool_calls: Some(
+                    json!([{"id":"c1","type":"function","function":{"name":"list_files","arguments":"{}"}}]),
+                ),
+                image_urls: vec![],
+            },
+            ChatTurnMessage {
+                role: "tool".into(),
+                content: "A".repeat(4000),
+                reasoning_content: None,
+                tool_call_id: Some("c1".into()),
+                tool_calls: None,
+                image_urls: vec![],
+            },
+            ChatTurnMessage {
+                role: "assistant".into(),
+                content: String::new(),
+                reasoning_content: Some("Now read main.lua.".into()),
+                tool_call_id: None,
+                tool_calls: Some(
+                    json!([{"id":"c2","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"main.lua\"}"}}]),
+                ),
+                image_urls: vec![],
+            },
+            ChatTurnMessage {
+                role: "tool".into(),
+                content: "NEWEST_FILE_CONTENT_12345".repeat(20),
+                reasoning_content: None,
+                tool_call_id: Some("c2".into()),
+                tool_calls: None,
+                image_urls: vec![],
+            },
+        ];
+        // Verify reasoning_content serializes into OpenAI API value.
+        assert_eq!(
+            msgs[2].to_api_value()["reasoning_content"],
+            "First I will list files."
+        );
+
+        let (compacted, did_compact) = compact_messages(msgs.clone(), 600, 6);
+        assert!(did_compact);
+        // Oldest tool result compacted to stub, while newest tool result stays 100% intact.
+        assert!(compacted[3]
+            .content
+            .contains("Earlier tool output compacted"));
+        assert_eq!(compacted[5].content, msgs[5].content);
+        assert_eq!(
+            compacted[4].reasoning_content.as_deref(),
+            Some("Now read main.lua.")
+        );
+
+        // Adding another step keeps the already-compacted oldest tool stub byte-identical (KV stable).
+        let stub_before = compacted[3].content.clone();
+        msgs = compacted;
+        msgs.push(ChatTurnMessage::text("assistant", ""));
+        msgs.push(ChatTurnMessage {
+            role: "tool".into(),
+            content: "NEXT_RESULT".repeat(40),
+            reasoning_content: None,
+            tool_call_id: Some("c3".into()),
+            tool_calls: None,
+            image_urls: vec![],
+        });
+        let (compacted2, _) = compact_messages(msgs, 600, 6);
+        assert_eq!(compacted2[3].content, stub_before);
     }
 }

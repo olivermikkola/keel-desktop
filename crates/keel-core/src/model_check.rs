@@ -263,7 +263,8 @@ async fn ask_model(
         "stream": false,
         "temperature": 0,
         "max_tokens": 80,
-        "chat_template_kwargs": { "enable_thinking": false }
+        "chat_template_kwargs": { "enable_thinking": false },
+        "reasoning_effort": "none"
     });
     let response = post_completion(client, &endpoint, &body, api_key).await?;
     let text = completion_text(&response);
@@ -301,6 +302,7 @@ async fn post_completion(
         let mut plain = body.clone();
         if let Some(obj) = plain.as_object_mut() {
             obj.remove("chat_template_kwargs");
+            obj.remove("reasoning_effort");
         }
         let retry = authorized_post(client, endpoint, &plain, api_key)
             .send()

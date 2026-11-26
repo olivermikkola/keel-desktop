@@ -39,6 +39,9 @@ async fn main() -> Result<()> {
     let mut base_url = "http://127.0.0.1:8080/v1".to_string();
     let mut model = "default".to_string();
     let mut workspace: Option<PathBuf> = None;
+    let mut context_size: usize = 32768;
+    let mut max_steps: usize = 20;
+    let mut enable_thinking = true;
     let mut auto_apply = false;
     let mut auto_approve = false;
     let mut prompt_parts = Vec::new();
@@ -58,6 +61,19 @@ async fn main() -> Result<()> {
                 i += 1;
                 workspace = args.get(i).map(PathBuf::from);
             }
+            "--context-size" => {
+                i += 1;
+                if let Some(val) = args.get(i).and_then(|s| s.parse::<usize>().ok()) {
+                    context_size = val.max(2048);
+                }
+            }
+            "--max-steps" => {
+                i += 1;
+                if let Some(val) = args.get(i).and_then(|s| s.parse::<usize>().ok()) {
+                    max_steps = val.max(1);
+                }
+            }
+            "--no-thinking" => enable_thinking = false,
             "--auto-apply" => auto_apply = true,
             "--auto-approve" => auto_approve = true,
             other => prompt_parts.push(other.to_string()),
@@ -75,7 +91,7 @@ async fn main() -> Result<()> {
         TurnParams {
             base_url,
             model_name: model,
-            context_size: 8192,
+            context_size,
             app_preset: if workspace.is_some() {
                 AppPreset::Code
             } else {
@@ -84,11 +100,11 @@ async fn main() -> Result<()> {
             custom_instructions: String::new(),
             workspace_root: workspace,
             auto_apply_edits: auto_apply,
-            enable_thinking: true,
+            enable_thinking,
             history: vec![ChatTurnMessage::text("user", prompt)],
             mcp_config: McpConfigFile::default(),
             mcp_tools: Vec::new(),
-            max_steps: 8,
+            max_steps,
             api_key: None,
         },
         &mut allowed,
