@@ -13,8 +13,52 @@ use std::sync::Arc;
 use tauri::{Listener, Manager, RunEvent};
 use tokio::sync::Mutex;
 
+fn extract_workspace_arg(args: &[String]) -> Option<String> {
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == "--smoke-test" || arg == "--ui-smoke-test" {
+            continue;
+        }
+        if let Some(val) = arg
+            .strip_prefix("--root=")
+            .or_else(|| arg.strip_prefix("--workspace="))
+        {
+            if !val.trim().is_empty() {
+                return Some(val.to_string());
+            }
+            continue;
+        }
+        if arg == "--root" || arg == "--workspace" {
+            if let Some(val) = iter.next() {
+                if !val.trim().is_empty() {
+                    return Some(val.clone());
+                }
+            }
+            continue;
+        }
+        if arg.starts_with('-') {
+            continue;
+        }
+        return Some(arg.clone());
+    }
+    None
+}
+
+fn resolve_startup_workspace(args: &[String]) -> Option<String> {
+    let raw = extract_workspace_arg(args)?;
+    let path = std::path::PathBuf::from(&raw);
+    match keel_core::tools::validate_workspace_root(&path) {
+        Ok(canon) => Some(canon.to_string_lossy().into_owned()),
+        Err(error) => {
+            eprintln!("Ignoring startup folder `{raw}`: {error}");
+            None
+        }
+    }
+}
+
 fn main() {
-    if std::env::args().any(|a| a == "--smoke-test") {
+    let cli_args: Vec<String> = std::env::args().collect();
+    if cli_args.iter().any(|a| a == "--smoke-test") {
         println!(
             "keel-desktop {} smoke-test ok (core={}, models={})",
             env!("CARGO_PKG_VERSION"),
@@ -24,7 +68,12 @@ fn main() {
         return;
     }
 
-    let ui_smoke = std::env::args().any(|a| a == "--ui-smoke-test");
+    let ui_smoke = cli_args.iter().any(|a| a == "--ui-smoke-test");
+    let initial_workspace = if ui_smoke {
+        None
+    } else {
+        resolve_startup_workspace(&cli_args)
+    };
     let smoke_root = ui_smoke
         .then(|| std::env::temp_dir().join(format!("keel_ui_smoke_{}", uuid::Uuid::new_v4())));
     let config_dir = smoke_root
@@ -36,6 +85,12 @@ fn main() {
         .map(|p| p.join("data"))
         .unwrap_or_else(default_data_dir);
     let mut cfg = load_config(&config_dir);
+    if let Some(ref ws) = initial_workspace {
+        cfg.recent_workspaces.retain(|w| w != ws);
+        cfg.recent_workspaces.insert(0, ws.clone());
+        cfg.recent_workspaces.truncate(10);
+        let _ = keel_core::sessions::save_config(&config_dir, &cfg);
+    }
     if cfg
         .external_base_url
         .as_deref()
@@ -62,6 +117,7 @@ fn main() {
         turn_lock: Arc::new(Mutex::new(())),
         config_dir,
         data_dir,
+        initial_workspace,
         config: Arc::new(Mutex::new(cfg)),
         runtime: runtime_arc,
         approvals: Arc::new(Mutex::new(HashMap::new())),
@@ -214,5 +270,42 @@ fn main() {
     });
     if let Some(root) = smoke_root {
         let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_workspace_arg, resolve_startup_workspace};
+
+    #[test]
+    fn extract_workspace_arg_handles_flags_and_positional() {
+        assert_eq!(
+            extract_workspace_arg(&["keel-desktop".into(), "/tmp/demo".into()]),
+            Some("/tmp/demo".into())
+        );
+        assert_eq!(
+            extract_workspace_arg(&["keel-desktop".into(), "--root".into(), "/tmp/demo".into()]),
+            Some("/tmp/demo".into())
+        );
+        assert_eq!(
+            extract_workspace_arg(&["keel-desktop".into(), "--workspace=/tmp/demo".into()]),
+            Some("/tmp/demo".into())
+        );
+        assert_eq!(
+            extract_workspace_arg(&["keel-desktop".into(), "--smoke-test".into()]),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_startup_workspace_rejects_root_and_accepts_temp_dir() {
+        assert_eq!(
+            resolve_startup_workspace(&["keel-desktop".into(), "/".into()]),
+            None
+        );
+        let dir = std::env::temp_dir();
+        let resolved =
+            resolve_startup_workspace(&["keel-desktop".into(), dir.to_string_lossy().into_owned()]);
+        assert!(resolved.is_some());
     }
 }

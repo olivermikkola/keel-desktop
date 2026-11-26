@@ -746,7 +746,9 @@ pub fn detect_machine() -> Machine {
 }
 
 fn run_capture(program: &Path, args: &[&str], timeout: Duration) -> Option<String> {
-    let mut child = Command::new(program)
+    let mut cmd = Command::new(program);
+    crate::runtime::apply_std_runner_env(&mut cmd, program);
+    let mut child = cmd
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

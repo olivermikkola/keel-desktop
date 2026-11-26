@@ -19,7 +19,8 @@ use keel_core::models::{
     resolve_huggingface_input, scan_local_ggufs_in_dir, CatalogModel, DiscoveredModel,
 };
 use keel_core::runtime::{
-    check_runner_starts, find_llama_server, ModelLaunch, RuntimeManager, RuntimeStatus,
+    check_runner_starts, find_llama_server, runner_build_number, ModelLaunch, RuntimeManager,
+    RuntimeStatus,
 };
 use keel_core::sessions::{
     delete_session, list_sessions, load_session, save_config, save_session, ChatSession,
@@ -49,6 +50,7 @@ pub struct AppState {
     pub turn_lock: Arc<Mutex<()>>,
     pub config_dir: PathBuf,
     pub data_dir: PathBuf,
+    pub initial_workspace: Option<String>,
     pub config: Arc<Mutex<DesktopConfig>>,
     pub runtime: Arc<Mutex<RuntimeManager>>,
     pub approvals: Arc<Mutex<HashMap<String, oneshot::Sender<ApprovalDecision>>>>,
@@ -85,6 +87,7 @@ pub struct BootstrapState {
     pub computer: keel_core::hardware::ComputerAdvice,
     pub model_checks: std::collections::BTreeMap<String, ModelCheckReport>,
     pub offered_model_id: String,
+    pub initial_workspace: Option<String>,
 }
 
 fn now_epoch() -> u64 {
@@ -140,16 +143,45 @@ pub async fn get_bootstrap_state(
         computer,
         model_checks,
         offered_model_id,
+        initial_workspace: state.initial_workspace.clone(),
     })
 }
 
+fn default_folder_picker_dir(current_path: Option<&str>) -> Option<PathBuf> {
+    if let Some(raw) = current_path {
+        let candidate = PathBuf::from(raw);
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+    {
+        let projects = home.join("Projects");
+        if projects.is_dir() {
+            return Some(projects);
+        }
+        if home.is_dir() {
+            return Some(home);
+        }
+    }
+    None
+}
+
 #[tauri::command]
-pub async fn pick_workspace_folder(app: AppHandle) -> Result<Option<String>, String> {
+pub async fn pick_workspace_folder(
+    app: AppHandle,
+    current_path: Option<String>,
+) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
+    let start_dir = default_folder_picker_dir(current_path.as_deref());
     tokio::task::spawn_blocking(move || {
-        app.dialog()
-            .file()
-            .set_title("Open a folder")
+        let mut dialog = app.dialog().file().set_title("Open a folder");
+        if let Some(dir) = start_dir {
+            dialog = dialog.set_directory(dir);
+        }
+        dialog
             .blocking_pick_folder()
             .map(|selection| {
                 selection
@@ -384,42 +416,48 @@ pub struct ModelFallbackNotice {
 async fn resolve_or_install_engine(app: &AppHandle, state: &AppState) -> Result<PathBuf, String> {
     let explicit_path = state.config.lock().await.llama_server_path.clone();
 
+    if let Some(ref p) = explicit_path {
+        let pb = PathBuf::from(p);
+        if pb.is_file() && check_runner_starts(&pb).is_ok() {
+            return Ok(pb);
+        }
+    }
+
+    let found_external = find_llama_server(None).filter(|p| check_runner_starts(p).is_ok());
     if let Some(installed) = keel_core::setup::installed_runtime(&state.data_dir) {
         match check_runner_starts(&installed) {
             Ok(()) => {
+                let chosen = match found_external {
+                    Some(ref ext)
+                        if runner_build_number(ext).unwrap_or(0)
+                            > runner_build_number(&installed).unwrap_or(0) =>
+                    {
+                        ext.clone()
+                    }
+                    _ => installed,
+                };
+                let next = Some(chosen.to_string_lossy().into_owned());
                 let mut cfg = state.config.lock().await;
-                let next = Some(installed.to_string_lossy().into_owned());
                 if cfg.llama_server_path != next {
                     cfg.llama_server_path = next;
                     let _ = save_config(&state.config_dir, &cfg);
                 }
-                return Ok(installed);
+                return Ok(chosen);
             }
             Err(error) => {
                 let msg = error.to_string();
-                if msg.contains("needs a system library") {
+                if msg.contains("needs a system library") && found_external.is_none() {
                     return Err(msg);
                 }
             }
         }
     }
 
-    if let Some(ref p) = explicit_path {
-        let pb = PathBuf::from(p);
-        if pb.is_file() {
-            if let Ok(()) = check_runner_starts(&pb) {
-                return Ok(pb);
-            }
-        }
-    }
-
-    if let Some(found) = find_llama_server(None) {
-        if check_runner_starts(&found).is_ok() {
-            let mut cfg = state.config.lock().await;
-            cfg.llama_server_path = Some(found.to_string_lossy().into_owned());
-            let _ = save_config(&state.config_dir, &cfg);
-            return Ok(found);
-        }
+    if let Some(found) = found_external {
+        let mut cfg = state.config.lock().await;
+        cfg.llama_server_path = Some(found.to_string_lossy().into_owned());
+        let _ = save_config(&state.config_dir, &cfg);
+        return Ok(found);
     }
 
     let plan = keel_core::setup::plan(&state.data_dir, explicit_path.as_deref());
@@ -516,8 +554,14 @@ async fn prepare_launch_engine(
 }
 
 async fn prepare_graphics_engine(app: &AppHandle, state: &AppState) -> Result<PathBuf, String> {
+    let found_external = find_llama_server(None).filter(|p| check_runner_starts(p).is_ok());
     if let Some(path) = keel_core::setup::installed_graphics_runtime(&state.data_dir) {
         if check_runner_starts(&path).is_ok() {
+            if let Some(ref ext) = found_external {
+                if runner_build_number(ext).unwrap_or(0) > runner_build_number(&path).unwrap_or(0) {
+                    return Ok(ext.clone());
+                }
+            }
             return Ok(path);
         }
     }
@@ -2585,6 +2629,7 @@ mod audio_prepare_pack_vram_wiring {
             turn_lock: Arc::new(Mutex::new(())),
             config_dir,
             data_dir,
+            initial_workspace: None,
             config: Arc::new(Mutex::new(DesktopConfig::default())),
             runtime: Arc::new(Mutex::new(RuntimeManager::new(19191))),
             approvals: Arc::new(Mutex::new(HashMap::new())),

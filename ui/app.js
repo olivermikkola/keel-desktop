@@ -24,6 +24,7 @@ import {
   findReusableEmptySession,
   formatBytes,
   formatContextMeter,
+  pickInitialSession,
   formatRelativeTime,
   formatTokenCount,
   modelFitLabel,
@@ -543,8 +544,15 @@ async function init() {
 
   await refreshBootstrap();
 
-  if (appState.bootstrap?.sessions?.length > 0) {
-    await loadSession(appState.bootstrap.sessions[0].id);
+  const initialWs = appState.bootstrap?.initial_workspace || null;
+  if (initialWs) {
+    appState.workspacePath = initialWs;
+  }
+  const initialSessionId = pickInitialSession(appState.bootstrap?.sessions || [], initialWs);
+  if (initialSessionId) {
+    await loadSession(initialSessionId);
+  } else if (initialWs) {
+    await createNewSession("general", initialWs);
   } else {
     await createNewSession("chat");
   }
@@ -675,7 +683,9 @@ async function openWorkspace({ sample = false, carryDraft = false } = {}) {
   if (appState.choosingWorkspace || appState.streaming) return false;
   appState.choosingWorkspace = true;
   try {
-    const path = await invoke(sample ? "prepare_sample_workspace" : "pick_workspace_folder");
+    const path = sample
+      ? await invoke("prepare_sample_workspace")
+      : await invoke("pick_workspace_folder", { currentPath: appState.workspacePath });
     if (!path) return false;
     const session = appState.session;
     const mode = modeForPreset(session?.app_preset);
