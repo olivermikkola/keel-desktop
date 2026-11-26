@@ -2032,6 +2032,28 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 @media (max-width: 1100px) { .capability-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .tools-workspace { padding: 24px; } }
 @media (max-width: 760px) { .image-workspace { grid-template-columns: 1fr; } }
 
+/* Arena offline compare — host chrome; Arena HTML loads in the iframe. */
+.arena-workspace { display: grid; grid-template-columns: minmax(280px, 360px) minmax(0, 1fr); align-items: stretch; gap: 24px; min-height: min(70vh, 720px); }
+.arena-controls { display: flex; flex-direction: column; gap: 12px; }
+.arena-controls h2 { font-size: 15px; margin: 0; }
+.arena-path { overflow-wrap: anywhere; font-size: 12px; color: var(--muted); margin: 0; }
+.arena-actions { gap: 8px; flex-wrap: wrap; }
+.arena-error { color: var(--coral, #dc7648); font-size: 13px; margin: 0; overflow-wrap: anywhere; }
+.arena-summary { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.arena-badge { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.arena-badge-demo { background: color-mix(in srgb, #f0c48a 18%, transparent); color: #d4a574; border: 1px solid color-mix(in srgb, #f0c48a 35%, transparent); }
+.arena-badge-bench { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); }
+.arena-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.arena-table th, .arena-table td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.arena-table th { color: var(--muted); font-weight: 600; }
+.arena-viewer { display: flex; flex-direction: column; min-height: 420px; padding: 0; overflow: hidden; }
+.arena-tabs { display: flex; gap: 2px; padding: 10px 12px 0; border-bottom: 1px solid var(--border); }
+.arena-tab { border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 12px; padding: 8px 12px; border-radius: 8px 8px 0 0; cursor: pointer; }
+.arena-tab.active, .arena-tab:hover { color: var(--text); background: var(--surface-raised); }
+.arena-iframe { flex: 1; width: 100%; min-height: 380px; border: 0; background: #0a1112; }
+.arena-empty { flex: 1; min-height: 320px; margin: 24px; border: 1px dashed var(--border); border-radius: 12px; padding: 32px; display: flex; flex-direction: column; justify-content: center; text-align: center; gap: 8px; }
+@media (max-width: 960px) { .arena-workspace { grid-template-columns: 1fr; } }
+
 /* Everyday assistant: quiet controls, readable output, and context within reach. */
 .sidebar-search { margin: 0 12px 10px; width: calc(100% - 24px); border: 1px solid transparent; border-radius: 8px; padding: 9px 11px; color: var(--text); background: transparent; font: inherit; font-size: 12px; }
 .sidebar-search:focus { outline: none; background: var(--surface); border-color: var(--border-strong); }

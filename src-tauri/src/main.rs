@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod arena;
 mod commands;
 mod productivity;
 mod updater;
@@ -103,6 +104,8 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_bootstrap_state,
+            arena::pick_arena_results_file,
+            arena::open_arena_compare,
             productivity::pick_documents,
             productivity::import_document_from_bytes,
             productivity::import_documents_from_paths,

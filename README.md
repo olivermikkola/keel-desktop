@@ -46,6 +46,7 @@ Built with **Tauri 2**, **Rust**, and **llama.cpp** (`llama-server`), carrying t
 - **Docs** — Markdown writer + rendered viewer
 - **Study** — interactive `Q:`/`A:` flashcards and multiple-choice quizzes with live score tracking and reset
 - **Slides** — HTML presentation preview with slide navigation, Print/PDF export, and standalone **Export HTML**
+- **Arena compare** — open a local [Keel Arena](https://github.com/olivermikkola/keel-arena) results JSON and view the offline compare / dashboard HTML in the **Arena** sidebar panel (requires `python3 -m keel_arena` on PATH; see [docs/arena-compare.md](docs/arena-compare.md))
 
 ### Build software — Code
 
@@ -144,7 +145,7 @@ One engine, focused surfaces — the canonical positioning is the
 | Product | What it is |
 | --- | --- |
 | [Keel Code](https://github.com/olivermikkola/keel-code) | CLI + TUI coding agent (`keel`) for small local models — Code mode's canonical engine |
-| **Keel Desktop** (this repo) | Everyday local-AI app: Chat, Work, Images, Code |
+| **Keel Desktop** (this repo) | Everyday local-AI app: Chat, Work, Images, Code, Arena compare |
 | [Keel Mobile](https://moesystems.com/keel-mobile/) | Standalone on-device iPhone agent — the model runs on the phone |
 | [Keel Mobile for Android](https://github.com/olivermikkola/keel-mobile-android) | On-device Android agent, source-build pre-alpha |
 | [Keel Console](https://github.com/olivermikkola/keel-xbox) | Living-room app for Xbox / TV |
