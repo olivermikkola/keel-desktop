@@ -60,6 +60,13 @@ pub struct AppState {
     pub setup_pause: Mutex<Option<watch::Sender<bool>>>,
     pub active_cli_stop: Mutex<Option<watch::Sender<bool>>>,
     pub(crate) placement_cache: Mutex<Option<PlacementCache>>,
+    pub(crate) mcp_cache: Mutex<Option<McpCache>>,
+}
+
+pub(crate) struct McpCache {
+    workspace_key: Option<String>,
+    trusted: bool,
+    statuses: Vec<McpServerStatus>,
 }
 
 pub(crate) struct PlacementCache {
@@ -110,8 +117,7 @@ pub async fn get_bootstrap_state(
     let harnesses = detect_harnesses();
     let ws = workspace_path.as_deref().map(Path::new);
     let ws_trusted = ws.map(|p| cfg.is_mcp_workspace_trusted(p)).unwrap_or(false);
-    let loaded_mcp = load_mcp_configs_with_trust(&state.config_dir, ws, ws_trusted);
-    let mcp_servers = inspect_mcp_servers_with_trust(&loaded_mcp, ws).await;
+    let mcp_servers = cached_mcp_servers(&state, ws, ws_trusted, false).await;
     let selected_bytes = models
         .iter()
         .find(|model| model.id == cfg.selected_model_id)
@@ -1539,7 +1545,7 @@ pub async fn send_message(
     let mcp_statuses = if session.app_preset == AppPreset::Chat {
         Vec::new()
     } else {
-        inspect_mcp_servers_with_trust(&loaded_mcp, ws_path.as_deref()).await
+        cached_mcp_servers(&state, ws_path.as_deref(), ws_trusted, false).await
     };
     let mcp_tools: Vec<McpToolInfo> = mcp_statuses.into_iter().flat_map(|s| s.tools).collect();
 
@@ -1549,7 +1555,7 @@ pub async fn send_message(
         .map(|id| keel_core::projects::load_project(&state.data_dir, id))
         .transpose()
         .map_err(|e| e.to_string())?;
-    let vision = session.app_preset == AppPreset::Chat;
+    let vision = true;
     let history = keel_core::context::history_for_turn_with_vision(
         &session,
         &cfg,
@@ -1968,15 +1974,49 @@ pub async fn save_customize_settings(
     Ok(cfg.clone())
 }
 
+fn default_mcp_enabled() -> bool {
+    true
+}
+
 #[derive(Debug, Deserialize)]
 pub struct McpServerInput {
     pub name: String,
     pub command: String,
     pub args: Vec<String>,
     #[serde(default)]
+    pub env: HashMap<String, String>,
+    #[serde(default = "default_mcp_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
     pub scope: McpScope,
     #[serde(default)]
     pub workspace_path: Option<String>,
+}
+
+async fn cached_mcp_servers(
+    state: &State<'_, AppState>,
+    workspace: Option<&Path>,
+    ws_trusted: bool,
+    force_refresh: bool,
+) -> Vec<McpServerStatus> {
+    let ws_key = workspace.map(|p| p.to_string_lossy().into_owned());
+    if !force_refresh {
+        let guard = state.mcp_cache.lock().await;
+        if let Some(cache) = guard.as_ref() {
+            if cache.workspace_key == ws_key && cache.trusted == ws_trusted {
+                return cache.statuses.clone();
+            }
+        }
+    }
+    let loaded = load_mcp_configs_with_trust(&state.config_dir, workspace, ws_trusted);
+    let statuses = inspect_mcp_servers_with_trust(&loaded, workspace).await;
+    let mut guard = state.mcp_cache.lock().await;
+    *guard = Some(McpCache {
+        workspace_key: ws_key,
+        trusted: ws_trusted,
+        statuses: statuses.clone(),
+    });
+    statuses
 }
 
 async fn inspect_current_mcp(
@@ -1989,8 +2029,7 @@ async fn inspect_current_mcp(
             .map(|p| cfg.is_mcp_workspace_trusted(p))
             .unwrap_or(false)
     };
-    let loaded = load_mcp_configs_with_trust(&state.config_dir, workspace, ws_trusted);
-    inspect_mcp_servers_with_trust(&loaded, workspace).await
+    cached_mcp_servers(state, workspace, ws_trusted, true).await
 }
 
 #[tauri::command]
@@ -2009,8 +2048,8 @@ pub async fn save_mcp_server(
     let server = McpServerConfig {
         command: input.command.trim().to_string(),
         args: input.args,
-        env: HashMap::new(),
-        enabled: true,
+        env: input.env,
+        enabled: input.enabled,
     };
 
     match input.scope {
@@ -2102,6 +2141,45 @@ pub async fn set_workspace_mcp_trust(
         save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
     }
     Ok(inspect_current_mcp(&state, Some(&ws_root)).await)
+}
+
+#[tauri::command]
+pub async fn toggle_mcp_server(
+    state: State<'_, AppState>,
+    name: String,
+    scope: McpScope,
+    enabled: bool,
+    workspace_path: Option<String>,
+) -> Result<Vec<McpServerStatus>, String> {
+    let ws = workspace_path
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(Path::new);
+    match scope {
+        McpScope::Workspace => {
+            let Some(ws_path) = ws else {
+                return Err("Pick a folder to update a workspace MCP server.".to_string());
+            };
+            let ws_root = validate_workspace_root(ws_path).map_err(|e| e.to_string())?;
+            let mut local = load_workspace_mcp_config(&ws_root);
+            let entry = local
+                .mcp_servers
+                .get_mut(&name)
+                .ok_or_else(|| format!("MCP server `{name}` not found in this folder"))?;
+            entry.enabled = enabled;
+            save_workspace_mcp_config(&ws_root, &local).map_err(|e| e.to_string())?;
+        }
+        McpScope::Global => {
+            let mut global = load_global_mcp_config(&state.config_dir);
+            let entry = global
+                .mcp_servers
+                .get_mut(&name)
+                .ok_or_else(|| format!("MCP server `{name}` not found"))?;
+            entry.enabled = enabled;
+            save_global_mcp_config(&state.config_dir, &global).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(inspect_current_mcp(&state, ws).await)
 }
 
 #[tauri::command]
@@ -2662,6 +2740,7 @@ mod audio_prepare_pack_vram_wiring {
             setup_pause: Mutex::new(None),
             active_cli_stop: Mutex::new(None),
             placement_cache: Mutex::new(None),
+            mcp_cache: Mutex::new(None),
         }
     }
 

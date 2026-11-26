@@ -16,8 +16,10 @@ pub async fn pick_documents(app: AppHandle) -> Result<Vec<Document>, String> {
             .add_filter(
                 "Documents & Images",
                 &[
-                    "pdf", "docx", "txt", "md", "csv", "json", "rs", "py", "js", "ts", "html",
-                    "css", "sql", "png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff",
+                    "pdf", "docx", "txt", "md", "csv", "tsv", "json", "yaml", "yml", "toml", "xml",
+                    "rs", "py", "js", "mjs", "cjs", "ts", "tsx", "jsx", "go", "c", "cpp", "h",
+                    "hpp", "java", "kt", "swift", "rb", "php", "sh", "html", "css", "scss", "sql",
+                    "log", "png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff",
                 ],
             )
             .blocking_pick_files()
@@ -40,6 +42,11 @@ pub async fn pick_documents(app: AppHandle) -> Result<Vec<Document>, String> {
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn is_directory(path: String) -> bool {
+    std::path::Path::new(&path).is_dir()
 }
 
 #[tauri::command]

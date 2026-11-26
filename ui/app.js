@@ -225,9 +225,14 @@ function restoreDraft() {
   appState.pendingDocuments = draft?.documents || [];
   autoSizePromptInput(); renderAttachmentChips();
 }
+function attachmentThumbHtml(doc) {
+  return typeof doc?.image_data_url === "string" && doc.image_data_url.startsWith("data:image/")
+    ? `<img class="attach-thumb" src="${escapeHtml(doc.image_data_url)}" alt="" />`
+    : "";
+}
 function renderAttachmentChips() {
   const target = document.getElementById("attachment-chips");
-  target.innerHTML = appState.pendingDocuments.map((doc) => `<span class="attachment-chip"><button class="text-action" data-pending-source="${escapeHtml(doc.id)}">${escapeHtml(doc.name)}</button><button class="text-action" data-remove-attachment="${escapeHtml(doc.id)}" aria-label="Remove ${escapeHtml(doc.name)}">×</button></span>`).join("");
+  target.innerHTML = appState.pendingDocuments.map((doc) => `<span class="attachment-chip">${attachmentThumbHtml(doc)}<button class="text-action" data-pending-source="${escapeHtml(doc.id)}">${escapeHtml(doc.name)}</button><button class="text-action" data-remove-attachment="${escapeHtml(doc.id)}" aria-label="Remove ${escapeHtml(doc.name)}">×</button></span>`).join("");
   target.querySelectorAll("[data-remove-attachment]").forEach((button) => { button.onclick = () => { appState.pendingDocuments = appState.pendingDocuments.filter((doc) => doc.id !== button.dataset.removeAttachment); saveDraft(); renderAttachmentChips(); }; });
   target.querySelectorAll("[data-pending-source]").forEach((button) => { button.onclick = () => everyday.previewSource(appState.pendingDocuments.find((doc) => doc.id === button.dataset.pendingSource)); });
 }
@@ -511,13 +516,36 @@ async function init() {
         }
       }
       if (others.length) {
-        try {
-          const documents = await invoke("import_documents_from_paths", { paths: others });
-          appState.pendingDocuments.push(...documents);
-          saveDraft();
-          renderAttachmentChips();
-        } catch (err) {
-          showToast(friendlyRuntimeError(err));
+        const dirs = [];
+        const files = [];
+        for (const p of others) {
+          let isDir = false;
+          try { isDir = Boolean(await invoke("is_directory", { path: p })); } catch { /* ignore */ }
+          if (isDir) dirs.push(p);
+          else files.push(p);
+        }
+        if (dirs.length) {
+          const targetDir = dirs[0];
+          if (modeForPreset(appState.session?.app_preset) === "chat") {
+            await createNewSession("general", targetDir);
+          } else {
+            await openWorkspace({ folderPath: targetDir });
+          }
+          showToast(`Opened folder ${shortPath(targetDir)}`);
+        }
+        if (files.length) {
+          try {
+            const documents = await invoke("import_documents_from_paths", { paths: files });
+            appState.pendingDocuments.push(...documents);
+            saveDraft();
+            renderAttachmentChips();
+            if (!MODES[appState.activeView]) {
+              setActiveView(modeForPreset(appState.session?.app_preset));
+              showToast(`Attached ${documents.length === 1 ? documents[0].name : `${documents.length} files`}.`);
+            }
+          } catch (err) {
+            showToast(friendlyRuntimeError(err));
+          }
         }
       }
     });
@@ -705,13 +733,15 @@ async function refreshWorkspaceFiles() {
   }
 }
 
-async function openWorkspace({ sample = false, carryDraft = false } = {}) {
+async function openWorkspace({ sample = false, carryDraft = false, folderPath = null } = {}) {
   if (appState.choosingWorkspace || appState.streaming) return false;
   appState.choosingWorkspace = true;
   try {
-    const path = sample
-      ? await invoke("prepare_sample_workspace")
-      : await invoke("pick_workspace_folder", { currentPath: appState.workspacePath });
+    const path = folderPath
+      ? folderPath
+      : sample
+        ? await invoke("prepare_sample_workspace")
+        : await invoke("pick_workspace_folder", { currentPath: appState.workspacePath });
     if (!path) return false;
     const session = appState.session;
     const mode = modeForPreset(session?.app_preset);
@@ -1037,8 +1067,8 @@ function renderHeader() {
   const attachBtn = document.getElementById("attach-docs-btn");
   if (attachBtn) {
     attachBtn.title = b.ocr_available
-      ? "Attach or drop/paste PDF, DOCX, text, CSV, code, or image (Chat can see image pixels; OCR ready as fallback)"
-      : "Attach or drop/paste PDF, DOCX, text, CSV, code, or image (Chat can see image pixels; install Tesseract for OCR captions)";
+      ? "Attach or drop/paste PDF, DOCX, text, CSV, code, or image (vision models see image pixels; OCR ready as fallback)"
+      : "Attach or drop/paste PDF, DOCX, text, CSV, code, or image (vision models see image pixels; install Tesseract for OCR captions)";
   }
 
   const harness = b.harnesses.find((h) => h.id === b.config.harness_mode);
@@ -1380,8 +1410,14 @@ function renderChat() {
     const setupBusy = setup.busy;
     const canWake = Boolean(modelToWake(b));
     const needsFolder = modeForPreset(preset.id) !== "chat" && !appState.workspacePath;
+    const recentFolders = needsFolder
+      ? (b.config?.recent_workspaces || []).slice(0, 4)
+      : [];
+    const recentFoldersHtml = recentFolders.length
+      ? `<div class="recent-folders-row">${recentFolders.map((dir) => `<button type="button" class="btn btn-ghost btn-sm" data-recent-folder="${escapeHtml(dir)}" title="${escapeHtml(dir)}">${escapeHtml(shortPath(dir))}</button>`).join("")}</div>`
+      : "";
     const action = needsFolder
-      ? `<button class="btn btn-primary" id="empty-open-folder">Open folder</button>${preset.id === "general" ? ' <button class="btn btn-ghost" id="empty-sample-folder">Try with sample files</button>' : ""}`
+      ? `<button class="btn btn-primary" id="empty-open-folder">Open folder</button>${preset.id === "general" ? ' <button class="btn btn-ghost" id="empty-sample-folder">Try with sample files</button>' : ""}${recentFoldersHtml}`
       : live || appState.waking ? "" : setup.paused ? '<button class="btn btn-primary" id="chat-setup-btn">Resume setup</button>' : setupBusy ? '<button class="btn btn-primary" id="chat-setup-btn">See setup progress</button>' : canWake ? '<button class="btn btn-primary" id="chat-setup-btn">Start your AI</button>' : '<button class="btn btn-primary" id="chat-setup-btn">Set up my AI</button>';
     const status = appState.waking ? '<p class="empty-status" role="status">Waking up your AI. You can type your question now.</p>' : "";
     const openCli = preset.id === "code" && b.config.harness_mode === "keel-cli"
@@ -1407,6 +1443,9 @@ function renderChat() {
     els.chatScroll.querySelector("#chat-setup-btn")?.addEventListener("click", () => (canWake && !setupBusy && !setup.paused ? wakeAssistant() : welcome.show()));
     els.chatScroll.querySelector("#empty-open-folder")?.addEventListener("click", () => openWorkspace());
     els.chatScroll.querySelector("#empty-sample-folder")?.addEventListener("click", () => openWorkspace({ sample: true }));
+    els.chatScroll.querySelectorAll("[data-recent-folder]").forEach((btn) => {
+      btn.addEventListener("click", () => openWorkspace({ folderPath: btn.getAttribute("data-recent-folder") }));
+    });
     els.chatScroll.querySelector("#empty-open-cli-session")?.addEventListener("click", importKeelSession);
     els.chatScroll.querySelector("#empty-reveal-cli-journal")?.addEventListener("click", () => revealKeelSessionLog());
     els.chatScroll.querySelector("#empty-export-cli-journal")?.addEventListener("click", () => exportKeelSessionLog());
@@ -1483,7 +1522,7 @@ function scheduleStreamingUpdate() {
 }
 
 function renderMessageHtml(msg) {
-  const documents = (msg.attachments || []).map((doc) => `<button class="attachment-chip" data-message-source="${escapeHtml(doc.id)}">▤ ${escapeHtml(doc.name)}</button>`).join("");
+  const documents = (msg.attachments || []).map((doc) => `<button class="attachment-chip" data-message-source="${escapeHtml(doc.id)}">${attachmentThumbHtml(doc) || "▤ "}${escapeHtml(doc.name)}</button>`).join("");
   const disabled = appState.streaming ? "disabled" : "";
   if (msg.role === "user") {
     const editBtn = msg.unsent
@@ -2584,6 +2623,7 @@ function renderConnectorsWorkspace() {
           <strong class="grow">${escapeHtml(srv.name)}</strong>
           <span class="mcp-badge ${untrusted ? "warn" : ""}">${escapeHtml(untrusted ? "Folder · Untrusted" : scopeLabel)}</span>
           <span class="mono" style="font-size:12px;color:var(--muted)">${escapeHtml(srv.command)} ${escapeHtml((srv.args || []).join(" "))}</span>
+          <button class="btn btn-ghost btn-sm" data-toggle-mcp="${escapeHtml(srv.name)}" data-toggle-scope="${scope}" data-toggle-next="${srv.enabled ? "false" : "true"}">${srv.enabled ? "Disable" : "Enable"}</button>
           <button class="btn btn-ghost btn-sm" data-rm-mcp="${escapeHtml(srv.name)}" data-rm-scope="${scope}">Remove</button>
         </div>
         ${errorHtml}
@@ -2622,6 +2662,7 @@ function renderConnectorsWorkspace() {
           <input id="mcp-cmd" class="input mono" placeholder="command (e.g. npx)" />
         </div>
         <input id="mcp-args" class="input mono" placeholder="space-separated args" />
+        <textarea id="mcp-env" class="input mono" rows="2" placeholder="Optional env vars (one KEY=VALUE per line)" style="margin-top:6px"></textarea>
         <div class="row">
           <select id="mcp-scope" class="select-field grow">
             <option value="global">Global (app config mcp.json)</option>
@@ -2690,11 +2731,24 @@ function renderConnectorsWorkspace() {
     try {
       btn.disabled = true;
       const args = document.getElementById("mcp-args").value.trim().split(/\s+/).filter(Boolean);
+      const env = {};
+      for (const rawLine of (document.getElementById("mcp-env")?.value || "").split("\n")) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith("#")) continue;
+        const eq = line.indexOf("=");
+        if (eq > 0) {
+          const key = line.slice(0, eq).trim();
+          const val = line.slice(eq + 1).trim();
+          if (key) env[key] = val;
+        }
+      }
       const updated = await invoke("save_mcp_server", {
         input: {
           name: document.getElementById("mcp-name").value,
           command: document.getElementById("mcp-cmd").value,
           args,
+          env,
+          enabled: true,
           scope: document.getElementById("mcp-scope").value,
           workspace_path: appState.workspacePath,
         },
@@ -2707,6 +2761,24 @@ function renderConnectorsWorkspace() {
       btn.disabled = false;
     }
   };
+  els.viewConnectors.querySelectorAll("[data-toggle-mcp]").forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        btn.disabled = true;
+        const updated = await invoke("toggle_mcp_server", {
+          name: btn.getAttribute("data-toggle-mcp"),
+          scope: btn.getAttribute("data-toggle-scope") || "global",
+          enabled: btn.getAttribute("data-toggle-next") === "true",
+          workspacePath: appState.workspacePath,
+        });
+        appState.bootstrap.mcp_servers = updated;
+        renderConnectorsWorkspace();
+      } catch (err) {
+        showToast(friendlyRuntimeError(err));
+        btn.disabled = false;
+      }
+    };
+  });
   els.viewConnectors.querySelectorAll("[data-rm-mcp]").forEach((btn) => {
     btn.onclick = async () => {
       try {

@@ -23,7 +23,9 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  switch(cmd) {
  case 'get_bootstrap_state': result={version:'0.7.2',config:cfg, runtime,models:[{id:'test',name:'Test local model',installed:true,damaged:false,quantization:'Q4',bytes:1000000000,detail:'Fast local model',tier:'fast'},{id:'broken-9b',name:'Damaged 9B',installed:false,damaged:true,damage_reason:'This model file is incomplete or damaged.',quantization:'Q2_0',bytes:2556640128,detail:'Balanced model',tier:'balanced'}].filter(m=>m.id!=='broken-9b'||window.__test.includeDamaged),sessions:sessions.map(s=>({...s})),projects,presets,harnesses:[{id:'keel',name:'Keel Harness',available:true},{id:'keel-cli',name:'Keel Code (CLI)',available:false}],code_execution:window.__test.codeExecution || {can_run_commands:true,sandbox:'landlock',notice:null},mcp_servers:[],ocr_available:true,system_ram_gb:16};break;
  case 'refresh_mcp_servers': result=[];break;
+ case 'toggle_mcp_server': result=[];break;
  case 'set_workspace_mcp_trust': result=[];break;
+ case 'is_directory': result=false;break;
  case 'export_html_file': result='/test/export.html';break;
  case 'open_models_folder': result=null;break;
  case 'check_app_update': result=window.__test.fakeUpdate ? {current_version:'0.7.2',available:true,version:'0.8.0',notes:'In-app update test',release_url:'https://github.com/olivermikkola/keel-desktop/releases/tag/v0.8.0',can_install_in_place:true} : {current_version:'0.7.2',available:false,version:null,notes:null,release_url:'https://github.com/olivermikkola/keel-desktop/releases/latest',can_install_in_place:true};break;
