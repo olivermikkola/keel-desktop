@@ -3636,6 +3636,70 @@ function openCustomizeModal() {
     };
     renderSettingsUpdate();
     body.appendChild(updateCard);
+
+    const trashCard = document.createElement("div");
+    trashCard.className = "card hidden";
+    trashCard.innerHTML = `
+      <div class="row">
+        <strong class="grow">Recently deleted chats</strong>
+        <button id="empty-trash-btn" type="button" class="btn btn-ghost btn-sm">Empty trash</button>
+      </div>
+      <div id="trash-threads-list" style="margin-top:8px"></div>
+    `;
+    body.appendChild(trashCard);
+    const renderTrashList = async () => {
+      try {
+        const trashed = await invoke("list_trashed_threads");
+        if (!trashed?.length) {
+          trashCard.classList.add("hidden");
+          return;
+        }
+        trashCard.classList.remove("hidden");
+        const slot = trashCard.querySelector("#trash-threads-list");
+        slot.innerHTML = trashed
+          .map(
+            (t) => `<div class="row" style="gap:8px;margin:4px 0">
+              <span class="grow" style="font-size:12.5px">${escapeHtml(t.title || "Untitled")} <span class="muted">(${t.message_count || 0} msgs)</span></span>
+              <button type="button" class="btn btn-sm" data-restore-trash="${escapeHtml(t.id)}">Restore</button>
+            </div>`,
+          )
+          .join("");
+        slot.querySelectorAll("[data-restore-trash]").forEach((btn) => {
+          btn.onclick = async () => {
+            btn.disabled = true;
+            try {
+              const restored = await invoke("restore_thread", { id: btn.getAttribute("data-restore-trash") });
+              await refreshBootstrap();
+              await loadSession(restored.id);
+              showToast(`Restored "${restored.title}".`);
+              await renderTrashList();
+            } catch (err) {
+              showToast(friendlyRuntimeError(err));
+              btn.disabled = false;
+            }
+          };
+        });
+      } catch {
+        trashCard.classList.add("hidden");
+      }
+    };
+    trashCard.querySelector("#empty-trash-btn").onclick = () => {
+      confirmAction(
+        "Empty trash?",
+        "This permanently deletes all trashed conversations from this computer.",
+        "Empty trash",
+        async () => {
+          try {
+            await invoke("empty_trash");
+            showToast("Trash emptied.");
+            await renderTrashList();
+          } catch (err) {
+            showToast(friendlyRuntimeError(err));
+          }
+        },
+      );
+    };
+    renderTrashList();
     card.querySelector("#cust-reset-welcome").onclick = () => {
       try {
         localStorage.removeItem(WELCOME_STORAGE_KEY);

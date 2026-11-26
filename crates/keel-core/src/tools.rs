@@ -931,6 +931,20 @@ pub fn openai_tool_schemas(
                 }
             }
         }),
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "read_url",
+                "description": "Fetch and read the text of a public http/https web page (requires user approval). Use to inspect a link shared by the user or returned by web_search.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": { "type": "string", "description": "Public http:// or https:// URL to read" }
+                    },
+                    "required": ["url"]
+                }
+            }
+        }),
     ];
 
     let mut filtered: Vec<serde_json::Value> = all

@@ -8,6 +8,12 @@ use std::sync::OnceLock;
 const MAX_QUERY_CHARS: usize = 300;
 const MAX_RESULT_CHARS: usize = 6_000;
 const MAX_ORGANIC: usize = 5;
+const MAX_PAGE_BYTES: usize = 512 * 1024;
+const USER_AGENT: &str = concat!(
+    "KeelDesktop/",
+    env!("CARGO_PKG_VERSION"),
+    " (local assistant; +https://github.com/olivermikkola/keel-desktop)"
+);
 
 fn search_http_client() -> Result<&'static reqwest::Client> {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
@@ -18,11 +24,145 @@ fn search_http_client() -> Result<&'static reqwest::Client> {
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(20))
         .redirect(reqwest::redirect::Policy::limited(5))
-        .user_agent(
-            "KeelDesktop/0.5 (local assistant; +https://github.com/olivermikkola/keel-desktop)",
-        )
+        .user_agent(USER_AGENT)
         .build()?;
     Ok(CLIENT.get_or_init(|| built))
+}
+
+fn read_url_http_client() -> Result<&'static reqwest::Client> {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    if let Some(c) = CLIENT.get() {
+        return Ok(c);
+    }
+    let built = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(USER_AGENT)
+        .build()?;
+    Ok(CLIENT.get_or_init(|| built))
+}
+
+fn is_private_or_local_host(host: &str) -> bool {
+    let h = host
+        .trim()
+        .trim_matches(|c| c == '[' || c == ']')
+        .to_ascii_lowercase();
+    if h.is_empty()
+        || h == "localhost"
+        || h == "0.0.0.0"
+        || h == "::1"
+        || h == "::"
+        || h.ends_with(".local")
+        || h.ends_with(".internal")
+        || h.ends_with(".localhost")
+    {
+        return true;
+    }
+    if let Ok(ip) = h.parse::<std::net::IpAddr>() {
+        return match ip {
+            std::net::IpAddr::V4(v4) => {
+                let o = v4.octets();
+                v4.is_loopback()
+                    || v4.is_private()
+                    || v4.is_link_local()
+                    || v4.is_unspecified()
+                    || v4.is_broadcast()
+                    || v4.is_multicast()
+                    || (o[0] == 100 && (64..=127).contains(&o[1]))
+            }
+            std::net::IpAddr::V6(v6) => {
+                let s = v6.segments();
+                v6.is_loopback()
+                    || v6.is_unspecified()
+                    || v6.is_multicast()
+                    || (s[0] & 0xfe00) == 0xfc00
+                    || (s[0] & 0xffc0) == 0xfe80
+            }
+        };
+    }
+    false
+}
+
+/// Validates that `raw` is a public `http`/`https` URL without credentials or local/private hosts.
+pub fn validate_public_url(raw: &str) -> Result<reqwest::Url> {
+    let trimmed = raw.trim();
+    let parsed = reqwest::Url::parse(trimmed).context("Enter a valid http:// or https:// URL")?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        bail!("Only http:// and https:// URLs can be read");
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        bail!("URLs with embedded credentials are not allowed");
+    }
+    let host = parsed.host_str().unwrap_or("");
+    if is_private_or_local_host(host) {
+        bail!("Private or local network URLs cannot be read by read_url");
+    }
+    Ok(parsed)
+}
+
+/// Converts HTML into bounded readable plain text (stripping scripts, styles, and tags).
+pub fn html_to_bounded_text(html: &str, max_chars: usize) -> String {
+    let no_scripts =
+        Regex::new(r"(?is)<(script|style|noscript)[^>]*>.*?</(script|style|noscript)>")
+            .unwrap()
+            .replace_all(html, " ");
+    let no_tags = Regex::new(r"(?s)<[^>]+>")
+        .unwrap()
+        .replace_all(&no_scripts, " ");
+    let decoded = decode_basic_entities(&no_tags);
+    let collapsed = Regex::new(r"[ \t\r\n]+")
+        .unwrap()
+        .replace_all(&decoded, " ");
+    let clean = collapsed.trim();
+    if clean.chars().count() <= max_chars {
+        clean.to_string()
+    } else {
+        let mut out: String = clean.chars().take(max_chars).collect();
+        out.push_str("\n\n[Page content truncated.]");
+        out
+    }
+}
+
+/// Fetches a public web page (no redirects, 512 KB cap) and returns bounded readable text.
+pub async fn read_url(url: &str) -> Result<String> {
+    read_url_with_client(read_url_http_client()?, url).await
+}
+
+pub async fn read_url_with_client(client: &reqwest::Client, url: &str) -> Result<String> {
+    let parsed = validate_public_url(url)?;
+    let mut resp = client
+        .get(parsed.clone())
+        .send()
+        .await
+        .context("Could not reach that web page")?;
+    if resp.status().is_redirection() {
+        bail!("That URL redirected to another address; ask to read the final public URL directly.");
+    }
+    if !resp.status().is_success() {
+        bail!("Web page returned HTTP {}", resp.status());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .context("Failed while reading web page")?
+    {
+        let remaining = MAX_PAGE_BYTES.saturating_sub(bytes.len());
+        if remaining == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+        if bytes.len() >= MAX_PAGE_BYTES {
+            break;
+        }
+    }
+    let raw_text = String::from_utf8_lossy(&bytes);
+    let body = html_to_bounded_text(&raw_text, MAX_RESULT_CHARS);
+    if body.is_empty() {
+        bail!("That page contained no readable text.");
+    }
+    Ok(format!("Content from {}:\n\n{}", parsed, body))
 }
 
 /// Search the public web for `query` and return a bounded text summary for the model.
@@ -355,6 +495,34 @@ mod tests {
     fn rejects_empty_query() {
         let err = futures_executor_block_on(web_search("   ")).unwrap_err();
         assert!(err.to_string().contains("empty"));
+    }
+
+    #[test]
+    fn read_url_blocks_private_hosts_credentials_and_cleans_html() {
+        assert!(validate_public_url("https://example.com/docs").is_ok());
+        for bad in [
+            "file:///etc/passwd",
+            "http://127.0.0.1:8080/health",
+            "http://localhost/admin",
+            "http://10.0.0.1/internal",
+            "http://172.16.0.5/secret",
+            "http://192.168.1.1/router",
+            "http://169.254.169.254/latest/meta-data",
+            "http://100.64.0.1/ts",
+            "http://[::1]/meta",
+            "http://user:pass@example.com/",
+            "http://mybox.local/status",
+        ] {
+            assert!(validate_public_url(bad).is_err(), "expected reject: {bad}");
+        }
+        let clean = html_to_bounded_text(
+            "<html><head><style>body{color:red}</style><script>alert(1)</script></head><body><h1>Hello &amp; Welcome</h1><p>Local AI</p></body></html>",
+            200,
+        );
+        assert!(clean.contains("Hello & Welcome"));
+        assert!(clean.contains("Local AI"));
+        assert!(!clean.contains("alert(1)"));
+        assert!(!clean.contains("color:red"));
     }
 
     #[tokio::test]
