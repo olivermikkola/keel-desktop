@@ -11,12 +11,6 @@ export function createArenaCompare({ invoke, notice }) {
   };
   let container;
 
-  function shortDigest(value) {
-    const text = String(value || "");
-    if (text.length <= 16) return text || "—";
-    return `${text.slice(0, 10)}…${text.slice(-6)}`;
-  }
-
   function contestantRows(contestants) {
     const entries = Object.entries(contestants || {});
     if (!entries.length) return '<p class="muted">No contestant rows in this manifest.</p>';
@@ -80,21 +74,21 @@ export function createArenaCompare({ invoke, notice }) {
               <div class="row"><span class="arena-badge ${purposeClass}">${escapeHtml(purpose || "unknown")}</span>
               <span class="muted mono">${escapeHtml(view.sourceLabel || "")}</span></div>
               <p class="muted">Matched ${escapeHtml(String(view.matchedBlocks))} · Planned ${escapeHtml(String(view.plannedBlocks))} · Excluded ${escapeHtml(String(view.excludedBlocks))} · Tasks ${escapeHtml(String(view.independentTasks))}</p>
-              <p class="muted mono" title="${escapeHtml(view.resultSha256 || "")}">result ${escapeHtml(shortDigest(view.resultSha256))}</p>
-              <p class="muted mono" title="${escapeHtml(view.protocol?.harness_revision || "")}">harness ${escapeHtml(shortDigest(view.protocol?.harness_revision))}</p>
-              <p class="muted mono" title="${escapeHtml(view.protocol?.environment_sha256 || "")}">env ${escapeHtml(shortDigest(view.protocol?.environment_sha256))}</p>
-              <p class="muted mono" title="${escapeHtml(view.protocol?.sampling_sha256 || "")}">sampling ${escapeHtml(shortDigest(view.protocol?.sampling_sha256))}</p>
+              <p class="muted mono" title="${escapeHtml(view.resultSha256 || "")}">result ${escapeHtml(digestPreview(view.resultSha256))}</p>
+              <p class="muted mono" title="${escapeHtml(view.protocol?.harness_revision || "")}">harness ${escapeHtml(digestPreview(view.protocol?.harness_revision))}</p>
+              <p class="muted mono" title="${escapeHtml(view.protocol?.environment_sha256 || "")}">env ${escapeHtml(digestPreview(view.protocol?.environment_sha256))}</p>
+              <p class="muted mono" title="${escapeHtml(view.protocol?.sampling_sha256 || "")}">sampling ${escapeHtml(digestPreview(view.protocol?.sampling_sha256))}</p>
               ${contestantRows(view.contestants)}
             </div>` : ""}
         </section>
         <section class="arena-viewer card" aria-live="polite">
           ${view ? `
             <div class="arena-tabs" role="tablist">
-              <button type="button" class="arena-tab ${state.tab === "compare" ? "active" : ""}" data-arena-tab="compare">Compare</button>
-              <button type="button" class="arena-tab ${state.tab === "dashboard" ? "active" : ""}" data-arena-tab="dashboard">Dashboard</button>
-              <button type="button" class="arena-tab ${state.tab === "overview" ? "active" : ""}" data-arena-tab="overview">Overview</button>
+              <button type="button" class="arena-tab ${state.tab === "compare" ? "active" : ""}" data-arena-tab="compare">${arenaTabLabel("compare")}</button>
+              <button type="button" class="arena-tab ${state.tab === "dashboard" ? "active" : ""}" data-arena-tab="dashboard">${arenaTabLabel("dashboard")}</button>
+              <button type="button" class="arena-tab ${state.tab === "overview" ? "active" : ""}" data-arena-tab="overview">${arenaTabLabel("overview")}</button>
             </div>
-            <iframe class="arena-iframe" title="Arena compare viewer" sandbox="allow-scripts allow-modals"></iframe>
+            <iframe class="arena-iframe" title="Arena compare viewer" sandbox="allow-scripts"></iframe>
           ` : `<div class="arena-empty"><p>Your compare view will appear here.</p><p class="muted">Host owns the file picker and tabs. Arena owns validation, metrics, and the HTML cards.</p></div>`}
         </section>
       </div>`;
