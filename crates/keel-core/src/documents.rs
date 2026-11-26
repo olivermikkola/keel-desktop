@@ -133,6 +133,55 @@ pub fn import_document_base64(name: &str, base64_data: &str) -> Result<Document>
     import_document_bytes(name, &bytes)
 }
 
+fn is_text_extension(ext: &str) -> bool {
+    matches!(
+        ext,
+        "txt"
+            | "md"
+            | "csv"
+            | "tsv"
+            | "json"
+            | "html"
+            | "htm"
+            | "xml"
+            | "yaml"
+            | "yml"
+            | "toml"
+            | "ini"
+            | "conf"
+            | "cfg"
+            | "rs"
+            | "py"
+            | "js"
+            | "mjs"
+            | "cjs"
+            | "ts"
+            | "tsx"
+            | "jsx"
+            | "vue"
+            | "svelte"
+            | "css"
+            | "scss"
+            | "less"
+            | "sql"
+            | "log"
+            | "go"
+            | "c"
+            | "cc"
+            | "cpp"
+            | "h"
+            | "hpp"
+            | "java"
+            | "kt"
+            | "swift"
+            | "rb"
+            | "php"
+            | "sh"
+            | "bash"
+            | "zsh"
+    )
+}
+
 pub fn import_document_bytes(name: &str, bytes: &[u8]) -> Result<Document> {
     if (bytes.len() as u64) > MAX_FILE {
         bail!("{name} is larger than the 20 MB attachment limit");
@@ -161,7 +210,7 @@ pub fn import_document_bytes(name: &str, bytes: &[u8]) -> Result<Document> {
             let _guard = TempFileGuard(tmp.clone());
             image_text_with_optional_ocr(&tmp, image_data_url.is_some())?
         }
-        "txt" | "md" | "csv" | "tsv" | "json" | "html" | "htm" | "xml" | "yaml" | "yml" | "toml" | "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "css" | "sql" | "log" => {
+        ext if is_text_extension(ext) => {
             String::from_utf8(bytes.to_vec()).context("This file is not UTF-8 text. Export it as UTF-8 and try again.")?
         }
         _ => bail!("Attach a PDF, DOCX, text, Markdown, CSV, source-code file, or image (PNG, JPG, WebP, BMP, TIFF)."),
@@ -206,7 +255,7 @@ pub fn import_document(path: &Path) -> Result<Document> {
             }
             image_text_with_optional_ocr(path, image_data_url.is_some())?
         }
-        "txt" | "md" | "csv" | "tsv" | "json" | "html" | "htm" | "xml" | "yaml" | "yml" | "toml" | "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "css" | "sql" | "log" => String::from_utf8(bytes).context("This file is not UTF-8 text. Export it as UTF-8 and try again.")?,
+        ext if is_text_extension(ext) => String::from_utf8(bytes).context("This file is not UTF-8 text. Export it as UTF-8 and try again.")?,
         _ => bail!("Attach a PDF, DOCX, text, Markdown, CSV, source-code file, or image (PNG, JPG, WebP, BMP, TIFF)."),
     };
     if text.trim().is_empty() {

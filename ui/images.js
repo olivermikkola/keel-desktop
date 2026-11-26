@@ -4,7 +4,7 @@ import { escapeHtml } from "./markdown.js";
 // No media weights or runtimes are installed until a user chooses to configure them.
 // Audio is "available" for Settings packs + Try STT/TTS only — not a chat-mode audio product.
 export const CAPABILITIES = [
-  { id: "text", title: "Assistant", detail: "One text model for Chat, Work, and Code. Chat and Work can search the web with your approval; Chat can send image pixels for vision-capable models.", state: "available" },
+  { id: "text", title: "Assistant", detail: "One text model for Chat, Work, and Code. Search the web with your approval and send image pixels to vision-capable models.", state: "available" },
   { id: "images", title: "Images", detail: "Generate images with an optional local AUTOMATIC1111 or Forge server.", state: "available" },
   { id: "audio", title: "Audio", detail: "Settings packs: download checksum-pinned Whisper tiny q5_1 and Piper en_US kusal q8, register local / Whisper.cpp / Piper runners, Try STT (local file dialog) / Try TTS (short sample), and list artifacts. Not a chat-mode audio product yet.", state: "available" },
   { id: "video", title: "Video", detail: "Video generation backends are planned.", state: "planned" },

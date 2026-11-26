@@ -127,6 +127,7 @@ fn main() {
         setup_pause: Mutex::new(None),
         active_cli_stop: Mutex::new(None),
         placement_cache: Mutex::new(None),
+        mcp_cache: Mutex::new(None),
     };
 
     let app = tauri::Builder::default()
@@ -163,6 +164,7 @@ fn main() {
             arena::pick_arena_results_file,
             arena::open_arena_compare,
             productivity::pick_documents,
+            productivity::is_directory,
             productivity::import_document_from_bytes,
             productivity::import_documents_from_paths,
             productivity::open_models_folder,
@@ -236,6 +238,7 @@ fn main() {
             commands::publish_code_changes,
             commands::save_customize_settings,
             commands::save_mcp_server,
+            commands::toggle_mcp_server,
             commands::remove_mcp_server,
             commands::set_workspace_mcp_trust,
             commands::refresh_mcp_servers,

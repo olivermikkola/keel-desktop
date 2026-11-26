@@ -497,3 +497,19 @@ fn continue_history_keeps_partial_interrupted_answer_without_footer_or_pure_erro
     assert_eq!(history[2].role, "user");
     assert_eq!(history[2].content, "Continue where you left off.");
 }
+
+#[test]
+fn document_importer_accepts_common_source_and_config_extensions() {
+    for (name, sample) in [
+        ("main.go", "package main\nfunc main() {}\n"),
+        ("App.swift", "import Foundation\nlet x = 1\n"),
+        ("Main.kt", "fun main() { println(1) }\n"),
+        ("config.yaml", "mode: local\n"),
+        ("Cargo.toml", "[package]\nname = \"demo\"\n"),
+        ("deploy.sh", "#!/usr/bin/env bash\necho ok\n"),
+    ] {
+        let doc = documents::import_document_bytes(name, sample.as_bytes()).unwrap();
+        assert_eq!(doc.name, name);
+        assert!(doc.text.contains(sample.trim()));
+    }
+}
