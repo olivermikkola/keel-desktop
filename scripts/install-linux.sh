@@ -24,7 +24,7 @@ cat > "$APP_DIR/keel-desktop.desktop" <<EOF
 [Desktop Entry]
 Name=Keel Desktop
 Comment=Local AI agent workspace powered by llama.cpp and Rust
-Exec=$BIN_DIR/keel-desktop
+Exec=$BIN_DIR/keel-desktop %f
 Icon=keel-desktop
 Terminal=false
 Type=Application

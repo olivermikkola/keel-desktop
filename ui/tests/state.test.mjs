@@ -17,6 +17,7 @@ import {
   modelFitLabel,
   normalizeAppearance,
   parseDiffLines,
+  pickInitialSession,
   shortPath,
 } from "../state.js";
 
@@ -189,4 +190,15 @@ test("reuses an untouched empty session with matching preset, folder, and projec
     ),
     null,
   );
+});
+
+test("picks initial session matching startup workspace when provided", () => {
+  const sessions = [
+    { id: "recent-other", app_preset: "general", workspace_path: "/other" },
+    { id: "ws-chat", app_preset: "chat", workspace_path: "/target" },
+    { id: "ws-work", app_preset: "general", workspace_path: "/target" },
+  ];
+  assert.equal(pickInitialSession(sessions, null), "recent-other");
+  assert.equal(pickInitialSession(sessions, "/target"), "ws-work");
+  assert.equal(pickInitialSession(sessions, "/new-folder"), null);
 });

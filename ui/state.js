@@ -209,3 +209,15 @@ export function findReusableEmptySession(
   );
   return match ? match.id : null;
 }
+
+export function pickInitialSession(sessions = [], initialWorkspace = null) {
+  const list = Array.isArray(sessions) ? sessions : [];
+  if (initialWorkspace) {
+    const matching = list.filter((s) => s && s.workspace_path === initialWorkspace);
+    const nonChat = matching.find((s) => s.app_preset && s.app_preset !== "chat");
+    if (nonChat) return nonChat.id;
+    if (matching[0]) return matching[0].id;
+    return null;
+  }
+  return list[0]?.id || null;
+}

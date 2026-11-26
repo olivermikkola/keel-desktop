@@ -257,6 +257,7 @@ impl RuntimeManager {
         self.log_path = Some(log_path.clone());
         let log = std::fs::File::create(&log_path)?;
         let mut command = Command::new(&bin);
+        apply_tokio_runner_env(&mut command, &bin);
         command
             .arg("-m")
             .arg(launch.model_path)
@@ -664,13 +665,62 @@ fn reserve_port(preferred: u16) -> std::io::Result<std::net::TcpListener> {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn runner_ld_library_path(bin: &Path) -> Option<std::ffi::OsString> {
+    let dir = bin.parent()?;
+    let mut paths = vec![dir.to_path_buf()];
+    if let Some(existing) = std::env::var_os("LD_LIBRARY_PATH") {
+        paths.extend(std::env::split_paths(&existing));
+    }
+    std::env::join_paths(paths).ok()
+}
+
+pub(crate) fn apply_std_runner_env(cmd: &mut std::process::Command, bin: &Path) {
+    #[cfg(target_os = "linux")]
+    if let Some(val) = runner_ld_library_path(bin) {
+        cmd.env("LD_LIBRARY_PATH", val);
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (cmd, bin);
+}
+
+fn apply_tokio_runner_env(cmd: &mut Command, bin: &Path) {
+    #[cfg(target_os = "linux")]
+    if let Some(val) = runner_ld_library_path(bin) {
+        cmd.env("LD_LIBRARY_PATH", val);
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (cmd, bin);
+}
+
+/// Parses the `llama-server --version` build number (e.g. `(build 12772, ...)`).
+pub fn runner_build_number(bin: &Path) -> Option<u64> {
+    let mut cmd = std::process::Command::new(bin);
+    apply_std_runner_env(&mut cmd, bin);
+    let output = cmd.arg("--version").stdin(Stdio::null()).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let idx = text.find("(build ")?;
+    let rest = &text[idx + 7..];
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
+}
+
 /// Starts the model runner once with `--version` to prove it can load on this
 /// computer. A Linux build can fail here when the system lacks a shared
 /// library it was linked against (current Fedora ships OpenSSL 4, while the
 /// llama.cpp Linux build needs OpenSSL 3), so the person gets the fix before
 /// a multi-gigabyte model download instead of a silent "model won't load".
 pub fn check_runner_starts(bin: &Path) -> Result<()> {
-    let output = std::process::Command::new(bin)
+    let mut cmd = std::process::Command::new(bin);
+    apply_std_runner_env(&mut cmd, bin);
+    let output = cmd
         .arg("--version")
         .stdin(Stdio::null())
         .output()
@@ -787,6 +837,10 @@ pub fn friendly_runner_exit_message(details: &str, os_release: &str) -> String {
         return "This computer doesn't have enough free memory to load this model. Try a lighter model in Models."
             .to_string();
     }
+    if lower.contains("unknown model architecture") {
+        return "This model uses an architecture that your current engine doesn't support yet. Update the engine or pick a different model."
+            .to_string();
+    }
     if [
         "failed to load model",
         "invalid gguf",
@@ -794,7 +848,6 @@ pub fn friendly_runner_exit_message(details: &str, os_release: &str) -> String {
         "not a gguf",
         "corrupt",
         "truncated",
-        "unknown model architecture",
         "unexpected eof",
     ]
     .iter()
