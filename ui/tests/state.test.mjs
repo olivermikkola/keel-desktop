@@ -13,6 +13,7 @@ import {
   findReusableEmptySession,
   formatBytes,
   formatContextMeter,
+  formatLiveTelemetry,
   formatRelativeTime,
   modelFitLabel,
   normalizeAppearance,
@@ -201,4 +202,24 @@ test("picks initial session matching startup workspace when provided", () => {
   assert.equal(pickInitialSession(sessions, null), "recent-other");
   assert.equal(pickInitialSession(sessions, "/target"), "ws-work");
   assert.equal(pickInitialSession(sessions, "/new-folder"), null);
+});
+
+test("preserves speed and token counts in live telemetry status line", () => {
+  assert.equal(
+    formatLiveTelemetry({
+      location: "On this computer",
+      messageCount: 4,
+      took: "2.3s",
+      tokensPerSec: 34.56,
+      completionTokens: 120,
+    }),
+    "On this computer · 4 messages · 2.3s · 34.6 tok/s · 120 tokens",
+  );
+  assert.equal(
+    formatLiveTelemetry({
+      location: "Leaves this computer",
+      messageCount: 2,
+    }),
+    "Leaves this computer · 2 messages",
+  );
 });

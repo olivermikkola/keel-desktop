@@ -54,6 +54,25 @@ pub fn history(
 }
 
 /// Like [`history`], optionally attaching image data URLs for multimodal Chat turns.
+const INTERRUPTION_FOOTERS: &[&str] = &[
+    "Reply stopped. Your partial answer and proposed edits have been kept.",
+    "This reply was interrupted. You can try again.",
+    "Keel closed before this reply finished. The partial answer and proposed edits have been kept.",
+];
+
+fn partial_assistant_content(content: &str) -> Option<String> {
+    for footer in INTERRUPTION_FOOTERS {
+        if let Some(prefix) = content.trim_end().strip_suffix(footer) {
+            let trimmed = prefix.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+            return None;
+        }
+    }
+    None
+}
+
 pub fn history_with_vision(
     session: &ChatSession,
     project: Option<&Project>,
@@ -80,8 +99,16 @@ pub fn history_with_vision(
     let mut result: Vec<ChatTurnMessage> = session
         .messages
         .iter()
-        .filter(|m| m.status != "failed")
-        .map(|m| ChatTurnMessage::text(m.role.clone(), m.content.clone()))
+        .filter_map(|m| {
+            if m.status != "failed" {
+                return Some(ChatTurnMessage::text(m.role.clone(), m.content.clone()));
+            }
+            if m.role == "assistant" {
+                return partial_assistant_content(&m.content)
+                    .map(|partial| ChatTurnMessage::text(m.role.clone(), partial));
+            }
+            None
+        })
         .collect();
     if let Some(last_user) = result.iter_mut().rev().find(|m| m.role == "user") {
         let context = document_context(&documents, query, source_budget);

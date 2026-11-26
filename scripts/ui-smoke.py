@@ -62,7 +62,9 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  case 'pick_model_file':result=null;break;
  case 'set_external_endpoint':if(!String(args.baseUrl||'').match(/127\.0\.0\.1|localhost|\[::1\]/i) && !args.confirmRemote) throw new Error('This server is not on this computer.');cfg.external_base_url=args.baseUrl;cfg.external_model_name=args.modelName || null;runtime={state:'external',active_model_id:null,base_url:args.baseUrl};result=runtime;break;
  case 'connect_image_server':cfg.image_endpoint=args.endpoint;result=['Local checkpoint'];break;
+ case 'disconnect_image_server':cfg.image_endpoint=null;result=null;break;
  case 'read_workspace_png':result=''' + json.dumps(PNG) + r''';break;
+ case 'read_workspace_image':result=''' + json.dumps(PNG) + r''';break;
  case 'read_workspace_file_raw':result=fileContent[args.relPath] || '# Local document';break;
  case 'send_message': {
  const s=sessions.find(s=>s.id===args.input.session_id);

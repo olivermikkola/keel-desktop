@@ -24,6 +24,7 @@ import {
   findReusableEmptySession,
   formatBytes,
   formatContextMeter,
+  formatLiveTelemetry,
   pickInitialSession,
   formatRelativeTime,
   formatTokenCount,
@@ -75,6 +76,8 @@ const appState = {
   waking: false,
   sendWhenReady: false,
   lastAnswerSeconds: 0,
+  lastTokensPerSec: 0,
+  lastCompletionTokens: 0,
   lastContextTokens: 0,
   appUpdate: null,
   appUpdateDismissed: false,
@@ -139,6 +142,7 @@ const images = createImageWorkspace({
   refresh: refreshBootstrap,
   selectFolder: () => els.workspacePillBtn.click(),
   openModels: () => setActiveView("models"),
+  openSettings: () => openCustomizeModal(),
   notice: showToast,
 });
 
@@ -163,7 +167,7 @@ const everyday = createEveryday({
   },
   openArtifact: async (item) => {
     const preset = item.kind === "html" ? "websites" : item.kind === "csv" ? "sheets" : item.kind === "md" ? "docs" : "general";
-    const previewKinds = new Set(["html", "htm", "csv", "md", "png", "jpg", "jpeg", "webp"]);
+    const previewKinds = new Set(["html", "htm", "csv", "md", "png", "jpg", "jpeg", "webp", "gif", "svg"]);
     appState.workspacePath = item.workspace_path;
     appState.activeProjectId = item.project_id;
     const existing = (appState.bootstrap?.sessions || []).find(
@@ -201,8 +205,17 @@ const welcome = createWelcome({
 
 function saveDraft() {
   if (!appState.session) return;
-  drafts.set(appState.session.id, { text: els.promptInput.value, documents: appState.pendingDocuments });
-  try { localStorage.setItem(`keel_draft_${appState.session.id}`, els.promptInput.value); } catch { /* Storage quota may be unavailable. */ }
+  const text = els.promptInput.value;
+  if (!text && !appState.pendingDocuments.length) {
+    drafts.delete(appState.session.id);
+  } else {
+    drafts.set(appState.session.id, { text, documents: appState.pendingDocuments });
+  }
+  try {
+    const key = `keel_draft_${appState.session.id}`;
+    if (text) localStorage.setItem(key, text);
+    else localStorage.removeItem(key);
+  } catch { /* Storage quota may be unavailable. */ }
 }
 function restoreDraft() {
   const draft = drafts.get(appState.session.id);
@@ -511,6 +524,10 @@ async function init() {
     await events.listen("keel://app-update-progress", (ev) => {
       appState.appUpdateProgress = ev.payload;
       renderUpdateBanner();
+      const settingsBtn = document.getElementById("install-app-update-btn");
+      if (settingsBtn && appState.appUpdateBusy) {
+        settingsBtn.textContent = updateProgressLabel();
+      }
     });
     setTimeout(() => {
       checkAppUpdate({ silent: true });
@@ -614,6 +631,9 @@ async function createNewSession(preset = "chat", workspacePath = appState.worksp
       return;
     }
     appState.lastContextTokens = 0;
+    appState.lastAnswerSeconds = 0;
+    appState.lastTokensPerSec = 0;
+    appState.lastCompletionTokens = 0;
     appState.activeView = modeForPreset(preset);
     appState.viewerOpen = hasViewerContent();
     appState.viewerTab = appState.activeView === "code" ? "code" : "preview";
@@ -622,6 +642,9 @@ async function createNewSession(preset = "chat", workspacePath = appState.worksp
     return;
   }
   appState.lastContextTokens = 0;
+  appState.lastAnswerSeconds = 0;
+  appState.lastTokensPerSec = 0;
+  appState.lastCompletionTokens = 0;
   appState.session = await invoke("create_session", {
     preset,
     workspacePath,
@@ -648,6 +671,9 @@ async function loadSession(id) {
   if (appState.streaming) return;
   saveDraft();
   appState.lastContextTokens = 0;
+  appState.lastAnswerSeconds = 0;
+  appState.lastTokensPerSec = 0;
+  appState.lastCompletionTokens = 0;
   appState.session = await invoke("load_session_cmd", { id });
   appState.activeProjectId = appState.session.project_id || null;
   appState.searchResults = null;
@@ -849,6 +875,8 @@ function renderSidebar() {
       e.stopPropagation();
       if (appState.streaming) return;
       const remaining = await invoke("delete_session_cmd", { id: s.id });
+      drafts.delete(s.id);
+      try { localStorage.removeItem(`keel_draft_${s.id}`); } catch { /* Ignore storage errors. */ }
       if (appState.session?.id === s.id) {
         const sameProject = remaining.find((item) => (item.project_id || null) === appState.activeProjectId);
         if (sameProject) {
@@ -1030,7 +1058,13 @@ function renderHeader() {
   renderContextMeter();
   if (!appState.streaming) {
     const took = answerTimePhrase(appState.lastAnswerSeconds);
-    const live = `${location} · ${appState.session?.messages.length || 0} messages${took ? ` · ${took}` : ""}`;
+    const live = formatLiveTelemetry({
+      location,
+      messageCount: appState.session?.messages.length || 0,
+      took,
+      tokensPerSec: appState.lastTokensPerSec,
+      completionTokens: appState.lastCompletionTokens,
+    });
     els.telemetryLeft.textContent = appState.sendWhenReady ? "Your message sends as soon as your AI is ready" : isBusy ? "Waking up your AI. This takes a few seconds." : isRuntimeLive(rt) ? live : "Your AI is off. Send a message to start it.";
   }
   const mode = modeForPreset(appState.session?.app_preset);
@@ -1519,13 +1553,15 @@ function handleAgentEvent(ev) {
     const fromServer = Number(ev.elapsed_secs);
     const fromClock = streamingStartedAt ? (Date.now() - streamingStartedAt) / 1000 : 0;
     appState.lastAnswerSeconds = fromServer > 0 ? fromServer : fromClock;
+    appState.lastTokensPerSec = Number(ev.tokens_per_sec) > 0 ? Number(ev.tokens_per_sec) : 0;
+    appState.lastCompletionTokens = Number(ev.completion_tokens) > 0 ? Number(ev.completion_tokens) : 0;
     const totalUsed =
       Number(ev.context_tokens || 0) ||
       Number(ev.prompt_tokens || 0) + Number(ev.completion_tokens || 0);
     if (totalUsed > 0) appState.lastContextTokens = totalUsed;
     renderContextMeter();
-    const tps = Number(ev.tokens_per_sec) > 0 ? ` · ${ev.tokens_per_sec.toFixed(1)} tok/s` : "";
-    const toks = Number(ev.completion_tokens) > 0 ? ` · ${ev.completion_tokens} tokens` : "";
+    const tps = appState.lastTokensPerSec > 0 ? ` · ${appState.lastTokensPerSec.toFixed(1)} tok/s` : "";
+    const toks = appState.lastCompletionTokens > 0 ? ` · ${appState.lastCompletionTokens} tokens` : "";
     const took = answerTimePhrase(appState.lastAnswerSeconds);
     els.telemetryLeft.textContent = `${modelLocation(appState.bootstrap.runtime)}${took ? ` · ${took}` : ""}${tps}${toks || " · Finished"}`;
   }
@@ -1731,8 +1767,9 @@ async function loadViewerContent() {
     return;
   }
   try {
-    if (appState.viewerFile.toLowerCase().endsWith(".png")) {
-      const src = await invoke("read_workspace_png", { workspacePath: ws, relPath: appState.viewerFile });
+    if (/\.(png|jpe?g|webp|gif|svg)$/i.test(appState.viewerFile)) {
+      const cmd = appState.viewerFile.toLowerCase().endsWith(".png") ? "read_workspace_png" : "read_workspace_image";
+      const src = await invoke(cmd, { workspacePath: ws, relPath: appState.viewerFile });
       if (typeof src === "string" && src.startsWith("data:image/")) {
         els.viewerContent.innerHTML = `<img class="generated-image" alt="${escapeHtml(appState.viewerFile)}" src="${escapeHtml(src)}" />`;
       } else {
@@ -1749,7 +1786,7 @@ async function loadViewerContent() {
     } else {
       if (/\.html?$/i.test(appState.viewerFile)) {
         content = await inlineWorkspaceImages(content, appState.viewerFile, (relPath) =>
-          invoke("read_workspace_png", { workspacePath: ws, relPath }));
+          invoke(relPath.toLowerCase().endsWith(".png") ? "read_workspace_png" : "read_workspace_image", { workspacePath: ws, relPath }));
       }
       renderViewer(els.viewerContent, appState.viewerFile, content, {
         onExportHtml: async (name, html) => {
@@ -2227,7 +2264,7 @@ function renderModelsWorkspace() {
           <input id="ws-ext-key" class="input grow mono" type="password" autocomplete="off" placeholder="API key (optional)" />
         </div>
         <label class="row" style="margin-top:6px;align-items:flex-start;gap:8px;font-size:12.5px;color:var(--muted)">
-          <input id="ws-ext-remote" type="checkbox" style="margin-top:2px" />
+          <input id="ws-ext-remote" type="checkbox" style="margin-top:2px" ${isRemoteModelServer(b.config.external_base_url || "") ? "checked" : ""} />
           <span>This server is not on this computer</span>
         </label>
         <p class="muted" id="ws-ext-notice">${serverDataNotice(b.config.external_base_url || "")}</p>
@@ -2957,21 +2994,27 @@ function openCustomizeModal() {
     body.appendChild(checkCard);
 
     const packsCard = document.createElement("div");
-    packsCard.className = "card";
+    packsCard.className = "card hidden";
     packsCard.innerHTML = `
       <strong>Capability packs</strong>
-      <p class="muted">Optional local packs (speech and demos). Downloads are checksummed and stored on this computer.</p>
+      <p class="muted">Optional local packs. Downloads are checksummed and stored on this computer.</p>
       <div id="capability-packs-list"><p class="muted">Loading…</p></div>
     `;
     body.appendChild(packsCard);
     const renderPacksList = async () => {
       const slot = packsCard.querySelector("#capability-packs-list");
       try {
-        const packs = await invoke("list_capability_packs");
-        if (!packs?.length) {
-          slot.innerHTML = `<p class="muted">No capability packs listed yet.</p>`;
+        const allPacks = await invoke("list_capability_packs");
+        const packs = (allPacks || []).filter(
+          (pack) =>
+            pack.capability_id !== "demo.capability" &&
+            (Boolean(pack.download_url) || Boolean(pack.installed)),
+        );
+        if (!packs.length) {
+          packsCard.classList.add("hidden");
           return;
         }
+        packsCard.classList.remove("hidden");
         slot.innerHTML = packs
           .map((pack) => {
             const id = escapeHtml(pack.capability_id || "");
