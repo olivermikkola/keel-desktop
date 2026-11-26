@@ -10,7 +10,7 @@ export const CAPABILITIES = [
   { id: "video", title: "Video", detail: "Video generation backends are planned.", state: "planned" },
 ];
 
-export function createImageWorkspace({ invoke, getWorkspace, getEndpoint, refresh, selectFolder, openModels, notice }) {
+export function createImageWorkspace({ invoke, getWorkspace, getEndpoint, refresh, selectFolder, openModels, openSettings, notice }) {
   const state = { endpoint: null, checkpoints: [], jobs: [], busy: false, prompt: "", negative: "", checkpoint: "", size: "512", steps: "20" };
   let container;
   let requestVersion = 0;
@@ -27,7 +27,7 @@ export function createImageWorkspace({ invoke, getWorkspace, getEndpoint, refres
       <div class="capability-grid">${CAPABILITIES.map((cap) => `
         <article class="capability-card ${cap.id === "images" ? "selected" : ""}">
           <div class="row"><h2>${cap.title}</h2><span class="capability-badge">${capabilityBadgeLabel(cap)}</span></div>
-          <p>${cap.detail}</p>${cap.id === "text" ? '<button class="btn btn-sm" id="tool-models">Choose text model</button>' : ""}
+          <p>${cap.detail}</p>${cap.id === "text" ? '<button class="btn btn-sm" id="tool-models">Choose text model</button>' : cap.id === "audio" && openSettings ? '<button class="btn btn-sm" id="tool-audio-settings">Configure audio in Settings</button>' : ""}
         </article>`).join("")}</div>
       <div class="image-workspace">
         <section class="image-controls card">
@@ -35,7 +35,7 @@ export function createImageWorkspace({ invoke, getWorkspace, getEndpoint, refres
           <p class="muted">Start AUTOMATIC1111 or Forge with <code>--api</code>, then connect here. Install image models in that server only if you want this tool. Keel does not download them automatically.</p>
           <label for="image-endpoint">Image server</label>
           <div class="row"><input id="image-endpoint" class="input grow mono" value="${escapeHtml(endpoint)}" />
-          <button id="image-connect" class="btn btn-sm" ${state.busy ? "disabled" : ""}>${state.busy ? "Connecting…" : "Connect"}</button></div>
+          <button id="image-connect" class="btn btn-sm" ${state.busy ? "disabled" : ""}>${state.busy ? "Connecting…" : "Connect"}</button>${connected ? `<button id="image-disconnect" class="btn btn-ghost btn-sm" ${state.busy ? "disabled" : ""}>Disconnect</button>` : ""}</div>
           <label for="image-checkpoint">Checkpoint</label>
           <select class="input" id="image-checkpoint"><option value="">Server's current model</option>${state.checkpoints.map((name) => `<option ${name === state.checkpoint ? "selected" : ""} value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("")}</select>
           <label for="image-prompt">Describe your image</label>
@@ -62,6 +62,23 @@ export function createImageWorkspace({ invoke, getWorkspace, getEndpoint, refres
       </div>`;
 
     container.querySelector("#tool-models").onclick = openModels;
+    const audioSettingsBtn = container.querySelector("#tool-audio-settings");
+    if (audioSettingsBtn && openSettings) audioSettingsBtn.onclick = openSettings;
+    const disconnectBtn = container.querySelector("#image-disconnect");
+    if (disconnectBtn) {
+      disconnectBtn.onclick = async () => {
+        state.busy = true;
+        render();
+        try {
+          await invoke("disconnect_image_server");
+          state.checkpoints = [];
+          state.checkpoint = "";
+          await refresh();
+          notice("Image server disconnected.");
+        } catch (error) { notice(String(error)); }
+        finally { state.busy = false; render(); }
+      };
+    }
     for (const [id, key] of [["image-endpoint", "endpoint"], ["image-prompt", "prompt"], ["image-negative", "negative"], ["image-size", "size"], ["image-steps", "steps"], ["image-checkpoint", "checkpoint"]]) {
       container.querySelector(`#${id}`).oninput = (event) => {
         state[key] = event.target.value;

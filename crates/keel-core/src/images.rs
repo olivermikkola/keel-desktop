@@ -307,3 +307,40 @@ pub fn read_workspace_png(root: &Path, relative: &str) -> Result<String> {
     }
     Ok(format!("data:image/png;base64,{}", STANDARD.encode(bytes)))
 }
+
+pub fn read_workspace_image(root: &Path, relative: &str) -> Result<String> {
+    let path = crate::tools::confine_path(root, relative)?;
+    let mut file = std::fs::File::open(&path)?;
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take((MAX_IMAGE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_IMAGE_BYTES {
+        bail!("Preview requires an image under 20 MB");
+    }
+    let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "image/png"
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        "image/jpeg"
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        "image/webp"
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        "image/gif"
+    } else if path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("svg"))
+    {
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|_| anyhow::anyhow!("SVG preview requires valid UTF-8"))?;
+        let trimmed = text.trim_start_matches('\u{feff}').trim_start();
+        if !trimmed.starts_with('<') || !text.to_ascii_lowercase().contains("<svg") {
+            bail!("Preview requires a valid SVG image");
+        }
+        "image/svg+xml"
+    } else {
+        bail!("Preview requires a PNG, JPEG, WebP, GIF, or SVG image under 20 MB");
+    };
+    Ok(format!("data:{mime};base64,{}", STANDARD.encode(bytes)))
+}

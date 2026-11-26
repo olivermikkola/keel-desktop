@@ -1,7 +1,8 @@
 mod support;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use keel_core::images::{
-    local_endpoint, read_workspace_png, ImageJobStatus, ImageRequest, ImageService,
+    local_endpoint, read_workspace_image, read_workspace_png, ImageJobStatus, ImageRequest,
+    ImageService,
 };
 use serde_json::json;
 use std::path::PathBuf;
@@ -152,4 +153,34 @@ fn media_connections_are_explicit_loopback_only() {
     ] {
         assert!(local_endpoint(bad).is_err(), "{bad}");
     }
+}
+
+#[test]
+fn workspace_image_reader_supports_jpeg_webp_gif_svg_and_rejects_non_images() {
+    let root = root();
+    std::fs::write(root.join("photo.jpg"), [0xFF, 0xD8, 0xFF, 0xE0, 0x00]).unwrap();
+    std::fs::write(root.join("pic.webp"), b"RIFF\x04\x00\x00\x00WEBP").unwrap();
+    std::fs::write(root.join("anim.gif"), b"GIF89a\x01\x00").unwrap();
+    std::fs::write(
+        root.join("logo.svg"),
+        b"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>",
+    )
+    .unwrap();
+    std::fs::write(root.join("fake.jpg"), b"not a jpeg").unwrap();
+
+    assert!(read_workspace_image(&root, "photo.jpg")
+        .unwrap()
+        .starts_with("data:image/jpeg;base64,"));
+    assert!(read_workspace_image(&root, "pic.webp")
+        .unwrap()
+        .starts_with("data:image/webp;base64,"));
+    assert!(read_workspace_image(&root, "anim.gif")
+        .unwrap()
+        .starts_with("data:image/gif;base64,"));
+    assert!(read_workspace_image(&root, "logo.svg")
+        .unwrap()
+        .starts_with("data:image/svg+xml;base64,"));
+    assert!(read_workspace_image(&root, "fake.jpg").is_err());
+    assert!(read_workspace_image(&root, "../escape.jpg").is_err());
+    std::fs::remove_dir_all(root).unwrap();
 }

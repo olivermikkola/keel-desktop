@@ -465,3 +465,35 @@ fn csv_queries_treat_quoted_newlines_as_one_record() {
     assert!(result.contains("2 | 30"), "{result}");
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn continue_history_keeps_partial_interrupted_answer_without_footer_or_pure_errors() {
+    let mut session = empty_session();
+    session.messages.push(user("Write a 5-point outline."));
+    session.messages.push(UiMessage {
+        id: "stopped-partial".into(),
+        role: "assistant".into(),
+        content: "1. Introduction\n2. Background\n\nReply stopped. Your partial answer and proposed edits have been kept.".into(),
+        status: "failed".into(),
+        ..user("")
+    });
+    session.messages.push(UiMessage {
+        id: "pure-error".into(),
+        role: "assistant".into(),
+        content: "Connection refused".into(),
+        status: "failed".into(),
+        ..user("")
+    });
+    session.messages.push(UiMessage {
+        id: "continue-turn".into(),
+        ..user("Continue where you left off.")
+    });
+
+    let history = keel_core::context::history(&session, None, 8192);
+    assert_eq!(history.len(), 3);
+    assert_eq!(history[0].role, "user");
+    assert_eq!(history[1].role, "assistant");
+    assert_eq!(history[1].content, "1. Introduction\n2. Background");
+    assert_eq!(history[2].role, "user");
+    assert_eq!(history[2].content, "Continue where you left off.");
+}

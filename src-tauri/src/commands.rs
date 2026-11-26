@@ -1453,8 +1453,14 @@ pub async fn send_message(
         }
         let text = match run_res {
             Ok(Ok(text)) => text,
-            Ok(Err(e)) => return Err(e.to_string()),
+            Ok(Err(e)) => {
+                session.messages.pop();
+                let _ = save_session(&state.data_dir, &session);
+                return Err(e.to_string());
+            }
             Err(_) => {
+                session.messages.pop();
+                let _ = save_session(&state.data_dir, &session);
                 return Err("Stopped external harness run.".to_string());
             }
         };
@@ -2126,6 +2132,14 @@ pub async fn connect_image_server(
 }
 
 #[tauri::command]
+pub async fn disconnect_image_server(state: State<'_, AppState>) -> Result<(), String> {
+    let mut cfg = state.config.lock().await;
+    cfg.image_endpoint = None;
+    save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn list_image_jobs(
     state: State<'_, AppState>,
 ) -> Result<Vec<keel_core::images::ImageJob>, String> {
@@ -2169,6 +2183,15 @@ pub async fn read_workspace_png(
     rel_path: String,
 ) -> Result<String, String> {
     keel_core::images::read_workspace_png(Path::new(&workspace_path), &rel_path)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn read_workspace_image(
+    workspace_path: String,
+    rel_path: String,
+) -> Result<String, String> {
+    keel_core::images::read_workspace_image(Path::new(&workspace_path), &rel_path)
         .map_err(|e| e.to_string())
 }
 

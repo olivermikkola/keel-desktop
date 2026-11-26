@@ -221,3 +221,17 @@ export function pickInitialSession(sessions = [], initialWorkspace = null) {
   }
   return list[0]?.id || null;
 }
+
+export function formatLiveTelemetry({
+  location = "",
+  messageCount = 0,
+  took = "",
+  tokensPerSec = 0,
+  completionTokens = 0,
+} = {}) {
+  const parts = [location, `${Math.max(0, Number(messageCount) || 0)} messages`];
+  if (took) parts.push(took);
+  if (Number(tokensPerSec) > 0) parts.push(`${Number(tokensPerSec).toFixed(1)} tok/s`);
+  if (Number(completionTokens) > 0) parts.push(`${Math.round(Number(completionTokens))} tokens`);
+  return parts.filter(Boolean).join(" · ");
+}
