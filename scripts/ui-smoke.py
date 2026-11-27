@@ -426,6 +426,10 @@ async def main(port):
         await page.locator('#code-patch-undo').click()
         await page.locator('#code-patch-undo').wait_for(state='hidden')
         await page.locator('[data-view=tools]').click()
+        await page.locator('[data-open-preset="study"]').wait_for()
+        apps_hub_text = await page.locator('#view-tools').inner_text()
+        for jargon in ('GGUF', 'Safetensors', 'loopback', 'Ken Burns', 'FFmpeg'):
+            assert jargon not in apps_hub_text, (jargon, apps_hub_text)
         await page.locator('#image-connect').click()
         await page.get_by_text('Image server connected. Choose a checkpoint and output folder.',exact=True).wait_for()
         await page.locator('#image-prompt').fill('A lakeside cabin')

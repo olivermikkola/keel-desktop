@@ -2010,10 +2010,19 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .eyebrow { color: var(--accent); font-size: 10px; letter-spacing: .16em; font-weight: 700; }
 .hub-heading h1 { font-size: 32px; letter-spacing: -.04em; margin: 10px 0; }
 .hub-heading p, .capability-card p { color: var(--muted); font-size: 13px; line-height: 1.6; }
-.capability-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 28px; }
-.capability-card { border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+.capability-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 24px; }
+.apps-section-head { margin: 8px 0 12px; }
+.apps-section-head h2 { font-size: 16px; margin: 0 0 2px; }
+.apps-section-head p { margin: 0; font-size: 13px; }
+.apps-preset-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-bottom: 28px; }
+.capability-card { border: 1px solid var(--border); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
 .capability-card.selected { border-color: var(--accent); }
-.capability-card h2, .image-workspace h2 { font-size: 15px; margin: 0; }
+.capability-card h2, .capability-card h3, .image-workspace h2 { font-size: 15px; margin: 0; }
+.capability-card .app-example { font-size: 12px; margin: 0; }
+.capability-card button { align-self: flex-start; margin-top: auto; }
+.advanced-disclosure { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+.advanced-disclosure summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text); }
+.advanced-disclosure-body { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
 .capability-badge { font-size: 10px; color: var(--accent); border: 1px solid var(--border); padding: 4px 7px; border-radius: 20px; white-space: nowrap; }
 .capability-card .row { justify-content: space-between; }
 .image-workspace { display: grid; grid-template-columns: minmax(280px, 360px) minmax(0, 1fr); align-items: start; gap: 24px; }
@@ -2029,7 +2038,7 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .image-empty { min-height: 260px; border: 1px dashed var(--border); border-radius: 12px; padding: 32px; display: flex; flex-direction: column; justify-content: center; text-align: center; }
 .global-notice { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); max-width: 580px; z-index: 100; background: var(--surface); color: var(--text); border: 1px solid var(--accent); border-radius: 12px; padding: 14px 20px; font-size: 13px; box-shadow: 0 12px 40px #0005; }
 .recent-mode { font-size: 9px; color: var(--muted); min-width: 27px; }
-@media (max-width: 1100px) { .capability-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .tools-workspace { padding: 24px; } }
+@media (max-width: 1100px) { .capability-grid, .apps-preset-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .tools-workspace { padding: 24px; } }
 @media (max-width: 760px) { .image-workspace { grid-template-columns: 1fr; } }
 
 /* Arena offline compare — host chrome; Arena HTML loads in the iframe. */

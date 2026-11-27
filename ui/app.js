@@ -139,6 +139,7 @@ const images = createImageWorkspace({
   invoke,
   getWorkspace: () => appState.workspacePath,
   getWorkspaceFiles: () => appState.workspaceFiles,
+  getPresets: () => appState.bootstrap?.presets || [],
   getEndpoint: () => appState.bootstrap?.config.image_endpoint,
   getSdConfig: () => ({
     sd_cli_path: appState.bootstrap?.config.sd_cli_path,
@@ -147,6 +148,7 @@ const images = createImageWorkspace({
   refresh: refreshBootstrap,
   selectFolder: () => els.workspacePillBtn.click(),
   openModels: () => setActiveView("models"),
+  openPreset: (presetId) => createNewSession(presetId),
   openSettings: () => openCustomizeModal(),
   notice: showToast,
 });

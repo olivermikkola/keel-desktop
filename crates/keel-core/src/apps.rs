@@ -44,11 +44,11 @@ impl AppPreset {
             AppPreset::Chat => "Chat",
             AppPreset::General => "Work",
             AppPreset::Code => "Code",
-            AppPreset::Websites => "Websites",
-            AppPreset::Sheets => "Sheets",
-            AppPreset::Docs => "Docs",
-            AppPreset::Study => "Study",
-            AppPreset::Slides => "Slides",
+            AppPreset::Websites => "Web Pages",
+            AppPreset::Sheets => "Spreadsheets",
+            AppPreset::Docs => "Documents",
+            AppPreset::Study => "Flashcards & Quizzes",
+            AppPreset::Slides => "Presentations",
         }
     }
 
@@ -59,11 +59,15 @@ impl AppPreset {
             AppPreset::Code => {
                 "Explore a repository, make changes, and run checks with your approval"
             }
-            AppPreset::Websites => "Build a web page and preview it live",
-            AppPreset::Sheets => "Query CSV tables with SQL or build spreadsheets",
-            AppPreset::Docs => "Write and revise Markdown documents",
-            AppPreset::Study => "Generate flashcards and quizzes from notes",
-            AppPreset::Slides => "Build an HTML slide deck and export to PDF",
+            AppPreset::Websites => "Build a simple web page and preview it right here",
+            AppPreset::Sheets => {
+                "Ask questions about a spreadsheet or build a budget, tracker, or table"
+            }
+            AppPreset::Docs => "Write, organize, and revise letters, reports, and notes",
+            AppPreset::Study => "Turn notes or documents into flashcards and practice quizzes",
+            AppPreset::Slides => {
+                "Create a slide presentation you can click through and save as a PDF"
+            }
         }
     }
 
@@ -77,7 +81,7 @@ impl AppPreset {
             ],
             AppPreset::General => &[
                 "What are the key dates and budget in these documents? Cite the source filenames and lines.",
-                "Use SQL to calculate the total value of the CSV orders and draft a short Markdown brief with the result.",
+                "Calculate the total value of the orders in my spreadsheet and write a short summary.",
             ],
             AppPreset::Code => &[
                 "Explore this workspace and summarize how it is structured",
@@ -91,23 +95,23 @@ impl AppPreset {
             ],
             AppPreset::Sheets => &[
                 "Make a monthly budget table with rent, food, transport, and savings",
-                "Which row in my CSV has the highest total?",
-                "Summarize my CSV data by category",
+                "Which row in my spreadsheet has the highest total?",
+                "Summarize my spreadsheet data by category",
             ],
             AppPreset::Docs => &[
-                "Write a one-page project brief in Markdown",
+                "Write a one-page project brief",
                 "Turn my notes into a structured report",
-                "Write a clear README for this folder",
+                "Write a clear summary document for this folder",
             ],
             AppPreset::Study => &[
-                "Make flashcards from the notes in this workspace",
+                "Make flashcards from the notes in this folder",
                 "Quiz me with 5 multiple-choice questions about the solar system",
                 "Make 10 flashcards of Finnish phrases for traveling",
             ],
             AppPreset::Slides => &[
                 "Make a 5-slide pitch deck for a neighborhood bakery",
                 "Turn my notes into a 6-slide presentation",
-                "Make a short slide deck explaining how local LLMs work",
+                "Make a short slide deck explaining how solar panels work",
             ],
         }
     }
