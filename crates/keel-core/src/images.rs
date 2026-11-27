@@ -1,5 +1,6 @@
-//! Optional local image generation via the AUTOMATIC1111 / Forge API.
-//! Keel owns its job and artifact records; the user owns the image server and weights.
+//! Optional local image generation via AUTOMATIC1111 / Forge API or direct
+//! `stable-diffusion.cpp` (`sd-cli`, MIT, Vulkan/Metal/CUDA/CPU) local binary.
+//! Keel owns its job and artifact records; the user owns the image engine and weights.
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
@@ -13,12 +14,98 @@ use tokio::task::AbortHandle;
 
 const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 
+/// Which local engine produces images. Never a silent cloud fallback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageBackendKind {
+    /// Loopback AUTOMATIC1111 / Forge HTTP API (`http://127.0.0.1:7860`).
+    #[default]
+    Server,
+    /// Direct `leejet/stable-diffusion.cpp` CLI (`sd-cli`, MIT, Vulkan/Metal/CUDA/CPU).
+    StableDiffusionCpp,
+}
+
+/// Optional visual style presets ported from Keel Mobile (`ImageRequest.Style`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageStyle {
+    Photo,
+    Illustration,
+    Animation,
+    Sketch,
+}
+
+impl ImageStyle {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "photo" => Some(Self::Photo),
+            "illustration" => Some(Self::Illustration),
+            "animation" => Some(Self::Animation),
+            "sketch" => Some(Self::Sketch),
+            _ => None,
+        }
+    }
+
+    /// Suffix added cleanly to the user prompt when a Mobile-parity style preset is chosen.
+    pub fn prompt_suffix(self) -> &'static str {
+        match self {
+            Self::Photo => "natural lighting, realistic photograph, crisp focus, high detail",
+            Self::Illustration => {
+                "clean editorial illustration, rich texture, balanced composition"
+            }
+            Self::Animation => {
+                "stylized animated film still, expressive lighting, clean cel shading"
+            }
+            Self::Sketch => "hand-drawn pencil and ink sketch on warm paper, fine linework",
+        }
+    }
+
+    pub fn default_negative(self) -> &'static str {
+        "blurry, deformed, bad anatomy, low quality, watermark, garbled text"
+    }
+}
+
+/// Enrich prompt & negative prompt when an optional style preset is selected.
+pub fn apply_style_prompts(
+    prompt: &str,
+    negative: &str,
+    style: Option<ImageStyle>,
+) -> (String, String) {
+    let p = prompt.trim();
+    let n = negative.trim();
+    match style {
+        None => (p.to_string(), n.to_string()),
+        Some(st) => {
+            let styled_prompt = format!("{p}, {}", st.prompt_suffix());
+            let styled_neg = if n.is_empty() {
+                st.default_negative().to_string()
+            } else {
+                n.to_string()
+            };
+            (styled_prompt, styled_neg)
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageRequest {
+    #[serde(default)]
+    pub backend: ImageBackendKind,
+    #[serde(default)]
     pub endpoint: String,
     pub prompt: String,
+    #[serde(default)]
     pub negative_prompt: String,
+    #[serde(default)]
     pub checkpoint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<ImageStyle>,
+    /// Local `sd-cli` executable path when `backend == StableDiffusionCpp`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sd_cli_path: Option<String>,
+    /// Local `.gguf` or `.safetensors` diffusion checkpoint when `backend == StableDiffusionCpp`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_path: Option<String>,
     pub width: u32,
     pub height: u32,
     pub steps: u32,
@@ -26,7 +113,34 @@ pub struct ImageRequest {
 
 impl ImageRequest {
     fn validate(&self) -> Result<()> {
-        local_endpoint(&self.endpoint)?;
+        match self.backend {
+            ImageBackendKind::Server => {
+                local_endpoint(&self.endpoint)?;
+            }
+            ImageBackendKind::StableDiffusionCpp => {
+                let cli = self
+                    .sd_cli_path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .context("Configure a local sd-cli binary path first")?;
+                let cli_path = Path::new(cli);
+                let looks_like_path =
+                    cli_path.is_absolute() || cli.contains('/') || cli.contains('\\');
+                if looks_like_path && !cli_path.is_file() {
+                    bail!("sd-cli binary '{}' was not found on this computer.", cli);
+                }
+                let model = self
+                    .model_path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .context("Choose a local .gguf or .safetensors image model file first")?;
+                if !Path::new(model).is_file() {
+                    bail!("Image model '{}' does not exist on this computer.", model);
+                }
+            }
+        }
         if self.prompt.trim().is_empty() || self.prompt.len() > 8000 {
             bail!("Write an image prompt (up to 8000 bytes)");
         }
@@ -42,6 +156,105 @@ impl ImageRequest {
         }
         Ok(())
     }
+}
+
+/// Detected local open-source media binaries on this machine (no downloads).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LocalMediaTools {
+    pub audio_cpp: Option<String>,
+    pub sd_cli: Option<String>,
+    pub ffmpeg: Option<String>,
+    pub whisper_cli: Option<String>,
+    pub piper: Option<String>,
+}
+
+fn find_on_path(names: &[&str]) -> Option<String> {
+    let paths = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&paths) {
+        for name in names {
+            let cand = dir.join(name);
+            if cand.is_file() {
+                return Some(cand.to_string_lossy().into_owned());
+            }
+        }
+    }
+    None
+}
+
+/// Detect an installed `sd-cli` (stable-diffusion.cpp) binary on PATH or `~/.local/share/stable-diffusion.cpp/`.
+pub fn detect_sd_cli_binary() -> Option<String> {
+    let names: &[&str] = if cfg!(windows) {
+        &["sd-cli.exe", "sd.exe"]
+    } else {
+        &["sd-cli", "sd"]
+    };
+    if let Some(found) = find_on_path(names) {
+        return Some(found);
+    }
+    if let Some(home) = dirs::home_dir() {
+        let base = home
+            .join(".local")
+            .join("share")
+            .join("stable-diffusion.cpp");
+        for name in names {
+            let cand = base.join(name);
+            if cand.is_file() {
+                return Some(cand.to_string_lossy().into_owned());
+            }
+        }
+    }
+    None
+}
+
+/// Detect locally installed MIT/Apache-2.0 media binaries on this computer.
+pub fn detect_local_media_tools() -> LocalMediaTools {
+    let ffmpeg_names: &[&str] = if cfg!(windows) {
+        &["ffmpeg.exe"]
+    } else {
+        &["ffmpeg"]
+    };
+    let whisper_names: &[&str] = if cfg!(windows) {
+        &["whisper-cli.exe", "whisper-cpp.exe"]
+    } else {
+        &["whisper-cli", "whisper-cpp"]
+    };
+    let piper_names: &[&str] = if cfg!(windows) {
+        &["piper.exe"]
+    } else {
+        &["piper"]
+    };
+    LocalMediaTools {
+        audio_cpp: crate::audio::detect_audio_cpp_binary(),
+        sd_cli: detect_sd_cli_binary(),
+        ffmpeg: find_on_path(ffmpeg_names),
+        whisper_cli: find_on_path(whisper_names),
+        piper: find_on_path(piper_names),
+    }
+}
+
+/// Build CLI argv for `stable-diffusion.cpp` (`sd-cli`).
+pub fn sd_cpp_argv(request: &ImageRequest, model: &str, out_png: &Path) -> Vec<String> {
+    let (prompt, negative) =
+        apply_style_prompts(&request.prompt, &request.negative_prompt, request.style);
+    let mut argv = vec![
+        "-m".into(),
+        model.to_string(),
+        "-p".into(),
+        prompt,
+        "-W".into(),
+        request.width.to_string(),
+        "-H".into(),
+        request.height.to_string(),
+        "--steps".into(),
+        request.steps.to_string(),
+        "-o".into(),
+        out_png.to_string_lossy().into_owned(),
+    ];
+    if !negative.is_empty() {
+        argv.push("-n".into());
+        argv.push(negative);
+    }
+    argv
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -249,8 +462,17 @@ pub async fn probe_checkpoints(endpoint: &str) -> Result<Vec<String>> {
 }
 
 async fn generate_png(request: &ImageRequest) -> Result<Vec<u8>> {
+    match request.backend {
+        ImageBackendKind::Server => generate_png_server(request).await,
+        ImageBackendKind::StableDiffusionCpp => generate_png_sd_cpp(request).await,
+    }
+}
+
+async fn generate_png_server(request: &ImageRequest) -> Result<Vec<u8>> {
     let endpoint = local_endpoint(&request.endpoint)?;
-    let mut body = json!({ "prompt": request.prompt, "negative_prompt": request.negative_prompt,
+    let (prompt, negative) =
+        apply_style_prompts(&request.prompt, &request.negative_prompt, request.style);
+    let mut body = json!({ "prompt": prompt, "negative_prompt": negative,
         "width": request.width, "height": request.height, "steps": request.steps,
         "batch_size": 1, "n_iter": 1, "seed": -1, "send_images": true, "save_images": false });
     if !request.checkpoint.is_empty() {
@@ -278,6 +500,79 @@ async fn generate_png(request: &ImageRequest) -> Result<Vec<u8>> {
         bail!("Expected a PNG image under 20 MB; configure the server's output format to PNG");
     }
     Ok(bytes)
+}
+
+async fn generate_png_sd_cpp(request: &ImageRequest) -> Result<Vec<u8>> {
+    let cli = request
+        .sd_cli_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .context("No sd-cli binary configured")?
+        .to_string();
+    let model = request
+        .model_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .context("No image model file configured")?
+        .to_string();
+    let out_dir = std::env::temp_dir().join(format!("keel_sd_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&out_dir)?;
+    let out_png = out_dir.join("out.png");
+    let argv = sd_cpp_argv(request, &model, &out_png);
+    let run_res = tokio::process::Command::new(&cli)
+        .args(&argv)
+        .kill_on_drop(true)
+        .output()
+        .await
+        .with_context(|| format!("Failed to launch sd-cli '{cli}'"));
+    let output = match run_res {
+        Ok(o) => o,
+        Err(err) => {
+            let _ = std::fs::remove_dir_all(&out_dir);
+            return Err(err);
+        }
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let _ = std::fs::remove_dir_all(&out_dir);
+        bail!(
+            "sd-cli exited with {}: {} {}",
+            output.status,
+            stderr.trim(),
+            stdout.trim()
+        );
+    }
+    let bytes = std::fs::read(&out_png).context("sd-cli finished without creating output PNG");
+    let _ = std::fs::remove_dir_all(&out_dir);
+    let bytes = bytes?;
+    if bytes.len() > MAX_IMAGE_BYTES || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        bail!("sd-cli produced invalid or oversized PNG output");
+    }
+    Ok(bytes)
+}
+
+/// Generate a PNG via the configured backend and write it safely to a workspace-relative `.png` path.
+pub async fn generate_workspace_image(
+    workspace: &Path,
+    relative_path: &str,
+    request: &ImageRequest,
+) -> Result<String> {
+    request.validate()?;
+    let root = crate::tools::validate_workspace_root(workspace)?;
+    let clean_rel = relative_path.trim();
+    if !clean_rel.to_ascii_lowercase().ends_with(".png") {
+        bail!("Image output path must end with .png (for example assets/hero.png)");
+    }
+    let target = crate::tools::confine_path(&root, clean_rel)?;
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let bytes = generate_png(request).await?;
+    std::fs::write(&target, &bytes)?;
+    Ok(clean_rel.to_string())
 }
 
 fn save_artifact(root: &Path, id: &str, bytes: &[u8]) -> Result<String> {
