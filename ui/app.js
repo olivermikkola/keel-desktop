@@ -139,6 +139,10 @@ const images = createImageWorkspace({
   invoke,
   getWorkspace: () => appState.workspacePath,
   getEndpoint: () => appState.bootstrap?.config.image_endpoint,
+  getSdConfig: () => ({
+    sd_cli_path: appState.bootstrap?.config.sd_cli_path,
+    sd_model_path: appState.bootstrap?.config.sd_model_path,
+  }),
   refresh: refreshBootstrap,
   selectFolder: () => els.workspacePillBtn.click(),
   openModels: () => setActiveView("models"),
@@ -3322,9 +3326,9 @@ function openCustomizeModal() {
                   <button type="button" class="btn btn-sm btn-ghost" data-audio-runner="${id}">Register runner…</button>
                   ${
                     pack.capability === "stt"
-                      ? `<button type="button" class="btn btn-sm btn-ghost" data-audio-whisper="${id}">Whisper.cpp…</button>`
+                      ? `<button type="button" class="btn btn-sm btn-ghost" data-audio-whisper="${id}">Whisper.cpp…</button><button type="button" class="btn btn-sm btn-ghost" data-audio-cpp="${id}">audio.cpp…</button>`
                       : pack.capability === "tts"
-                        ? `<button type="button" class="btn btn-sm btn-ghost" data-audio-piper="${id}">Piper…</button>`
+                        ? `<button type="button" class="btn btn-sm btn-ghost" data-audio-piper="${id}">Piper…</button><button type="button" class="btn btn-sm btn-ghost" data-audio-cpp="${id}">audio.cpp…</button>`
                         : ""
                   }
                 </div>
@@ -3445,6 +3449,61 @@ function openCustomizeModal() {
                 model: trimmedModel,
               });
               showToast("Piper runner registered.");
+              await renderAudioPacks();
+            } catch (err) {
+              showToast(friendlyRuntimeError(err));
+              btn.disabled = false;
+            }
+          });
+        });
+        slot.querySelectorAll("[data-audio-cpp]").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const packId = btn.getAttribute("data-audio-cpp");
+            let detectedCmd = "audiocpp_cli";
+            try {
+              const tools = await invoke("detect_local_media_tools");
+              if (tools?.audio_cpp) detectedCmd = tools.audio_cpp;
+            } catch { /* fallback to PATH name */ }
+            const command = window.prompt(
+              "audio.cpp CLI binary (Vulkan/Metal/CPU GGUF engine, e.g. audiocpp_cli).\nSupports VoxCPM2, Qwen3-TTS, and Whisper GGUF models.",
+              detectedCmd,
+            );
+            if (command == null) return;
+            const trimmedCmd = command.trim();
+            if (!trimmedCmd) {
+              showToast("Provide an audio.cpp binary path.");
+              return;
+            }
+            const model = window.prompt(
+              "Path to a local GGUF model (e.g. ~/Models/audio/voxcpm2-q8_0.gguf or qwen3-tts-12hz-1.7b-customvoice-q8_0.gguf).",
+              "",
+            );
+            if (model == null) return;
+            const trimmedModel = model.trim();
+            if (!trimmedModel) {
+              showToast("Provide a GGUF model path for audio.cpp.");
+              return;
+            }
+            const lowerModel = trimmedModel.toLowerCase();
+            const family = lowerModel.includes("voxcpm")
+              ? "voxcpm2"
+              : lowerModel.includes("qwen")
+                ? "qwen3_tts"
+                : lowerModel.includes("whisper")
+                  ? "whisper"
+                  : packId.startsWith("stt-")
+                    ? "whisper"
+                    : "voxcpm2";
+            btn.disabled = true;
+            try {
+              await invoke("register_audio_cpp_runner", {
+                packId,
+                command: trimmedCmd,
+                model: trimmedModel,
+                family,
+                backend: "best",
+              });
+              showToast("audio.cpp runner registered.");
               await renderAudioPacks();
             } catch (err) {
               showToast(friendlyRuntimeError(err));

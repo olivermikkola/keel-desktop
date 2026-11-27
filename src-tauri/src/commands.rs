@@ -2231,13 +2231,36 @@ pub async fn start_image_job(
     workspace_path: String,
     mut request: keel_core::images::ImageRequest,
 ) -> Result<keel_core::images::ImageJob, String> {
-    request.endpoint = state
-        .config
-        .lock()
-        .await
-        .image_endpoint
-        .clone()
-        .ok_or("Connect an image server first")?;
+    {
+        let cfg = state.config.lock().await;
+        match request.backend {
+            keel_core::images::ImageBackendKind::Server => {
+                request.endpoint = cfg
+                    .image_endpoint
+                    .clone()
+                    .ok_or("Connect an image server first")?;
+            }
+            keel_core::images::ImageBackendKind::StableDiffusionCpp => {
+                if request
+                    .sd_cli_path
+                    .as_deref()
+                    .is_none_or(|s| s.trim().is_empty())
+                {
+                    request.sd_cli_path = cfg
+                        .sd_cli_path
+                        .clone()
+                        .or_else(keel_core::images::detect_sd_cli_binary);
+                }
+                if request
+                    .model_path
+                    .as_deref()
+                    .is_none_or(|s| s.trim().is_empty())
+                {
+                    request.model_path = cfg.sd_model_path.clone();
+                }
+            }
+        }
+    }
     state
         .images
         .start(Path::new(&workspace_path), request, move |job| {
@@ -2245,6 +2268,47 @@ pub async fn start_image_job(
         })
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn configure_sd_cli_images(
+    state: State<'_, AppState>,
+    sd_cli_path: String,
+    model_path: String,
+) -> Result<(), String> {
+    let cli = sd_cli_path.trim().to_string();
+    let model = model_path.trim().to_string();
+    if cli.is_empty() {
+        return Err("Provide an sd-cli binary path or PATH name.".to_string());
+    }
+    let cli_p = Path::new(&cli);
+    if (cli_p.is_absolute() || cli.contains('/') || cli.contains('\\')) && !cli_p.is_file() {
+        return Err(format!("sd-cli binary '{cli}' was not found."));
+    }
+    if model.is_empty() || !Path::new(&model).is_file() {
+        return Err(format!(
+            "Image model '{model}' was not found on this computer."
+        ));
+    }
+    let mut cfg = state.config.lock().await;
+    cfg.sd_cli_path = Some(cli);
+    cfg.sd_model_path = Some(model);
+    save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn clear_sd_cli_images(state: State<'_, AppState>) -> Result<(), String> {
+    let mut cfg = state.config.lock().await;
+    cfg.sd_cli_path = None;
+    cfg.sd_model_path = None;
+    save_config(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn detect_local_media_tools() -> Result<keel_core::images::LocalMediaTools, String> {
+    Ok(keel_core::images::detect_local_media_tools())
 }
 
 #[tauri::command]
@@ -2565,6 +2629,31 @@ pub async fn register_piper_runner(
     tokio::task::spawn_blocking(move || {
         audio::register_piper_runner(&data_dir, &pack_id, &command, &model, &extra)
             .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Register a `0xShug0/audio.cpp` runner (VoxCPM2 / Qwen3-TTS / Ming-3.0 / Whisper) and mark installed.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn register_audio_cpp_runner(
+    state: State<'_, AppState>,
+    pack_id: String,
+    command: String,
+    model: String,
+    family: String,
+    backend: Option<String>,
+    args: Option<Vec<String>>,
+) -> Result<AudioPackManifest, String> {
+    let data_dir = state.data_dir.clone();
+    let extra = args.unwrap_or_default();
+    let backend = backend.unwrap_or_else(|| "best".to_string());
+    tokio::task::spawn_blocking(move || {
+        audio::register_audio_cpp_runner(
+            &data_dir, &pack_id, &command, &model, &family, &backend, &extra,
+        )
+        .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?

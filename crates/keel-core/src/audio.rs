@@ -193,6 +193,8 @@ pub enum AudioSttAdapterKind {
     WhisperCpp,
     /// Piper TTS CLI (TTS packs only): stdin text + `--model` / `-f`.
     Piper,
+    /// 0xShug0/audio.cpp CLI (TTS & STT; Vulkan/Metal/CUDA/CPU GGUF models such as VoxCPM2, Qwen3-TTS, Ming-3.0).
+    AudioCpp,
 }
 
 impl AudioSttAdapterKind {
@@ -201,6 +203,7 @@ impl AudioSttAdapterKind {
             Self::Local => "local",
             Self::WhisperCpp => "whisper_cpp",
             Self::Piper => "piper",
+            Self::AudioCpp => "audio_cpp",
         }
     }
 
@@ -209,8 +212,9 @@ impl AudioSttAdapterKind {
             "" | "local" | "command" | "generic" => Ok(Self::Local),
             "whisper_cpp" | "whisper-cpp" | "whisper" => Ok(Self::WhisperCpp),
             "piper" => Ok(Self::Piper),
+            "audio_cpp" | "audio-cpp" | "audiocpp" => Ok(Self::AudioCpp),
             other => {
-                bail!("Unknown runner adapter '{other}'. Use 'local', 'whisper_cpp', or 'piper'.")
+                bail!("Unknown runner adapter '{other}'. Use 'local', 'whisper_cpp', 'piper', or 'audio_cpp'.")
             }
         }
     }
@@ -225,6 +229,8 @@ pub enum AudioTtsAdapterKind {
     Local,
     /// Piper CLI: text on stdin, `command …args… --model <model> -f <path>`.
     Piper,
+    /// 0xShug0/audio.cpp CLI: `command --model <gguf> …args… --text <text> --out <path>`.
+    AudioCpp,
 }
 
 impl AudioTtsAdapterKind {
@@ -232,6 +238,7 @@ impl AudioTtsAdapterKind {
         match self {
             Self::Local => "local",
             Self::Piper => "piper",
+            Self::AudioCpp => "audio_cpp",
         }
     }
 
@@ -239,22 +246,22 @@ impl AudioTtsAdapterKind {
         match raw.trim().to_ascii_lowercase().as_str() {
             "" | "local" | "command" | "generic" => Ok(Self::Local),
             "piper" => Ok(Self::Piper),
-            other => bail!(
-                "Unknown TTS adapter '{other}'. Use 'local' (command … --text <text> --output <path>) or 'piper' (stdin text; --model / -f)."
-            ),
+            "audio_cpp" | "audio-cpp" | "audiocpp" => Ok(Self::AudioCpp),
+            other => bail!("Unknown TTS adapter '{other}'. Use 'local', 'piper', or 'audio_cpp'."),
         }
     }
 
     /// Map the shared `runner.json` `adapter` field into a TTS kind.
     ///
     /// `runner.json` reuses the same `adapter` key as STT ([`AudioSttAdapterKind`]).
-    /// TTS accepts `local` and `piper`; STT-only kinds such as `whisper_cpp` fail honestly.
+    /// TTS accepts `local`, `piper`, and `audio_cpp`; STT-only kinds such as `whisper_cpp` fail honestly.
     pub fn from_runner_adapter(kind: AudioSttAdapterKind) -> Result<Self> {
         match kind {
             AudioSttAdapterKind::Local => Ok(Self::Local),
             AudioSttAdapterKind::Piper => Ok(Self::Piper),
+            AudioSttAdapterKind::AudioCpp => Ok(Self::AudioCpp),
             AudioSttAdapterKind::WhisperCpp => bail!(
-                "TTS runner adapter 'whisper_cpp' is not supported. Use 'local' (command … --text <text> --output <path>) or 'piper' (stdin text; --model / -f)."
+                "TTS runner adapter 'whisper_cpp' is not supported. Use 'local', 'piper', or 'audio_cpp'."
             ),
         }
     }
@@ -926,6 +933,99 @@ pub fn register_piper_runner(
     )
 }
 
+/// Register a `0xShug0/audio.cpp` runner (`adapter: audio_cpp`) for TTS or STT packs.
+///
+/// Works with local Vulkan/Metal/CUDA/CPU GGUF audio models such as VoxCPM2, Qwen3-TTS,
+/// Ming-3.0-tts, Chatterbox, Kokoro, or Whisper ASR without Python dependencies.
+#[allow(clippy::too_many_arguments)]
+pub fn register_audio_cpp_runner(
+    data_dir: &Path,
+    pack_id: &str,
+    command: &str,
+    model: &str,
+    family: &str,
+    backend: &str,
+    extra_args: &[String],
+) -> Result<AudioPackManifest> {
+    let pack = ensure_catalog_pack(pack_id)?;
+    let command = command.trim();
+    if command.is_empty() {
+        bail!("Provide an audio.cpp binary path or PATH name (for example audiocpp_cli).");
+    }
+    let model = model.trim();
+    if model.is_empty() || !Path::new(model).is_file() {
+        bail!(
+            "audio.cpp model '{}' does not exist on this computer.",
+            model
+        );
+    }
+    let cmd_path = Path::new(command);
+    let looks_like_path = cmd_path.is_absolute() || command.contains('/') || command.contains('\\');
+    if looks_like_path && !cmd_path.exists() {
+        bail!(
+            "audio.cpp binary '{}' does not exist. Pick a binary on this machine.",
+            command
+        );
+    }
+
+    let mut args = Vec::new();
+    let fam = family.trim();
+    if !fam.is_empty() {
+        args.push("--family".to_string());
+        args.push(fam.to_string());
+    }
+    let bkd = backend.trim();
+    if !bkd.is_empty() {
+        args.push("--backend".to_string());
+        args.push(bkd.to_string());
+    }
+    args.extend(extra_args.iter().cloned());
+
+    write_runner_and_mark(
+        data_dir,
+        pack_id,
+        &pack,
+        AudioRunnerConfig {
+            command: command.to_string(),
+            args,
+            adapter: AudioSttAdapterKind::AudioCpp,
+            model: Some(model.to_string()),
+        },
+        "audio_cpp_runner\n",
+        AudioInstallMeta::LocalRunner {
+            command: command.to_string(),
+        },
+    )
+}
+
+/// Detect an installed `audiocpp_cli` binary on PATH or `~/.local/share/audio.cpp/`.
+pub fn detect_audio_cpp_binary() -> Option<String> {
+    let exe_name = if cfg!(windows) {
+        "audiocpp_cli.exe"
+    } else {
+        "audiocpp_cli"
+    };
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            let cand = dir.join(exe_name);
+            if cand.is_file() {
+                return Some(cand.to_string_lossy().into_owned());
+            }
+        }
+    }
+    if let Some(home) = dirs::home_dir() {
+        let local_share = home
+            .join(".local")
+            .join("share")
+            .join("audio.cpp")
+            .join(exe_name);
+        if local_share.is_file() {
+            return Some(local_share.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
 fn write_runner_and_mark(
     data_dir: &Path,
     pack_id: &str,
@@ -1324,13 +1424,70 @@ impl SttAdapter for WhisperCppSttAdapter {
     }
 }
 
+fn has_flag(args: &[String], flag: &str) -> bool {
+    args.iter().any(|a| a == flag)
+}
+
+/// Build `audio.cpp` STT CLI args (`--task asr --model <gguf> … --audio <path>`).
+pub fn audio_cpp_stt_argv(
+    config: &AudioRunnerConfig,
+    audio_path: &Path,
+    model: &str,
+) -> Vec<String> {
+    let mut argv = Vec::new();
+    if !has_flag(&config.args, "--task") {
+        argv.push("--task".into());
+        argv.push("asr".into());
+    }
+    if !has_flag(&config.args, "--backend") {
+        argv.push("--backend".into());
+        argv.push("best".into());
+    }
+    argv.extend(config.args.iter().cloned());
+    argv.push("--model".into());
+    argv.push(model.to_string());
+    argv.push("--audio".into());
+    argv.push(audio_path.to_string_lossy().into_owned());
+    argv
+}
+
+/// `0xShug0/audio.cpp` STT adapter.
+pub struct AudioCppSttAdapter {
+    pub config: AudioRunnerConfig,
+}
+
+impl SttAdapter for AudioCppSttAdapter {
+    fn transcribe(&self, audio_path: &Path) -> Result<String> {
+        let model = self
+            .config
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .context("audio.cpp STT runner has no model path configured in runner.json.")?
+            .to_string();
+        if !Path::new(&model).is_file() {
+            bail!("audio.cpp model '{}' is not a file.", model);
+        }
+        let argv = audio_cpp_stt_argv(&self.config, audio_path, &model);
+        let launch = AudioRunnerConfig {
+            command: self.config.command.clone(),
+            args: argv,
+            adapter: AudioSttAdapterKind::AudioCpp,
+            model: Some(model),
+        };
+        run_local_command(&launch, &[])
+    }
+}
+
 /// Pick an [`SttAdapter`] implementation from `runner.json`.
 pub fn stt_adapter_from_runner(config: AudioRunnerConfig) -> Result<Box<dyn SttAdapter>> {
     match config.adapter {
         AudioSttAdapterKind::Local => Ok(Box::new(LocalCommandSttAdapter { config })),
         AudioSttAdapterKind::WhisperCpp => Ok(Box::new(WhisperCppSttAdapter { config })),
+        AudioSttAdapterKind::AudioCpp => Ok(Box::new(AudioCppSttAdapter { config })),
         AudioSttAdapterKind::Piper => bail!(
-            "STT runner adapter 'piper' is not supported. Use 'local' or 'whisper_cpp'. Piper is a TTS engine."
+            "STT runner adapter 'piper' is not supported. Use 'local', 'whisper_cpp', or 'audio_cpp'. Piper is a TTS engine."
         ),
     }
 }
@@ -1445,11 +1602,73 @@ impl TtsAdapter for PiperTtsAdapter {
     }
 }
 
+/// Build `audio.cpp` TTS CLI args (`--task tts|vdes --model <gguf> … --text <text> --out <wav>`).
+pub fn audio_cpp_tts_argv(
+    config: &AudioRunnerConfig,
+    model: &str,
+    text: &str,
+    output_path: &Path,
+) -> Vec<String> {
+    let mut argv = Vec::new();
+    if !has_flag(&config.args, "--task") {
+        let is_vdes = config
+            .args
+            .windows(2)
+            .any(|w| w[0] == "--family" && w[1].eq_ignore_ascii_case("voxcpm2"))
+            && has_flag(&config.args, "--instruct");
+        argv.push("--task".into());
+        argv.push(if is_vdes { "vdes" } else { "tts" }.into());
+    }
+    if !has_flag(&config.args, "--backend") {
+        argv.push("--backend".into());
+        argv.push("best".into());
+    }
+    argv.extend(config.args.iter().cloned());
+    argv.push("--model".into());
+    argv.push(model.to_string());
+    argv.push("--text".into());
+    argv.push(text.to_string());
+    argv.push("--out".into());
+    argv.push(output_path.to_string_lossy().into_owned());
+    argv
+}
+
+/// `0xShug0/audio.cpp` TTS adapter (VoxCPM2, Qwen3-TTS, Ming-3.0-tts, Chatterbox, Kokoro).
+pub struct AudioCppTtsAdapter {
+    pub config: AudioRunnerConfig,
+}
+
+impl TtsAdapter for AudioCppTtsAdapter {
+    fn synthesize(&self, text: &str, output_path: &Path) -> Result<()> {
+        let model = self
+            .config
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .context("audio.cpp TTS runner has no model path configured in runner.json.")?
+            .to_string();
+        if !Path::new(&model).is_file() {
+            bail!("audio.cpp model '{}' is not a file.", model);
+        }
+        let argv = audio_cpp_tts_argv(&self.config, &model, text, output_path);
+        let launch = AudioRunnerConfig {
+            command: self.config.command.clone(),
+            args: argv,
+            adapter: AudioSttAdapterKind::AudioCpp,
+            model: Some(model),
+        };
+        let _ = run_local_command(&launch, &[])?;
+        Ok(())
+    }
+}
+
 /// Pick a [`TtsAdapter`] from `runner.json`, rejecting STT-only adapter kinds.
 pub fn tts_adapter_from_runner(config: AudioRunnerConfig) -> Result<Box<dyn TtsAdapter>> {
     match AudioTtsAdapterKind::from_runner_adapter(config.adapter)? {
         AudioTtsAdapterKind::Local => Ok(Box::new(LocalCommandTtsAdapter { config })),
         AudioTtsAdapterKind::Piper => Ok(Box::new(PiperTtsAdapter { config })),
+        AudioTtsAdapterKind::AudioCpp => Ok(Box::new(AudioCppTtsAdapter { config })),
     }
 }
 
@@ -2487,6 +2706,83 @@ mod tests {
         let preview = art.text_preview.expect("preview");
         assert!(preview.ends_with('…'));
         assert_eq!(preview.chars().count(), ARTIFACT_PREVIEW_CHARS + 1);
+    }
+
+    #[test]
+    fn audio_cpp_adapter_parses_registers_and_builds_argv() {
+        assert_eq!(
+            AudioSttAdapterKind::parse("audio_cpp").unwrap(),
+            AudioSttAdapterKind::AudioCpp
+        );
+        assert_eq!(
+            AudioTtsAdapterKind::from_runner_adapter(AudioSttAdapterKind::AudioCpp).unwrap(),
+            AudioTtsAdapterKind::AudioCpp
+        );
+        let dir = tempfile_dir("audiocpp-register");
+        let model = dir.join("voxcpm2-q8_0.gguf");
+        fs::write(&model, b"GGUF").unwrap();
+        let manifest = register_audio_cpp_runner(
+            &dir,
+            PIPER_EN_KUSAL_Q8_PACK_ID,
+            "audiocpp_cli",
+            model.to_str().unwrap(),
+            "voxcpm2",
+            "vulkan",
+            &["--instruct".into(), "Warm narrator".into()],
+        )
+        .unwrap();
+        assert!(manifest.installed);
+        let cfg = read_audio_runner(&dir, PIPER_EN_KUSAL_Q8_PACK_ID).unwrap();
+        assert_eq!(cfg.adapter, AudioSttAdapterKind::AudioCpp);
+        let out = dir.join("out.wav");
+        let argv = audio_cpp_tts_argv(&cfg, model.to_str().unwrap(), "Hello Keel", &out);
+        assert!(argv.windows(2).any(|w| w == ["--task", "vdes"]));
+        assert!(argv.windows(2).any(|w| w == ["--family", "voxcpm2"]));
+        assert!(argv.windows(2).any(|w| w == ["--backend", "vulkan"]));
+        assert!(argv.windows(2).any(|w| w == ["--text", "Hello Keel"]));
+        assert!(argv
+            .windows(2)
+            .any(|w| w[0] == "--out" && w[1] == out.to_string_lossy()));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audio_cpp_tts_runs_fake_binary_and_persists_artifact() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile_dir("audiocpp-run");
+        let model = dir.join("qwen3-tts.gguf");
+        fs::write(&model, b"GGUF").unwrap();
+        let fake_cli = dir.join("fake-audiocpp.sh");
+        // Write a minimal valid WAV header to whichever arg follows --out
+        fs::write(
+            &fake_cli,
+            "#!/bin/sh\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = \"--out\" ]; then OUT=\"$2\"; shift 2; continue; fi\n  shift\ndone\nprintf 'RIFF\\0\\0\\0\\0WAVE' > \"$OUT\"\n",
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&fake_cli).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&fake_cli, perms).unwrap();
+
+        register_audio_cpp_runner(
+            &dir,
+            PIPER_EN_KUSAL_Q8_PACK_ID,
+            fake_cli.to_str().unwrap(),
+            model.to_str().unwrap(),
+            "qwen3_tts",
+            "cpu",
+            &[],
+        )
+        .unwrap();
+
+        let out = dir.join("spoken.wav");
+        run_tts(&dir, "Local audio works.", &out).unwrap();
+        assert!(fs::read(&out).unwrap().starts_with(b"RIFF"));
+        let arts = list_audio_artifacts(&dir);
+        assert_eq!(arts.len(), 1);
+        assert_eq!(arts[0].kind, AudioArtifactKind::TtsOutput);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     fn tempfile_dir(label: &str) -> PathBuf {

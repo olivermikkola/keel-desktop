@@ -1,8 +1,8 @@
 mod support;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use keel_core::images::{
-    local_endpoint, read_workspace_image, read_workspace_png, ImageJobStatus, ImageRequest,
-    ImageService,
+    apply_style_prompts, local_endpoint, read_workspace_image, read_workspace_png, sd_cpp_argv,
+    ImageBackendKind, ImageJobStatus, ImageRequest, ImageService, ImageStyle,
 };
 use serde_json::json;
 use std::path::PathBuf;
@@ -17,10 +17,14 @@ fn root() -> PathBuf {
 }
 fn request(endpoint: String) -> ImageRequest {
     ImageRequest {
+        backend: ImageBackendKind::Server,
         endpoint,
         prompt: "A lakeside cabin".into(),
         negative_prompt: String::new(),
         checkpoint: "local-checkpoint".into(),
+        style: None,
+        sd_cli_path: None,
+        model_path: None,
         width: 512,
         height: 512,
         steps: 20,
@@ -182,5 +186,89 @@ fn workspace_image_reader_supports_jpeg_webp_gif_svg_and_rejects_non_images() {
         .starts_with("data:image/svg+xml;base64,"));
     assert!(read_workspace_image(&root, "fake.jpg").is_err());
     assert!(read_workspace_image(&root, "../escape.jpg").is_err());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn image_style_presets_enrich_prompts_and_sd_cpp_argv() {
+    let (p, n) = apply_style_prompts("Nordic lighthouse", "", Some(ImageStyle::Illustration));
+    assert!(p.contains("Nordic lighthouse"));
+    assert!(p.contains("editorial illustration"));
+    assert!(n.contains("watermark"));
+
+    let req = ImageRequest {
+        backend: ImageBackendKind::StableDiffusionCpp,
+        endpoint: String::new(),
+        prompt: "Nordic lighthouse".into(),
+        negative_prompt: String::new(),
+        checkpoint: String::new(),
+        style: Some(ImageStyle::Photo),
+        sd_cli_path: Some("sd-cli".into()),
+        model_path: Some("/models/sd.gguf".into()),
+        width: 512,
+        height: 512,
+        steps: 8,
+    };
+    let argv = sd_cpp_argv(
+        &req,
+        "/models/sd.gguf",
+        std::path::Path::new("/tmp/out.png"),
+    );
+    assert!(argv.windows(2).any(|w| w == ["-m", "/models/sd.gguf"]));
+    assert!(argv.windows(2).any(|w| w == ["-W", "512"]));
+    assert!(argv.windows(2).any(|w| w == ["--steps", "8"]));
+    assert!(argv.windows(2).any(|w| w == ["-o", "/tmp/out.png"]));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn sd_cpp_direct_backend_runs_fake_binary_and_saves_png() {
+    use keel_core::images::generate_workspace_image;
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = root();
+    let model = root.join("model.gguf");
+    std::fs::write(&model, b"GGUF").unwrap();
+    let png_bytes = STANDARD.decode(PNG).unwrap();
+    let src_png = root.join("fixture.png");
+    std::fs::write(&src_png, &png_bytes).unwrap();
+
+    let fake_sd = root.join("fake-sd-cli.sh");
+    std::fs::write(
+        &fake_sd,
+        format!(
+            "#!/bin/sh\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = \"-o\" ]; then OUT=\"$2\"; shift 2; continue; fi\n  shift\ndone\ncp '{}' \"$OUT\"\n",
+            src_png.display()
+        ),
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&fake_sd).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&fake_sd, perms).unwrap();
+
+    let req = ImageRequest {
+        backend: ImageBackendKind::StableDiffusionCpp,
+        endpoint: String::new(),
+        prompt: "A red fox in snow".into(),
+        negative_prompt: String::new(),
+        checkpoint: String::new(),
+        style: Some(ImageStyle::Sketch),
+        sd_cli_path: Some(fake_sd.to_string_lossy().into_owned()),
+        model_path: Some(model.to_string_lossy().into_owned()),
+        width: 512,
+        height: 512,
+        steps: 8,
+    };
+    let rel = generate_workspace_image(&root, "assets/fox.png", &req)
+        .await
+        .unwrap();
+    assert_eq!(rel, "assets/fox.png");
+    assert_eq!(
+        std::fs::read(root.join("assets/fox.png")).unwrap(),
+        png_bytes
+    );
+    assert!(generate_workspace_image(&root, "../escape.png", &req)
+        .await
+        .is_err());
     std::fs::remove_dir_all(root).unwrap();
 }

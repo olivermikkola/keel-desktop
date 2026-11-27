@@ -11,6 +11,12 @@ pub struct DesktopConfig {
     pub selected_model_id: String,
     #[serde(default)]
     pub image_endpoint: Option<String>,
+    /// Optional local `stable-diffusion.cpp` (`sd-cli`) binary path for direct image generation.
+    #[serde(default)]
+    pub sd_cli_path: Option<String>,
+    /// Optional local diffusion model file (`.gguf` or `.safetensors`) used by `sd-cli`.
+    #[serde(default)]
+    pub sd_model_path: Option<String>,
     #[serde(default)]
     pub personal_context: String,
     pub external_base_url: Option<String>,
@@ -42,6 +48,8 @@ impl Default for DesktopConfig {
     fn default() -> Self {
         Self {
             image_endpoint: None,
+            sd_cli_path: None,
+            sd_model_path: None,
             personal_context: String::new(),
             selected_model_id: "bonsai-4b".to_string(),
             external_base_url: None,
