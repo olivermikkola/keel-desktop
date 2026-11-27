@@ -1,9 +1,8 @@
 mod support;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use keel_core::images::{
-    apply_style_prompts, generate_workspace_image, local_endpoint, read_workspace_image,
-    read_workspace_png, sd_cpp_argv, ImageBackendKind, ImageJobStatus, ImageRequest, ImageService,
-    ImageStyle,
+    apply_style_prompts, local_endpoint, read_workspace_image, read_workspace_png, sd_cpp_argv,
+    ImageBackendKind, ImageJobStatus, ImageRequest, ImageService, ImageStyle,
 };
 use serde_json::json;
 use std::path::PathBuf;
@@ -224,6 +223,7 @@ fn image_style_presets_enrich_prompts_and_sd_cpp_argv() {
 #[cfg(unix)]
 #[tokio::test]
 async fn sd_cpp_direct_backend_runs_fake_binary_and_saves_png() {
+    use keel_core::images::generate_workspace_image;
     use std::os::unix::fs::PermissionsExt;
 
     let root = root();
