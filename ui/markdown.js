@@ -89,6 +89,46 @@ export function parseCsv(raw = "") {
   return rows;
 }
 
+function normalizeStudyText(text = "") {
+  return String(text)
+    .toLowerCase()
+    .trim()
+    .replace(/^(?:[a-h][.):]|\([a-h]\))\s+/i, "")
+    .replace(/[.*]+$/g, "")
+    .trim();
+}
+
+/** Matches a chosen multiple-choice option against an `A:` answer line, including bare letters (`A: B`, `A: (C)`). */
+export function isStudyChoiceCorrect(choice, choiceIndex, answer = "", choices = []) {
+  const raw = String(answer || "").trim();
+  if (!raw) return false;
+  const target = normalizeStudyText(raw);
+  const candidate = normalizeStudyText(choice);
+  if (candidate && target === candidate) return true;
+
+  // Support bare letter answers like "B", "B.", "(B)", or "Option B".
+  const letterMatch = raw.match(/^(?:option\s+)?\(?([a-h])\)?[.)]?$/i);
+  if (letterMatch) {
+    const expectedIndex = letterMatch[1].toLowerCase().charCodeAt(0) - 97;
+    if (expectedIndex >= 0 && expectedIndex < choices.length) {
+      return choiceIndex === expectedIndex;
+    }
+  }
+
+  // Support "Saturn, the sixth planet" or "Saturn - the sixth planet" when unambiguous.
+  if (candidate && target.startsWith(candidate)) {
+    const suffix = target.slice(candidate.length).trim();
+    if (/^(?:[-,;:(—–]|\s+-\s+)/.test(suffix)) {
+      const matches = choices.filter((c) => {
+        const norm = normalizeStudyText(c);
+        return norm && target.startsWith(norm);
+      });
+      return matches.length === 1;
+    }
+  }
+  return false;
+}
+
 export function parseStudyDeck(raw = "") {
   const lines = String(raw).replace(/\r\n/g, "\n").split("\n");
   let title = "Study Deck";
@@ -112,13 +152,25 @@ export function parseStudyDeck(raw = "") {
       title = line.slice(2).trim();
       continue;
     }
-    if (line.startsWith("Q:")) {
+    const qMatch = line.match(/^(?:\d{1,3}[.)]\s*)?(?:\*\*)?(?:q|question)\s*\d{0,3}\s*[:.)](?:\*\*)?\s*(.+)$/i);
+    if (qMatch) {
       flush();
-      cur = { question: line.slice(2).trim(), choices: [], answer: "" };
-    } else if (cur && line.startsWith("- ")) {
-      cur.choices.push(line.slice(2).trim());
-    } else if (cur && line.startsWith("A:")) {
-      cur.answer = line.slice(2).trim();
+      cur = { question: qMatch[1].replace(/\*\*/g, "").trim(), choices: [], answer: "" };
+      continue;
+    }
+    const aMatch = cur && line.match(/^(?:\*\*)?(?:a|answer)\s*[:.)](?:\*\*)?\s*(.+)$/i);
+    if (aMatch) {
+      cur.answer = aMatch[1].replace(/\*\*/g, "").trim();
+      continue;
+    }
+    const choiceMatch = cur && line.match(/^(?:[-*+]|[a-hA-H][.)])\s+(?:\[([ xX])\]\s+)?(.+)$/);
+    if (choiceMatch) {
+      const checked = choiceMatch[1] && choiceMatch[1].trim() !== "";
+      const text = choiceMatch[2].trim();
+      cur.choices.push(text);
+      if (checked && !cur.answer) {
+        cur.answer = text;
+      }
     }
   }
   flush();
