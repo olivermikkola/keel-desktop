@@ -204,6 +204,7 @@ fn main() {
             commands::cancel_video_job,
             commands::read_workspace_video,
             commands::detect_video_tools,
+            commands::generate_video_script,
             commands::pick_workspace_folder,
             commands::prepare_sample_workspace,
             commands::set_workspace_folder,

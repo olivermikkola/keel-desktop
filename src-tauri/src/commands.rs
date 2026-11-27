@@ -2386,6 +2386,70 @@ pub async fn detect_video_tools() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
+pub async fn generate_video_script(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    description: String,
+    media_paths: Vec<String>,
+    previous_lines: Vec<keel_core::video::VideoScriptLine>,
+    change: Option<String>,
+) -> Result<Vec<keel_core::video::VideoScene>, String> {
+    let (system, user) = keel_core::video::build_video_script_prompt(
+        &description,
+        &media_paths,
+        &previous_lines,
+        change.as_deref(),
+    )
+    .map_err(|e| e.to_string())?;
+
+    let cfg = state.config.lock().await.clone();
+    let mut rt_status = state.runtime.lock().await.status();
+    if !matches!(rt_status.state.as_str(), "running" | "external") {
+        if cfg.external_base_url.is_none() {
+            rt_status = auto_start_local_model(&app, &state).await?;
+        } else {
+            return Err("Choose a model in Models first so Keel can write the lines.".into());
+        }
+    }
+    let base_url = rt_status.base_url.clone();
+    let model_name = rt_status
+        .active_model_id
+        .clone()
+        .or(cfg.external_model_name.clone())
+        .ok_or_else(|| "Choose a model in Models first so Keel can write the lines.".to_string())?;
+    let api_key = if rt_status.state == "external" {
+        keel_core::remote::load_external_api_key(&state.data_dir, &base_url)
+    } else {
+        None
+    };
+
+    let limit = keel_core::video::script_reply_tokens(media_paths.len());
+    let mut last_err = String::new();
+    for _ in 0..2 {
+        let reply = keel_core::agent::complete_plain_text(
+            &base_url,
+            &model_name,
+            &system,
+            &user,
+            limit,
+            api_key.as_deref(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        match keel_core::video::parse_video_script_reply(&reply, media_paths.len()) {
+            Ok(lines) => {
+                return Ok(keel_core::video::script_lines_to_scenes(
+                    &lines,
+                    &media_paths,
+                ));
+            }
+            Err(err) => last_err = err.to_string(),
+        }
+    }
+    Err(last_err)
+}
+
+#[tauri::command]
 pub async fn get_runtime_status(state: State<'_, AppState>) -> Result<RuntimeStatus, String> {
     Ok(state.runtime.lock().await.status())
 }

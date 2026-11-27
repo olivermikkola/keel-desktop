@@ -17,6 +17,68 @@ fn shared_http_client() -> Result<&'static reqwest::Client> {
         .build()?;
     Ok(CLIENT.get_or_init(|| built))
 }
+
+/// Sends a single non-streaming chat completion request to the active local (or
+/// explicitly configured) OpenAI-compatible server and returns the plain text
+/// reply with any `<think>...</think>` reasoning block stripped.
+pub async fn complete_plain_text(
+    base_url: &str,
+    model: &str,
+    system: &str,
+    user: &str,
+    max_tokens: usize,
+    api_key: Option<&str>,
+) -> Result<String> {
+    let client = shared_http_client()?;
+    let endpoint = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    let payload = json!({
+        "model": model,
+        "messages": [
+            { "role": "system", "content": system },
+            { "role": "user", "content": user }
+        ],
+        "max_tokens": max_tokens.clamp(64, 4096),
+        "temperature": 0.6,
+        "stream": false
+    });
+    let mut req = client.post(&endpoint).json(&payload);
+    if let Some(key) = api_key.filter(|k| !k.trim().is_empty()) {
+        req = req.bearer_auth(key.trim());
+    }
+    let resp = req.send().await.map_err(|err| {
+        if err.is_connect() {
+            anyhow::Error::new(EndpointUnreachable {
+                is_loopback: crate::runtime::is_loopback_url(base_url),
+            })
+        } else {
+            anyhow::anyhow!(
+                "Could not reach your AI model right now. Check that a model is running in Models."
+            )
+        }
+    })?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        bail!("Your AI model returned an error (HTTP {status}). Try again or pick another model.");
+    }
+    let body: Value = resp
+        .json()
+        .await
+        .context("Your AI model returned an unreadable reply.")?;
+    let raw = body
+        .pointer("/choices/0/message/content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let stripped = if let Some((_, after)) = raw.rsplit_once("</think>") {
+        after.trim()
+    } else {
+        raw
+    };
+    if stripped.is_empty() {
+        bail!("Your AI model returned an empty reply. Try again.");
+    }
+    Ok(stripped.to_string())
+}
 use std::path::PathBuf;
 use std::time::Instant;
 

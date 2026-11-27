@@ -2360,3 +2360,20 @@ button:focus:not(:focus-visible) {
   gap: 8px;
   margin-top: 8px;
 }
+
+.video-scene-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.video-scene-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--bg);
+}
+

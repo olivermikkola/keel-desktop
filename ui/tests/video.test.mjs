@@ -3,9 +3,12 @@ import test from "node:test";
 import {
   clipFractions,
   clipIndexAt,
+  moveScene,
   nextSceneStart,
+  parseStoryboardBlocks,
   planToStoryboardText,
   previousSceneStart,
+  scenesToStoryboardText,
 } from "../video.js";
 
 const CLIPS = [
@@ -33,4 +36,23 @@ test("planToStoryboardText serializes scenes for iterative re-renders", () => {
   assert.match(text, /motion: slow_zoom/);
   assert.match(text, /motion: pan_left/);
   assert.doesNotMatch(text, /motion: none/);
+});
+
+test("scene card helpers round-trip storyboard blocks and reorder safely", () => {
+  const raw = "image: assets/a.png\nsay: Hello world.\noverlay: HI\nmotion: slow_zoom\n\nimage: assets/b.png\nsay: Second line.\nmotion: pan_right";
+  const cards = parseStoryboardBlocks(raw);
+  assert.equal(cards.length, 2);
+  assert.equal(cards[0].image_path, "assets/a.png");
+  assert.equal(cards[0].overlay, "HI");
+  assert.equal(cards[1].motion, "pan_right");
+
+  const reordered = moveScene(cards, 1, -1);
+  assert.equal(reordered[0].image_path, "assets/b.png");
+  assert.equal(reordered[1].image_path, "assets/a.png");
+  assert.deepEqual(moveScene(cards, 0, -1), cards);
+  assert.deepEqual(moveScene(cards, 1, 1), cards);
+
+  const back = scenesToStoryboardText(reordered);
+  assert.match(back, /^image: assets\/b\.png/);
+  assert.match(back, /overlay: HI/);
 });
