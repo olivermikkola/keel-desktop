@@ -751,6 +751,53 @@ where
             }
             Ok((read_url(&url_str).await?, None))
         }
+        "create_short_video" => {
+            let root = workspace.context("No workspace folder is selected")?;
+            let path = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .context("Missing `path`")?;
+            let scenes = args
+                .get("scenes")
+                .and_then(|v| v.as_str())
+                .context("Missing `scenes`")?;
+            let req = crate::video::VideoRequest {
+                path: path.to_string(),
+                scenes: scenes.to_string(),
+                aspect_ratio: args
+                    .get("aspect_ratio")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                title: args.get("title").and_then(|v| v.as_str()).map(String::from),
+                voice: args.get("voice").and_then(|v| v.as_str()).map(String::from),
+                use_tts: true,
+                allow_silent_fallback: true,
+                music_path: args
+                    .get("music_path")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+            };
+            let data_dir = crate::sessions::default_data_dir();
+            let rendered = crate::video::render_short_video(root, &data_dir, &req).await?;
+            let audio_label = if rendered.used_tts {
+                "local neural TTS"
+            } else {
+                "timed silent preview (configure audio.cpp or Piper in Settings for voiceover)"
+            };
+            Ok((
+                format!(
+                    "Saved {} ({}×{}, {} scenes, ~{:.1}s, {}). Storyboard: {}",
+                    rendered.artifact_path,
+                    rendered.plan.width,
+                    rendered.plan.height,
+                    rendered.plan.clips.len(),
+                    rendered.plan.total_seconds,
+                    audio_label,
+                    rendered.storyboard_path
+                ),
+                None,
+            ))
+        }
         other => {
             let info = mcp_lookup
                 .get(other)

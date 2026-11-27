@@ -945,6 +945,25 @@ pub fn openai_tool_schemas(
                 }
             }
         }),
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "create_short_video",
+                "description": "Render one short-form video (.mp4) from workspace photos or video clips with Ken Burns camera motion, safe-zone overlays, and optional local neural TTS narration via FFmpeg. Pass scenes as blank-line blocks (`image:`, `say:`, optional `overlay:`, optional `motion:` in none|slow_zoom|pan_left|pan_right) or a JSON array. Saves the .mp4 plus editable .storyboard.md and .json manifest inside the workspace.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Relative .mp4 output path inside workspace, e.g. videos/launch.mp4" },
+                        "scenes": { "type": "string", "description": "Storyboard block or JSON array of scenes" },
+                        "aspect_ratio": { "type": "string", "enum": ["9:16", "1:1", "16:9"] },
+                        "title": { "type": "string" },
+                        "voice": { "type": "string" },
+                        "music_path": { "type": "string", "description": "Optional relative workspace audio file for background music" }
+                    },
+                    "required": ["path", "scenes"]
+                }
+            }
+        }),
     ];
 
     let mut filtered: Vec<serde_json::Value> = all

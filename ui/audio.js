@@ -16,7 +16,7 @@ export const AUDIO_TRY_TTS_INPUT_HELP = `Try TTS speaks “${AUDIO_TRY_TTS_SAMPL
  */
 export function capabilityBadgeLabel(cap) {
   if (cap?.state === "planned") return "Planned";
-  if (cap?.id === "images" || cap?.id === "audio") return "Optional";
+  if (cap?.id === "images" || cap?.id === "audio" || cap?.id === "video") return "Optional";
   return "Built in";
 }
 

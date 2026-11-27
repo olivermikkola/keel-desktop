@@ -33,4 +33,5 @@ pub mod streaming;
 
 pub mod publish;
 pub mod updates;
+pub mod video;
 pub mod worktrees;

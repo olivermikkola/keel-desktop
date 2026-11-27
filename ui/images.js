@@ -1,5 +1,6 @@
 import { capabilityBadgeLabel } from "./audio.js";
 import { escapeHtml } from "./markdown.js";
+import { createVideoStudio } from "./video.js";
 
 // No media weights or runtimes are installed until a user chooses to configure them.
 // Audio is "available" for Settings packs + Try STT/TTS only — not a chat-mode audio product.
@@ -7,7 +8,7 @@ export const CAPABILITIES = [
   { id: "text", title: "Assistant", detail: "One text model for Chat, Work, and Code. Search the web with your approval and send image pixels to vision-capable models.", state: "available" },
   { id: "images", title: "Images", detail: "Generate images with an optional local AUTOMATIC1111 or Forge server.", state: "available" },
   { id: "audio", title: "Audio", detail: "Settings packs: download checksum-pinned Whisper tiny q5_1 and Piper en_US kusal q8, register local / Whisper.cpp / Piper runners, Try STT (local file dialog) / Try TTS (short sample), and list artifacts. Not a chat-mode audio product yet.", state: "available" },
-  { id: "video", title: "Video", detail: "Video generation backends are planned.", state: "planned" },
+  { id: "video", title: "Short Video", detail: "Render 9:16, 1:1, or 16:9 short-form videos from workspace photos or clips with Ken Burns motion, safe-zone overlays, and local neural TTS via FFmpeg.", state: "available" },
 ];
 
 export const IMAGE_STYLES = [
@@ -18,8 +19,9 @@ export const IMAGE_STYLES = [
   { id: "sketch", label: "Sketch" },
 ];
 
-export function createImageWorkspace({ invoke, getWorkspace, getEndpoint, getSdConfig, refresh, selectFolder, openModels, openSettings, notice }) {
+export function createImageWorkspace({ invoke, getWorkspace, getWorkspaceFiles, getEndpoint, getSdConfig, refresh, selectFolder, openModels, openSettings, notice }) {
   const state = {
+    activeTool: "images",
     backend: "server",
     endpoint: null,
     sdCliPath: "",
@@ -35,6 +37,15 @@ export function createImageWorkspace({ invoke, getWorkspace, getEndpoint, getSdC
     size: "512",
     steps: "20",
   };
+  const videoStudio = createVideoStudio({
+    invoke,
+    getWorkspace,
+    getWorkspaceFiles,
+    selectFolder,
+    openSettings,
+    refresh,
+    notice,
+  });
   let container;
   let requestVersion = 0;
 
@@ -52,10 +63,11 @@ export function createImageWorkspace({ invoke, getWorkspace, getEndpoint, getSdC
       <div class="hub-heading"><span class="eyebrow">YOUR AI TOOLBOX</span><h1>Use what you need.</h1>
       <p>Keep Keel light. Your assistant is ready for a text model; media tools are optional.</p></div>
       <div class="capability-grid">${CAPABILITIES.map((cap) => `
-        <article class="capability-card ${cap.id === "images" ? "selected" : ""}">
+        <article class="capability-card ${cap.id === state.activeTool ? "selected" : ""}">
           <div class="row"><h2>${cap.title}</h2><span class="capability-badge">${capabilityBadgeLabel(cap)}</span></div>
-          <p>${cap.detail}</p>${cap.id === "text" ? '<button class="btn btn-sm" id="tool-models">Choose text model</button>' : cap.id === "audio" && openSettings ? '<button class="btn btn-sm" id="tool-audio-settings">Configure audio in Settings</button>' : ""}
+          <p>${cap.detail}</p>${cap.id === "text" ? '<button class="btn btn-sm" id="tool-models">Choose text model</button>' : cap.id === "audio" && openSettings ? '<button class="btn btn-sm" id="tool-audio-settings">Configure audio in Settings</button>' : cap.id === "images" ? '<button class="btn btn-sm" id="tool-images-open">Open Images</button>' : cap.id === "video" ? '<button class="btn btn-sm" id="tool-video-open">Open Video Studio</button>' : ""}
         </article>`).join("")}</div>
+      ${state.activeTool === "video" ? '<div id="video-studio-host"></div>' : `
       <div class="image-workspace">
         <section class="image-controls card">
           <div class="row"><h2>Images</h2><span class="capability-badge">${state.backend === "stable_diffusion_cpp" ? "Direct sd-cli" : "Local server"}</span></div>
@@ -103,11 +115,34 @@ export function createImageWorkspace({ invoke, getWorkspace, getEndpoint, getSdC
               ${job.artifact_path ? `<img class="generated-image" alt="${escapeHtml(job.request.prompt)}" data-image-job="${escapeHtml(job.id)}" /><p class="muted mono">${escapeHtml(job.workspace_path)}/${escapeHtml(job.artifact_path)}</p><button class="btn btn-sm" data-copy-path="${escapeHtml(job.artifact_path)}">Copy asset path</button>` : ""}
             </article>`).join("") : '<div class="image-empty"><p>Your images will appear here.</p><p class="muted">Generate a visual, then use its asset path in a website or slide deck in Work.</p></div>'}
         </section>
-      </div>`;
+      </div>`}`;
 
     container.querySelector("#tool-models").onclick = openModels;
     const audioSettingsBtn = container.querySelector("#tool-audio-settings");
     if (audioSettingsBtn && openSettings) audioSettingsBtn.onclick = openSettings;
+    const imagesOpenBtn = container.querySelector("#tool-images-open");
+    if (imagesOpenBtn) {
+      imagesOpenBtn.onclick = () => {
+        if (state.activeTool !== "images") {
+          state.activeTool = "images";
+          render();
+        }
+      };
+    }
+    const videoOpenBtn = container.querySelector("#tool-video-open");
+    if (videoOpenBtn) {
+      videoOpenBtn.onclick = async () => {
+        state.activeTool = "video";
+        render();
+        const host = container.querySelector("#video-studio-host");
+        await videoStudio.reload(host);
+      };
+    }
+    if (state.activeTool === "video") {
+      const host = container.querySelector("#video-studio-host");
+      videoStudio.renderInto(host);
+      return;
+    }
     container.querySelector("#image-backend").onchange = (event) => {
       state.backend = event.target.value;
       render();
@@ -243,5 +278,9 @@ export function createImageWorkspace({ invoke, getWorkspace, getEndpoint, getSdC
     render(target) { container = target; render(); },
     reload,
     async onJob() { await reload(); await refresh(); },
+    async onVideoJob() {
+      const host = container?.querySelector("#video-studio-host");
+      await videoStudio.onJob(host);
+    },
   };
 }
