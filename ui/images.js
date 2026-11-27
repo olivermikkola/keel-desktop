@@ -1,4 +1,5 @@
 import { capabilityBadgeLabel } from "./audio.js";
+import { createPhotoSlidesStudio } from "./carousels.js";
 import { escapeHtml } from "./markdown.js";
 import { createVideoStudio } from "./video.js";
 
@@ -15,6 +16,12 @@ export const CAPABILITIES = [
     id: "video",
     title: "Short Videos",
     detail: "Turn your photos or clips into a short narrated video with gentle movement and on-screen captions.",
+    state: "available",
+  },
+  {
+    id: "carousels",
+    title: "Photo Slides",
+    detail: "Turn your photos and one short sentence into swipeable photo slides (like multi-photo social posts) with headlines and captions.",
     state: "available",
   },
   {
@@ -112,6 +119,14 @@ export function createImageWorkspace({
     refresh,
     notice,
   });
+  const carouselsStudio = createPhotoSlidesStudio({
+    invoke,
+    getWorkspace,
+    getWorkspaceFiles,
+    selectFolder,
+    refresh,
+    notice,
+  });
   let container;
   let requestVersion = 0;
 
@@ -142,7 +157,7 @@ export function createImageWorkspace({
       <div class="capability-grid">${CAPABILITIES.map((cap) => `
         <article class="capability-card ${cap.id === state.activeTool ? "selected" : ""}">
           <div class="row"><h3>${escapeHtml(cap.title)}</h3><span class="capability-badge">${capabilityBadgeLabel(cap)}</span></div>
-          <p>${escapeHtml(cap.detail)}</p>${cap.id === "text" ? '<button class="btn btn-sm" id="tool-models">Choose AI model</button>' : cap.id === "audio" && openSettings ? '<button class="btn btn-sm" id="tool-audio-settings">Open audio settings</button>' : cap.id === "images" ? '<button class="btn btn-sm" id="tool-images-open">Open Pictures</button>' : cap.id === "video" ? '<button class="btn btn-sm" id="tool-video-open">Open Short Videos</button>' : ""}
+          <p>${escapeHtml(cap.detail)}</p>${cap.id === "text" ? '<button class="btn btn-sm" id="tool-models">Choose AI model</button>' : cap.id === "audio" && openSettings ? '<button class="btn btn-sm" id="tool-audio-settings">Open audio settings</button>' : cap.id === "images" ? '<button class="btn btn-sm" id="tool-images-open">Open Pictures</button>' : cap.id === "video" ? '<button class="btn btn-sm" id="tool-video-open">Open Short Videos</button>' : cap.id === "carousels" ? '<button class="btn btn-sm" id="tool-carousels-open">Open Photo Slides</button>' : ""}
         </article>`).join("")}</div>
       <div class="apps-section-head"><h2>Write, plan &amp; study</h2><p class="muted">Each app opens a focused workspace ready for that job.</p></div>
       <div class="apps-preset-grid">${everydayCards.map((app) => `
@@ -152,7 +167,7 @@ export function createImageWorkspace({
           <p class="muted app-example">${escapeHtml(app.example)}</p>
           <button class="btn btn-sm" data-open-preset="${escapeHtml(app.id)}">Start</button>
         </article>`).join("")}</div>
-      ${state.activeTool === "video" ? '<div id="video-studio-host"></div>' : `
+      ${state.activeTool === "video" ? '<div id="video-studio-host"></div>' : state.activeTool === "carousels" ? '<div id="photo-slides-host"></div>' : `
       <div class="image-workspace">
         <section class="image-controls card">
           <div class="row"><h2>Make Pictures</h2><span class="capability-badge">${state.backend === "stable_diffusion_cpp" ? "Direct file engine" : "Local picture app"}</span></div>
@@ -234,9 +249,23 @@ export function createImageWorkspace({
         await videoStudio.reload(host);
       };
     }
+    const carouselsOpenBtn = container.querySelector("#tool-carousels-open");
+    if (carouselsOpenBtn) {
+      carouselsOpenBtn.onclick = async () => {
+        state.activeTool = "carousels";
+        render();
+        const host = container.querySelector("#photo-slides-host");
+        await carouselsStudio.reload(host);
+      };
+    }
     if (state.activeTool === "video") {
       const host = container.querySelector("#video-studio-host");
       videoStudio.renderInto(host);
+      return;
+    }
+    if (state.activeTool === "carousels") {
+      const host = container.querySelector("#photo-slides-host");
+      carouselsStudio.renderInto(host);
       return;
     }
     container.querySelector("#image-backend").onchange = (event) => {

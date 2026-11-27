@@ -2010,7 +2010,7 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .eyebrow { color: var(--accent); font-size: 10px; letter-spacing: .16em; font-weight: 700; }
 .hub-heading h1 { font-size: 32px; letter-spacing: -.04em; margin: 10px 0; }
 .hub-heading p, .capability-card p { color: var(--muted); font-size: 13px; line-height: 1.6; }
-.capability-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 24px; }
+.capability-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 24px; }
 .apps-section-head { margin: 8px 0 12px; }
 .apps-section-head h2 { font-size: 16px; margin: 0 0 2px; }
 .apps-section-head p { margin: 0; font-size: 13px; }

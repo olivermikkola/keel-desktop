@@ -48,6 +48,16 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
   setTimeout(()=>emit('keel://video-job',vjob),100); break;
  }
  case 'read_workspace_video':result='data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28y';break;
+ case 'list_photo_slides':result=window.__photoSlides || (window.__photoSlides=[]);break;
+ case 'build_photo_slides': {
+  window.__photoSlides = window.__photoSlides || [];
+  const deck={id:crypto.randomUUID(),title:(args.request?.slides?.[0]?.headline)||'Photo Slides',description:args.request?.description||'',html_path:args.request?.path||'photo-slides/demo.html',manifest_path:'photo-slides/demo.json',workspace_path:args.workspacePath,slide_count:(args.request?.slides||[]).length,slides:args.request?.slides||[],created_at:Date.now()/1000};
+  window.__photoSlides.unshift(deck);
+  fileContent[deck.html_path]='<!doctype html><html><body><h1>'+deck.title+'</h1></body></html>';
+  result=deck; break;
+ }
+ case 'read_photo_slides_html':result=fileContent[args.relPath] || '<!doctype html><html><body><h1>Photo Slides</h1></body></html>';break;
+ case 'generate_photo_slides_text':result=[{kind:'cover',headline:'Weekend in Porvoo',body:'Four stops worth the trip.'},{kind:'photo',headline:'Old town bridge',body:'Morning coffee by the river.'},{kind:'closing',headline:'Save for later',body:'Easy day trip from Helsinki.'}];break;
  case 'get_runtime_status':result=runtime;break;
  case 'pick_documents':result=[{id:crypto.randomUUID(),name:'brief.txt',kind:'txt',text:'Project Harbor budget is 4800 euros.',truncated:false},{id:crypto.randomUUID(),name:'receipt.png',kind:'png',text:'Total due: 480 EUR',truncated:false,image_data_url:''' + json.dumps(PNG) + r'''}];break;
  case 'save_personal_context':cfg.personal_context=args.text;result=null;break;
@@ -443,6 +453,11 @@ async def main(port):
         await page.locator('#video-render').click()
         await page.locator('[data-load-storyboard]').first.wait_for()
         await page.screenshot(path=str(OUTPUT / 'tools-video.png'))
+        await page.locator('#tool-carousels-open').click()
+        await page.locator('#slides-about').fill('Weekend trip to Porvoo')
+        await page.locator('#slides-build').click()
+        await page.locator('#slides-preview-frame').wait_for()
+        await page.screenshot(path=str(OUTPUT / 'tools-photo-slides.png'))
         await page.locator('#tool-images-open').click()
         await page.locator('#image-prompt').wait_for()
         assert await page.locator('.topbar').evaluate('(el) => el.getBoundingClientRect().top') >= 0
