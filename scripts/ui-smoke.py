@@ -9,6 +9,7 @@ OUTPUT = Path(os.environ.get('KEEL_SMOKE_OUTPUT', Path(tempfile.gettempdir()) / 
 OUTPUT.mkdir(parents=True, exist_ok=True)
 PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j5uoAAAAASUVORK5CYII='
 MOCK = r'''(() => {
+if (window.top !== window.self) return;
 localStorage.setItem('keel_welcome_done', '1');
 const listeners = {}, sessions = [], jobs = [], projects = [];
 let cfg = {selected_model_id:'test',external_base_url:null,external_model_name:null,image_endpoint:null,recent_workspaces:[],harness_mode:'keel', custom_model_paths:{}};
@@ -176,6 +177,7 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
 
 
 FIRST_RUN_LAYER = r'''(() => {
+if (window.top !== window.self) return;
 const t = window.__test, core = window.__TAURI__.core, base = core.invoke;
 const big = {id:'bonsai-9b',name:'Bonsai 2 · 9B',detail:'Recommended everyday agent model.',bytes:2556640128};
 const fast = {id:'bonsai-4b',name:'Bonsai 2 · 4B',detail:'Fast local starter model.',bytes:1212103520};
@@ -199,7 +201,7 @@ def mock_for(first_run=False, hold_start=False):
     script = MOCK
     if first_run:
         script = script.replace("localStorage.setItem('keel_welcome_done', '1');", "")
-    return script + FIRST_RUN_LAYER + f"window.__test.firstRun={'true' if first_run else 'false'};window.__test.holdStart={'true' if hold_start else 'false'};"
+    return script + FIRST_RUN_LAYER + f"if(window.__test){{window.__test.firstRun={'true' if first_run else 'false'};window.__test.holdStart={'true' if hold_start else 'false'};}}"
 
 async def new_page(browser, port, **options):
     page = await browser.new_page(viewport={'width':1440,'height':1000})
