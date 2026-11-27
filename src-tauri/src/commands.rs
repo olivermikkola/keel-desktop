@@ -2450,6 +2450,109 @@ pub async fn generate_video_script(
 }
 
 #[tauri::command]
+pub async fn build_photo_slides(
+    workspace_path: String,
+    request: keel_core::carousel::CarouselBuildRequest,
+) -> Result<keel_core::carousel::CarouselDeckSummary, String> {
+    let root = Path::new(&workspace_path).to_path_buf();
+    tokio::task::spawn_blocking(move || keel_core::carousel::build_carousel_deck(&root, &request))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_photo_slides(
+    workspace_path: String,
+) -> Result<Vec<keel_core::carousel::CarouselDeckSummary>, String> {
+    let root = Path::new(&workspace_path).to_path_buf();
+    tokio::task::spawn_blocking(move || keel_core::carousel::list_workspace_carousels(&root))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn read_photo_slides_html(
+    workspace_path: String,
+    rel_path: String,
+) -> Result<String, String> {
+    if !keel_core::carousel::is_valid_output_path(&rel_path) {
+        return Err(
+            "Photo Slides preview only opens relative .html files inside your folder.".into(),
+        );
+    }
+    let root = Path::new(&workspace_path);
+    let target = keel_core::tools::confine_path(root, &rel_path).map_err(|e| e.to_string())?;
+    let meta = std::fs::metadata(&target).map_err(|e| e.to_string())?;
+    if meta.len() > 32 * 1024 * 1024 {
+        return Err("Photo Slides file is larger than the 32 MB preview limit.".into());
+    }
+    let bytes = std::fs::read(&target).map_err(|e| e.to_string())?;
+    Ok(String::from_utf8_lossy(&bytes).to_string())
+}
+
+#[tauri::command]
+pub async fn generate_photo_slides_text(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    description: String,
+    photo_paths: Vec<String>,
+    previous_slides: Vec<keel_core::carousel::CarouselTextSlide>,
+    change: Option<String>,
+) -> Result<Vec<keel_core::carousel::CarouselTextSlide>, String> {
+    let (system, user) = keel_core::carousel::build_carousel_prompt(
+        &description,
+        &photo_paths,
+        &previous_slides,
+        change.as_deref(),
+    )
+    .map_err(|e| e.to_string())?;
+
+    let cfg = state.config.lock().await.clone();
+    let mut rt_status = state.runtime.lock().await.status();
+    if !matches!(rt_status.state.as_str(), "running" | "external") {
+        if cfg.external_base_url.is_none() {
+            rt_status = auto_start_local_model(&app, &state).await?;
+        } else {
+            return Err("Choose a model in Models first so Keel can write the slide text.".into());
+        }
+    }
+    let base_url = rt_status.base_url.clone();
+    let model_name = rt_status
+        .active_model_id
+        .clone()
+        .or(cfg.external_model_name.clone())
+        .ok_or_else(|| {
+            "Choose a model in Models first so Keel can write the slide text.".to_string()
+        })?;
+    let api_key = if rt_status.state == "external" {
+        keel_core::remote::load_external_api_key(&state.data_dir, &base_url)
+    } else {
+        None
+    };
+
+    let limit = keel_core::carousel::reply_tokens(photo_paths.len());
+    let mut last_err = String::new();
+    for _ in 0..2 {
+        let reply = keel_core::agent::complete_plain_text(
+            &base_url,
+            &model_name,
+            &system,
+            &user,
+            limit,
+            api_key.as_deref(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        match keel_core::carousel::parse_carousel_reply(&reply, photo_paths.len()) {
+            Ok(slides) => return Ok(slides),
+            Err(err) => last_err = err.to_string(),
+        }
+    }
+    Err(last_err)
+}
+
+#[tauri::command]
 pub async fn get_runtime_status(state: State<'_, AppState>) -> Result<RuntimeStatus, String> {
     Ok(state.runtime.lock().await.status())
 }
