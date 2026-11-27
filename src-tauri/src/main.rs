@@ -114,6 +114,8 @@ fn main() {
     let state = AppState {
         images: keel_core::images::ImageService::new(&data_dir)
             .expect("failed to load image job history"),
+        videos: keel_core::video::VideoService::new(&data_dir)
+            .expect("failed to load video job history"),
         turn_lock: Arc::new(Mutex::new(())),
         config_dir,
         data_dir,
@@ -197,6 +199,11 @@ fn main() {
             commands::cancel_image_job,
             commands::read_workspace_png,
             commands::read_workspace_image,
+            commands::list_video_jobs,
+            commands::start_video_job,
+            commands::cancel_video_job,
+            commands::read_workspace_video,
+            commands::detect_video_tools,
             commands::pick_workspace_folder,
             commands::prepare_sample_workspace,
             commands::set_workspace_folder,

@@ -39,6 +39,15 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  case 'load_session_cmd':result=sessions.find(s=>s.id===args.id);break;
  case 'list_workspace_files_cmd':result=files;break;
  case 'list_image_jobs':result=jobs;break;
+ case 'list_video_jobs':result=window.__videoJobs || (window.__videoJobs=[]);break;
+ case 'detect_video_tools':result={ffmpeg:'/usr/bin/ffmpeg'};break;
+ case 'start_video_job': {
+  window.__videoJobs = window.__videoJobs || [];
+  const vjob={id:crypto.randomUUID(),request:args.request,workspace_path:args.workspacePath,status:'succeeded',artifact_path:args.request.path,manifest_path:'videos/keel-short.json',storyboard_path:'videos/keel-short.storyboard.md',plan:{path:args.request.path,title:args.request.title||null,voice:'local',aspect_ratio:'9:16',width:1080,height:1920,clips:[{image_path:'assets/keel-test.png',narration:'Scene one.',overlay:'HOOK',motion:'slow_zoom',duration:2.5,start:0}],total_seconds:2.5},used_tts:false,error:null,created_at:Date.now()/1000};
+  window.__videoJobs.unshift(vjob); result=vjob;
+  setTimeout(()=>emit('keel://video-job',vjob),100); break;
+ }
+ case 'read_workspace_video':result='data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28y';break;
  case 'get_runtime_status':result=runtime;break;
  case 'pick_documents':result=[{id:crypto.randomUUID(),name:'brief.txt',kind:'txt',text:'Project Harbor budget is 4800 euros.',truncated:false},{id:crypto.randomUUID(),name:'receipt.png',kind:'png',text:'Total due: 480 EUR',truncated:false,image_data_url:''' + json.dumps(PNG) + r'''}];break;
  case 'save_personal_context':cfg.personal_context=args.text;result=null;break;
@@ -425,6 +434,13 @@ async def main(port):
         await page.wait_for_function("document.querySelector('.generated-image')?.naturalWidth > 0")
         await page.locator('#view-tools').evaluate('(el) => { el.scrollTop = 0; }')
         await page.screenshot(path=str(OUTPUT / 'tools.png'))
+        await page.locator('#tool-video-open').click()
+        await page.locator('#video-render').wait_for()
+        await page.locator('#video-render').click()
+        await page.locator('[data-load-storyboard]').first.wait_for()
+        await page.screenshot(path=str(OUTPUT / 'tools-video.png'))
+        await page.locator('#tool-images-open').click()
+        await page.locator('#image-prompt').wait_for()
         assert await page.locator('.topbar').evaluate('(el) => el.getBoundingClientRect().top') >= 0
         # Verify local HTML assets are embedded and traversal/external URLs are untouched.
         result=await page.evaluate('''async () => {

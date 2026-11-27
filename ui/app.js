@@ -138,6 +138,7 @@ const els = {
 const images = createImageWorkspace({
   invoke,
   getWorkspace: () => appState.workspacePath,
+  getWorkspaceFiles: () => appState.workspaceFiles,
   getEndpoint: () => appState.bootstrap?.config.image_endpoint,
   getSdConfig: () => ({
     sd_cli_path: appState.bootstrap?.config.sd_cli_path,
@@ -477,6 +478,7 @@ async function init() {
       }
     });
     await events.listen("keel://image-job", () => images.onJob());
+    await events.listen("keel://video-job", () => images.onVideoJob());
     await events.listen("keel://agent-event", (ev) => handleAgentEvent(ev.payload));
     await events.listen("tauri://drag-enter", () => {
       document.querySelector(".models-drop-zone")?.classList.add("drop-active");

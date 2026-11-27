@@ -32,15 +32,16 @@ test("try-run success copy stays short and path-aware", () => {
   assert.match(formatAudioTryTtsSuccess(""), /artifacts/i);
 });
 
-test("hub badges: audio is Optional packs/try-run, video stays Planned", () => {
+test("hub badges: audio and short video are Optional", () => {
   const audio = CAPABILITIES.find((c) => c.id === "audio");
   const video = CAPABILITIES.find((c) => c.id === "video");
   assert.equal(audio.state, "available");
   assert.equal(capabilityBadgeLabel(audio), "Optional");
   assert.match(audio.detail, /Try STT|Try TTS|Settings packs/i);
   assert.match(audio.detail, /Not a chat-mode audio product/i);
-  assert.equal(video.state, "planned");
-  assert.equal(capabilityBadgeLabel(video), "Planned");
+  assert.equal(video.state, "available");
+  assert.equal(capabilityBadgeLabel(video), "Optional");
+  assert.equal(capabilityBadgeLabel({ id: "video", state: "planned" }), "Planned");
   assert.equal(capabilityBadgeLabel({ id: "text", state: "available" }), "Built in");
   assert.equal(capabilityBadgeLabel({ id: "images", state: "available" }), "Optional");
 });

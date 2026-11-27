@@ -47,6 +47,7 @@ static PREPARE_PACK_VRAM_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 pub struct AppState {
     pub images: keel_core::images::ImageService,
+    pub videos: keel_core::video::VideoService,
     pub turn_lock: Arc<Mutex<()>>,
     pub config_dir: PathBuf,
     pub data_dir: PathBuf,
@@ -2338,6 +2339,53 @@ pub async fn read_workspace_image(
 }
 
 #[tauri::command]
+pub async fn list_video_jobs(
+    state: State<'_, AppState>,
+) -> Result<Vec<keel_core::video::VideoJob>, String> {
+    Ok(state.videos.list().await)
+}
+
+#[tauri::command]
+pub async fn start_video_job(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace_path: String,
+    request: keel_core::video::VideoRequest,
+) -> Result<keel_core::video::VideoJob, String> {
+    state
+        .videos
+        .start(Path::new(&workspace_path), request, move |job| {
+            let _ = app.emit("keel://video-job", job);
+        })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn cancel_video_job(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<keel_core::video::VideoJob, String> {
+    state.videos.cancel(&id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn read_workspace_video(
+    workspace_path: String,
+    rel_path: String,
+) -> Result<String, String> {
+    keel_core::video::read_workspace_video(Path::new(&workspace_path), &rel_path)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn detect_video_tools() -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({
+        "ffmpeg": keel_core::video::detect_ffmpeg_binary(),
+    }))
+}
+
+#[tauri::command]
 pub async fn get_runtime_status(state: State<'_, AppState>) -> Result<RuntimeStatus, String> {
     Ok(state.runtime.lock().await.status())
 }
@@ -2816,6 +2864,7 @@ mod audio_prepare_pack_vram_wiring {
         fs::create_dir_all(&config_dir).unwrap();
         AppState {
             images: keel_core::images::ImageService::new(&data_dir).expect("image service"),
+            videos: keel_core::video::VideoService::new(&data_dir).expect("video service"),
             turn_lock: Arc::new(Mutex::new(())),
             config_dir,
             data_dir,
