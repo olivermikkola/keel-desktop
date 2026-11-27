@@ -31,5 +31,5 @@ test("capability library marks Settings audio packs/try-run and Short Video avai
   assert.match(audio.detail, /Not a chat-mode audio product/i);
   const video = CAPABILITIES.find((c) => c.id === "video");
   assert.equal(video.state, "available");
-  assert.match(video.detail, /FFmpeg/i);
+  assert.match(video.detail, /narrated video/i);
 });
