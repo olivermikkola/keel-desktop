@@ -1,5 +1,47 @@
 import { escapeHtml, renderMarkdown } from "./markdown.js";
 
+export const LIBRARY_CATEGORIES = [
+  { id: "all", label: "All" },
+  { id: "docs", label: "Documents" },
+  { id: "tables", label: "Spreadsheets" },
+  { id: "pages", label: "Web pages & slides" },
+  { id: "images", label: "Pictures" },
+  { id: "videos", label: "Videos" },
+];
+
+export function libraryCategoryFor(item) {
+  const kind = String(item?.kind || "").toLowerCase();
+  if (["mp4", "mov", "webm", "mkv"].includes(kind)) return "videos";
+  if (["png", "jpg", "jpeg", "webp", "gif", "svg"].includes(kind)) return "images";
+  if (["html", "htm", "slides"].includes(kind)) return "pages";
+  if (["csv", "tsv"].includes(kind)) return "tables";
+  if (["md", "txt", "pdf", "docx"].includes(kind)) return "docs";
+  return "other";
+}
+
+export function libraryBadgeLabel(item) {
+  const kind = String(item?.kind || "").toLowerCase();
+  const path = String(item?.path || "").toLowerCase();
+  if (path.includes("photo-slides/") || kind === "slides") return "PHOTO SLIDES";
+  if (["mp4", "mov", "webm", "mkv"].includes(kind)) return "VIDEO";
+  if (["png", "jpg", "jpeg", "webp", "gif", "svg"].includes(kind)) return "PICTURE";
+  if (["html", "htm"].includes(kind)) return "WEB PAGE";
+  if (["csv", "tsv"].includes(kind)) return "SPREADSHEET";
+  if (["md", "txt", "pdf", "docx"].includes(kind)) return "DOCUMENT";
+  return kind ? kind.toUpperCase() : "FILE";
+}
+
+export function filterLibraryItems(items = [], { category = "all", query = "", projectId = null } = {}) {
+  const needle = String(query || "").trim().toLowerCase();
+  return (items || []).filter((item) => {
+    if (projectId && item.project_id !== projectId) return false;
+    if (category && category !== "all" && libraryCategoryFor(item) !== category) return false;
+    if (!needle) return true;
+    const haystack = `${item.name || ""} ${item.path || ""} ${item.kind || ""} ${libraryBadgeLabel(item)}`.toLowerCase();
+    return haystack.includes(needle);
+  });
+}
+
 export function createEveryday(api) {
   let library = [];
   let searchVersion = 0;
@@ -149,11 +191,50 @@ export function createEveryday(api) {
 
   async function renderLibrary(container) {
     library = await invoke("list_library");
+    let activeCategory = "all";
     const draw = (query = "") => {
-      const filtered = library.filter((item) => `${item.name} ${item.kind}`.toLowerCase().includes(query.toLowerCase()) && (!state().activeProjectId || item.project_id === state().activeProjectId));
-      container.innerHTML = `<div class="hub-heading"><span class="eyebrow">MADE WITH KEEL</span><h1>Your work, in one place.</h1><p>Approved documents, websites, code, and generated images. Your files stay in their original folders.</p></div><input id="library-search" class="input" placeholder="Find a document, image, or file…" aria-label="Search library" value="${safe(query)}"/><div class="library-grid">${filtered.map((item, index) => `<button class="library-card" data-library-index="${index}"><span class="capability-badge">${safe(item.kind.toUpperCase() || "FILE")}</span><strong>${safe(item.name)}</strong><span class="muted mono">${safe(item.workspace_path)}</span><span class="library-open">Open in Work ↗</span></button>`).join("") || '<div class="image-empty"><p>Your finished work will appear here.</p><p class="muted">Create a document in Work and approve its changes, or make a picture in Apps.</p></div>'}</div>`;
-      container.querySelector("#library-search").oninput = (event) => { const position = event.target.selectionStart; draw(event.target.value); const input = container.querySelector("#library-search"); input.focus(); input.setSelectionRange(position, position); };
-      container.querySelectorAll("[data-library-index]").forEach((button) => { button.onclick = () => api.openArtifact(filtered[Number(button.dataset.libraryIndex)]); });
+      const filtered = filterLibraryItems(library, {
+        category: activeCategory,
+        query,
+        projectId: state().activeProjectId,
+      });
+      container.innerHTML = `<div class="hub-heading"><span class="eyebrow">LIBRARY</span><h1>Everything you made, in one place.</h1><p>Documents, spreadsheets, web pages, pictures, and short videos saved in your folders.</p></div>
+      <div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:12px" role="tablist" aria-label="Filter library">${LIBRARY_CATEGORIES.map((cat) => `<button type="button" class="btn btn-sm ${cat.id === activeCategory ? "btn-primary" : "btn-ghost"}" data-library-cat="${cat.id}">${safe(cat.label)}</button>`).join("")}</div>
+      <input id="library-search" class="input" placeholder="Search your documents, pictures, videos, or files…" aria-label="Search library" value="${safe(query)}"/>
+      <div class="library-grid">${filtered.map((item, index) => {
+        const isVideo = libraryCategoryFor(item) === "videos";
+        return `<button class="library-card" data-library-index="${index}"><span class="capability-badge">${safe(libraryBadgeLabel(item))}</span><strong>${safe(item.name)}</strong><span class="muted mono">${safe(item.workspace_path)}</span><span class="library-open">${isVideo ? "Play video ↗" : "Open ↗"}</span></button>`;
+      }).join("") || '<div class="image-empty"><p>Nothing matches yet.</p><p class="muted">Create a document in Work, or make pictures, videos, and slides in Apps.</p></div>'}</div>`;
+      container.querySelectorAll("[data-library-cat]").forEach((btn) => {
+        btn.onclick = () => { activeCategory = btn.dataset.libraryCat; draw(query); };
+      });
+      container.querySelector("#library-search").oninput = (event) => {
+        const position = event.target.selectionStart;
+        draw(event.target.value);
+        const input = container.querySelector("#library-search");
+        input.focus();
+        input.setSelectionRange(position, position);
+      };
+      container.querySelectorAll("[data-library-index]").forEach((button) => {
+        button.onclick = () => {
+          const item = filtered[Number(button.dataset.libraryIndex)];
+          if (!item) return;
+          if (libraryCategoryFor(item) === "videos") {
+            modal(item.name, (body) => {
+              body.innerHTML = `<video id="lib-video-player" class="generated-image" controls playsinline style="max-height:460px;background:#000"></video><p class="muted mono">${safe(item.workspace_path)}/${safe(item.path)}</p><div class="row" style="gap:8px"><button id="lib-copy-path" class="btn btn-sm">Copy file path</button></div>`;
+              body.querySelector("#lib-copy-path").onclick = async () => {
+                try { await navigator.clipboard.writeText(item.path); toast("Copied file path."); }
+                catch { toast(item.path); }
+              };
+              invoke("read_workspace_video", { workspacePath: item.workspace_path, relPath: item.path })
+                .then((src) => { const el = body.querySelector("#lib-video-player"); if (el) el.src = src; })
+                .catch((err) => toast(String(err)));
+            });
+            return;
+          }
+          api.openArtifact(item);
+        };
+      });
     };
     draw();
   }

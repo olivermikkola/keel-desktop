@@ -1,4 +1,4 @@
-import { escapeHtml, parseCsv, parseStudyDeck, renderMarkdown } from "./markdown.js";
+import { escapeHtml, isStudyChoiceCorrect, parseCsv, parseStudyDeck, renderMarkdown } from "./markdown.js";
 import { parseDiffLines } from "./state.js";
 
 export function renderDiffHtml(diffText = "") {
@@ -182,90 +182,102 @@ export function renderViewer(container, fileName, content, { onExportHtml } = {}
 
   const deck = parseStudyDeck(content);
   if (lower.endsWith(".md") && deck.cards.length > 0) {
-    container.innerHTML = "";
-    const wrap = document.createElement("div");
-    wrap.className = "viewer-scroll study-deck";
-    const quizCards = deck.cards.filter((c) => c.choices.length > 0);
-    const results = new Map();
-    const headRow = document.createElement("div");
-    headRow.className = "study-header-row";
-    const heading = document.createElement("h2");
-    heading.textContent = deck.title;
-    heading.style.margin = "0";
-    headRow.appendChild(heading);
-    const scoreEl = document.createElement("span");
-    scoreEl.className = "muted mono";
-    const updateScore = () => {
-      if (!quizCards.length) return;
-      const correctCount = [...results.values()].filter(Boolean).length;
-      scoreEl.textContent = `Score: ${correctCount} / ${quizCards.length}`;
-    };
-    if (quizCards.length) {
-      updateScore();
-      const resetBtn = document.createElement("button");
-      resetBtn.type = "button";
-      resetBtn.className = "btn btn-ghost btn-sm";
-      resetBtn.textContent = "Reset quiz";
-      resetBtn.addEventListener("click", () => renderViewer(container, fileName, content));
-      const right = document.createElement("div");
-      right.className = "row";
-      right.appendChild(scoreEl);
-      right.appendChild(resetBtn);
-      headRow.appendChild(right);
-    }
-    wrap.appendChild(headRow);
-
-    deck.cards.forEach((card, idx) => {
-      const el = document.createElement("div");
-      el.className = "study-card";
-      const q = document.createElement("div");
-      q.className = "study-question";
-      q.textContent = `${idx + 1}. ${card.question}`;
-      el.appendChild(q);
-
-      if (card.choices.length > 0) {
-        const list = document.createElement("div");
-        list.className = "study-choices";
-        const feedback = document.createElement("div");
-        feedback.className = "study-feedback";
-        card.choices.forEach((choice) => {
-          const btn = document.createElement("button");
-          btn.className = "btn btn-ghost btn-sm study-choice";
-          btn.textContent = choice;
-          btn.addEventListener("click", () => {
-            const correct = choice.toLowerCase() === card.answer.toLowerCase();
-            list.querySelectorAll(".study-choice").forEach((b) => b.classList.remove("selected-ok", "selected-warn"));
-            btn.classList.add(correct ? "selected-ok" : "selected-warn");
-            feedback.textContent = correct
-              ? `Correct: ${card.answer}`
-              : `Answer: ${card.answer}`;
-            feedback.dataset.state = correct ? "ok" : "warn";
-            results.set(idx, correct);
-            updateScore();
-          });
-          list.appendChild(btn);
-        });
-        el.appendChild(list);
-        el.appendChild(feedback);
-      } else {
-        const ans = document.createElement("div");
-        ans.className = "study-answer hidden";
-        ans.textContent = card.answer;
-        const toggle = document.createElement("button");
-        toggle.className = "btn btn-ghost btn-sm";
-        toggle.textContent = "Reveal answer";
-        toggle.addEventListener("click", () => {
-          ans.classList.toggle("hidden");
-          toggle.textContent = ans.classList.contains("hidden")
-            ? "Reveal answer"
-            : "Hide answer";
-        });
-        el.appendChild(toggle);
-        el.appendChild(ans);
+    const renderDeck = (subsetIndices = null) => {
+      container.innerHTML = "";
+      const wrap = document.createElement("div");
+      wrap.className = "viewer-scroll study-deck";
+      const visible = (subsetIndices || deck.cards.map((_, i) => i)).map((i) => ({ idx: i, card: deck.cards[i] }));
+      const quizCards = visible.filter((entry) => entry.card.choices.length > 0);
+      const results = new Map();
+      const headRow = document.createElement("div");
+      headRow.className = "study-header-row";
+      const heading = document.createElement("h2");
+      heading.textContent = subsetIndices ? `${deck.title} · Missed questions` : deck.title;
+      heading.style.margin = "0";
+      headRow.appendChild(heading);
+      const scoreEl = document.createElement("span");
+      scoreEl.className = "muted mono";
+      const retryMissedBtn = document.createElement("button");
+      retryMissedBtn.type = "button";
+      retryMissedBtn.className = "btn btn-sm hidden";
+      retryMissedBtn.textContent = "Retry missed";
+      const updateScore = () => {
+        if (!quizCards.length) return;
+        const correctCount = [...results.values()].filter(Boolean).length;
+        const missed = [...results.entries()].filter(([, ok]) => !ok).map(([id]) => id);
+        scoreEl.textContent = `Score: ${correctCount} / ${quizCards.length}`;
+        retryMissedBtn.classList.toggle("hidden", missed.length === 0);
+        retryMissedBtn.onclick = () => renderDeck(missed);
+      };
+      if (quizCards.length) {
+        updateScore();
+        const resetBtn = document.createElement("button");
+        resetBtn.type = "button";
+        resetBtn.className = "btn btn-ghost btn-sm";
+        resetBtn.textContent = subsetIndices ? "Show all" : "Reset quiz";
+        resetBtn.addEventListener("click", () => renderDeck(null));
+        const right = document.createElement("div");
+        right.className = "row";
+        right.appendChild(scoreEl);
+        right.appendChild(retryMissedBtn);
+        right.appendChild(resetBtn);
+        headRow.appendChild(right);
       }
-      wrap.appendChild(el);
-    });
-    container.appendChild(wrap);
+      wrap.appendChild(headRow);
+
+      visible.forEach(({ idx, card }, displayIdx) => {
+        const el = document.createElement("div");
+        el.className = "study-card";
+        const q = document.createElement("div");
+        q.className = "study-question";
+        q.textContent = `${displayIdx + 1}. ${card.question}`;
+        el.appendChild(q);
+
+        if (card.choices.length > 0) {
+          const list = document.createElement("div");
+          list.className = "study-choices";
+          const feedback = document.createElement("div");
+          feedback.className = "study-feedback";
+          card.choices.forEach((choice, choiceIdx) => {
+            const btn = document.createElement("button");
+            btn.className = "btn btn-ghost btn-sm study-choice";
+            btn.textContent = choice;
+            btn.addEventListener("click", () => {
+              const correct = isStudyChoiceCorrect(choice, choiceIdx, card.answer, card.choices);
+              list.querySelectorAll(".study-choice").forEach((b) => b.classList.remove("selected-ok", "selected-warn"));
+              btn.classList.add(correct ? "selected-ok" : "selected-warn");
+              feedback.textContent = correct
+                ? `Correct: ${choice}`
+                : `Answer: ${card.answer}`;
+              feedback.dataset.state = correct ? "ok" : "warn";
+              results.set(idx, correct);
+              updateScore();
+            });
+            list.appendChild(btn);
+          });
+          el.appendChild(list);
+          el.appendChild(feedback);
+        } else {
+          const ans = document.createElement("div");
+          ans.className = "study-answer hidden";
+          ans.textContent = card.answer;
+          const toggle = document.createElement("button");
+          toggle.className = "btn btn-ghost btn-sm";
+          toggle.textContent = "Reveal answer";
+          toggle.addEventListener("click", () => {
+            ans.classList.toggle("hidden");
+            toggle.textContent = ans.classList.contains("hidden")
+              ? "Reveal answer"
+              : "Hide answer";
+          });
+          el.appendChild(toggle);
+          el.appendChild(ans);
+        }
+        wrap.appendChild(el);
+      });
+      container.appendChild(wrap);
+    };
+    renderDeck(null);
     return;
   }
 

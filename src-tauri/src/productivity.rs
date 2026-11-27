@@ -421,6 +421,20 @@ pub async fn list_library(state: State<'_, AppState>) -> Result<Vec<LibraryItem>
             });
         }
     }
+    for job in state.videos.list().await {
+        if let Some(path) = job.artifact_path {
+            let key = format!("{}:{path}", job.workspace_path);
+            items.entry(key.clone()).or_insert(LibraryItem {
+                id: key,
+                name: job.request.title.clone().unwrap_or_else(|| path.clone()),
+                path,
+                workspace_path: job.workspace_path,
+                project_id: None,
+                kind: "mp4".into(),
+                updated_at: job.created_at,
+            });
+        }
+    }
     let mut result: Vec<_> = items.into_values().collect();
     result.retain(|item| {
         keel_core::tools::confine_path(std::path::Path::new(&item.workspace_path), &item.path)
