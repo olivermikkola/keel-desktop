@@ -2,8 +2,11 @@
 //! or rating questions across a stack of bills, contracts, letters, or PDFs
 //! privately using the active local model, then export a clean spreadsheet.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use std::fs::{self, OpenOptions};
+use std::io::{ErrorKind, Write};
+use std::path::Path;
 
 pub const MAX_DOCUMENTS: usize = 50;
 pub const MAX_QUESTIONS: usize = 10;
@@ -358,6 +361,41 @@ pub fn export_csv(questions: &[CheckQuestion], results: &[CheckDocumentResult]) 
     lines.join("\n")
 }
 
+/// Saves each export to a new file, including when two saves happen together.
+pub fn save_csv(
+    workspace: &Path,
+    questions: &[CheckQuestion],
+    results: &[CheckDocumentResult],
+) -> Result<String> {
+    let root = workspace
+        .canonicalize()
+        .context("Could not open the output folder.")?;
+    let csv = export_csv(questions, results);
+    let mut index = 1_u64;
+    loop {
+        let filename = if index == 1 {
+            "document-check-results.csv".to_string()
+        } else {
+            format!("document-check-results-{index}.csv")
+        };
+        let path = root.join(&filename);
+        let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                index += 1;
+                continue;
+            }
+            Err(error) => return Err(error).context("Could not create the document results CSV."),
+        };
+        if let Err(error) = file.write_all(csv.as_bytes()) {
+            drop(file);
+            let _ = fs::remove_file(&path);
+            return Err(error).context("Could not write the document results CSV.");
+        }
+        return Ok(filename);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,6 +486,44 @@ mod tests {
         assert!(combined
             .reason
             .contains("Part 2 suggests Receipt from “Paid in full.”"));
+    }
+
+    #[test]
+    fn saving_an_export_preserves_the_previous_file_and_gives_each_save_its_own_name() {
+        let root = std::env::temp_dir().join(format!("keel-check-export-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let previous = root.join("document-check-results.csv");
+        fs::write(&previous, "Previous report").unwrap();
+        let save = |name: &str| {
+            save_csv(
+                &root,
+                &[],
+                &[CheckDocumentResult {
+                    document_id: name.to_string(),
+                    document_name: name.to_string(),
+                    answers: vec![],
+                    error: None,
+                }],
+            )
+            .unwrap()
+        };
+        std::thread::scope(|scope| {
+            let first = scope.spawn(|| save("First report"));
+            let second = scope.spawn(|| save("Second report"));
+            let first = first.join().unwrap();
+            let second = second.join().unwrap();
+            assert_ne!(first, second);
+            assert_eq!(
+                fs::read_to_string(root.join(first)).unwrap(),
+                "Document\nFirst report"
+            );
+            assert_eq!(
+                fs::read_to_string(root.join(second)).unwrap(),
+                "Document\nSecond report"
+            );
+        });
+        assert_eq!(fs::read_to_string(previous).unwrap(), "Previous report");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
