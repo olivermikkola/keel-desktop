@@ -423,6 +423,7 @@ export function createImageWorkspace({
     render(target) { container = target; render(); },
     isDocumentCheckOpen() { return state.activeTool === "decide"; },
     addDroppedDocuments: documentCheckStudio.addDroppedDocuments,
+    onDocumentCheckProgress: documentCheckStudio.onProgress,
     reload,
     async onJob() { await reload(); await refresh(); },
     async onVideoJob() {

@@ -2579,7 +2579,7 @@ pub async fn run_document_check(
         question.validate().map_err(|e| e.to_string())?;
     }
 
-    let mut batch = state.document_check.begin(run_id)?;
+    let mut batch = state.document_check.begin(run_id.clone())?;
     let cfg = state.config.lock().await.clone();
     let mut rt_status = state.runtime.lock().await.status();
     if !matches!(rt_status.state.as_str(), "running" | "external") {
@@ -2603,8 +2603,9 @@ pub async fn run_document_check(
         None
     };
 
-    let mut results = Vec::with_capacity(documents.len());
-    for doc in documents {
+    let document_total = documents.len();
+    let mut results = Vec::with_capacity(document_total);
+    for (document_index, doc) in documents.into_iter().enumerate() {
         let chunks =
             keel_core::decide::split_document_chunks(&doc.text, keel_core::decide::MAX_CHUNK_CHARS);
         if chunks.is_empty() {
@@ -2619,7 +2620,20 @@ pub async fn run_document_check(
         }
         let mut answers = Vec::with_capacity(questions.len());
         let mut doc_error = None;
-        for question in &questions {
+        for (question_index, question) in questions.iter().enumerate() {
+            if batch.is_stopped() {
+                return Ok(None);
+            }
+            let _ = app.emit(
+                "keel://document-check-progress",
+                serde_json::json!({
+                    "run_id": run_id,
+                    "document_index": document_index + 1,
+                    "document_total": document_total,
+                    "question_index": question_index + 1,
+                    "question_total": questions.len(),
+                }),
+            );
             let base_url = base_url.as_str();
             let model_name = model_name.as_str();
             let api_key = api_key.as_deref();
