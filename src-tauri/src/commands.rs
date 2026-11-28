@@ -60,6 +60,7 @@ pub struct AppState {
     pub download_lock: Mutex<()>,
     pub setup_pause: Mutex<Option<watch::Sender<bool>>>,
     pub active_cli_stop: Mutex<Option<watch::Sender<bool>>>,
+    pub document_check: crate::document_check::DocumentCheckControl,
     pub(crate) placement_cache: Mutex<Option<PlacementCache>>,
     pub(crate) mcp_cache: Mutex<Option<McpCache>>,
 }
@@ -2558,9 +2559,10 @@ pub async fn generate_photo_slides_text(
 pub async fn run_document_check(
     app: AppHandle,
     state: State<'_, AppState>,
+    run_id: String,
     documents: Vec<keel_core::decide::CheckDocumentInput>,
     questions: Vec<keel_core::decide::CheckQuestion>,
-) -> Result<Vec<keel_core::decide::CheckDocumentResult>, String> {
+) -> Result<Option<Vec<keel_core::decide::CheckDocumentResult>>, String> {
     if documents.is_empty() || documents.len() > keel_core::decide::MAX_DOCUMENTS {
         return Err(format!(
             "Add between 1 and {} documents to check.",
@@ -2577,6 +2579,7 @@ pub async fn run_document_check(
         question.validate().map_err(|e| e.to_string())?;
     }
 
+    let mut batch = state.document_check.begin(run_id)?;
     let cfg = state.config.lock().await.clone();
     let mut rt_status = state.runtime.lock().await.status();
     if !matches!(rt_status.state.as_str(), "running" | "external") {
@@ -2620,7 +2623,7 @@ pub async fn run_document_check(
             for chunk in &chunks {
                 let (system, user) =
                     keel_core::decide::build_check_prompt(&doc.name, chunk, question);
-                match keel_core::agent::complete_plain_text(
+                let reply = keel_core::agent::complete_plain_text(
                     &base_url,
                     &model_name,
                     &system,
@@ -2628,9 +2631,11 @@ pub async fn run_document_check(
                     160,
                     api_key.as_deref(),
                     rt_status.state == "running",
-                )
-                .await
-                {
+                );
+                let Some(reply) = batch.request(reply).await else {
+                    return Ok(None);
+                };
+                match reply {
                     Ok(reply) => {
                         part_answers.push(keel_core::decide::parse_check_answer(
                             &reply, question, chunk,
@@ -2656,7 +2661,12 @@ pub async fn run_document_check(
             error: doc_error,
         });
     }
-    Ok(results)
+    Ok((!batch.is_stopped()).then_some(results))
+}
+
+#[tauri::command]
+pub fn stop_document_check(state: State<'_, AppState>, run_id: String) -> bool {
+    state.document_check.stop(&run_id)
 }
 
 #[tauri::command]
@@ -3165,6 +3175,7 @@ mod audio_prepare_pack_vram_wiring {
             download_lock: Mutex::new(()),
             setup_pause: Mutex::new(None),
             active_cli_stop: Mutex::new(None),
+            document_check: Default::default(),
             placement_cache: Mutex::new(None),
             mcp_cache: Mutex::new(None),
         }

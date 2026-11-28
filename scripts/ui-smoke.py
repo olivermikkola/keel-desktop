@@ -60,6 +60,10 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  case 'read_photo_slides_html':result=fileContent[args.relPath] || '<!doctype html><html><body><h1>Photo Slides</h1></body></html>';break;
  case 'generate_photo_slides_text':result=[{kind:'cover',headline:'Weekend in Porvoo',body:'Four stops worth the trip.'},{kind:'photo',headline:'Old town bridge',body:'Morning coffee by the river.'},{kind:'closing',headline:'Save for later',body:'Easy day trip from Helsinki.'}];break;
  case 'run_document_check': {
+  if (window.__test.holdDocumentCheck) {
+   window.__test.holdDocumentCheck = false;
+   return new Promise(resolve => { window.__test.documentCheck = {id:args.runId, stop:() => resolve(null)}; });
+  }
   const replies = {
    yes_no: {answer:'Yes', confidence:0.94, evidence:'Amount due: 68 EUR', unsure:false, part:2},
    scale: {answer:'Within a few weeks', confidence:0.58, evidence:'Due by Friday.', unsure:true, part:3},
@@ -70,6 +74,11 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
    answers:args.questions.map(q => ({question_id:q.id, total_parts:3, ...replies[q.kind]})),
   }));
   break;
+ }
+ case 'stop_document_check': {
+  const run = window.__test.documentCheck;
+  if (!run || run.id !== args.runId) { result=false; break; }
+  run.stop(); window.__test.documentCheck=null; result=true; break;
  }
  case 'export_document_check_csv':result='document-check-results.csv';break;
  case 'get_runtime_status':result=runtime;break;
@@ -508,6 +517,15 @@ async def main(port):
         assert await page.locator('#check-copy-csv').count() == 0
         await page.locator('#check-run').click()
         await page.locator('#check-copy-csv').wait_for()
+        await page.evaluate('window.__test.holdDocumentCheck = true')
+        await page.locator('#check-run').click()
+        await page.wait_for_function('Boolean(window.__test.documentCheck)')
+        await page.locator('#check-stop').scroll_into_view_if_needed()
+        await page.screenshot(path=str(OUTPUT / 'tools-stop-document-check.png'))
+        await page.locator('#check-stop').click()
+        await page.get_by_text('Document check stopped.', exact=True).wait_for()
+        await page.locator('#check-copy-csv').wait_for()
+        assert await page.locator('#check-run').is_enabled()
         await page.locator('[data-remove-doc="0"]').click()
         assert await page.locator('#check-copy-csv').count() == 0
         assert await page.locator('#check-save-csv').count() == 0
