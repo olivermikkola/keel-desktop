@@ -12,6 +12,7 @@ MOCK = r'''(() => {
 if (window.top !== window.self) return;
 localStorage.setItem('keel_welcome_done', '1');
 const listeners = {}, sessions = [], jobs = [], projects = [];
+const deletedSessions = new Map();
 let cfg = {selected_model_id:'test',external_base_url:null,external_model_name:null,image_endpoint:null,recent_workspaces:[],harness_mode:'keel', custom_model_paths:{}};
 let runtime = {state:'stopped',active_model_id:null,base_url:'http://127.0.0.1:18180/v1'};
 const presets = ['chat','general','code','websites','docs','sheets','study','slides'].map(id => ({id,title:({chat:'Chat',general:'Work',code:'Code'})[id] || id[0].toUpperCase()+id.slice(1),summary:'A useful local workspace',starters:['Help me get started'],tools:[]}));
@@ -96,6 +97,19 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  case 'search_threads':result=sessions.filter(s=>(!args.projectId||s.project_id===args.projectId)&&(s.title+' '+s.messages.map(m=>m.content).join(' ')).toLowerCase().includes(args.query.toLowerCase()));break;
  case 'update_thread':{const thread=sessions.find(s=>s.id===args.id);Object.assign(thread,{title:args.title,pinned:args.pinned,project_id:args.projectId});result=thread;break;}
  case 'fork_thread':{const previous=sessions.find(s=>s.id===args.id);const index=previous.messages.findIndex(m=>m.id===args.beforeMessageId);result={...structuredClone(previous),id:crypto.randomUUID(),messages:previous.messages.slice(0,index),staged_edits:[]};sessions.unshift(result);break;}
+ case 'delete_session_cmd': {
+  const index = sessions.findIndex(session => session.id === args.id);
+  const [session] = sessions.splice(index, 1);
+  deletedSessions.set(session.id, session);
+  result=sessions;
+  break;
+ }
+ case 'restore_thread': {
+  sessions.unshift(deletedSessions.get(args.id));
+  deletedSessions.delete(args.id);
+  result=sessions;
+  break;
+ }
  case 'list_trashed_threads':result=[];break;
  case 'empty_trash':result=null;break;
  case 'list_library':result=files.map(path=>({id:path,name:path,path,kind:path.split('.').pop(),workspace_path:'/test/project',project_id:projects[0]?.id || null,updated_at:Date.now()/1000}));break;
@@ -446,8 +460,15 @@ async def main(port):
         assert await page.locator('#harness-pill-btn').is_visible()
         assert await page.locator('#viewer-pane').is_visible()
         await page.locator('#prompt-input').fill('Inspect this repository')
+        await page.evaluate("window.__test.emit('keel://preference-saved', {})")
+        await page.locator('#global-notice').get_by_text('Saved to preferences.', exact=False).wait_for()
+        toast_box = await page.locator('#global-notice').bounding_box()
+        send_box = await page.locator('#send-btn').bounding_box()
+        assert toast_box['y'] + toast_box['height'] < send_box['y']
+        await page.screenshot(path=str(OUTPUT / 'code-send-with-toast.png'))
         await page.locator('#send-btn').click()
         await page.get_by_text('Ready to help.',exact=True).wait_for()
+        assert await page.locator('#global-notice').is_visible()
         await page.locator('[data-viewer-tab=diff]').click()
         await page.locator('#code-worktree-create').click()
         await page.locator('#code-test-cmd').fill('pytest -q --fail')
@@ -466,6 +487,12 @@ async def main(port):
         await page.screenshot(path=str(OUTPUT / 'code.png'))
         await page.locator('#code-patch-undo').click()
         await page.locator('#code-patch-undo').wait_for(state='hidden')
+        active_thread = page.locator('.recent-item.active')
+        await active_thread.hover()
+        await active_thread.get_by_role('button', name='Delete chat').click()
+        await page.locator('#global-notice').get_by_role('button', name='Undo', exact=True).click()
+        await page.locator('#global-notice').get_by_text('Conversation restored.').wait_for()
+        await active_thread.get_by_text('Inspect this repository', exact=True).wait_for()
         await page.locator('[data-view=tools]').click()
         await page.locator('[data-open-preset="study"]').wait_for()
         apps_hub_text = await page.locator('#view-tools').inner_text()
