@@ -495,6 +495,7 @@ async function init() {
       document.querySelector(".chat-column")?.classList.remove("drop-active");
       const paths = ev.payload?.paths || [];
       if (!paths.length) return;
+      const toDocumentCheck = appState.activeView === "tools" && images.isDocumentCheckOpen();
       const ggufs = paths.filter((p) => String(p).toLowerCase().endsWith(".gguf"));
       const others = paths.filter((p) => !String(p).toLowerCase().endsWith(".gguf"));
       if (ggufs.length) {
@@ -542,6 +543,10 @@ async function init() {
           showToast(`Opened folder ${shortPath(targetDir)}`);
         }
         if (files.length) {
+          if (toDocumentCheck) {
+            await images.addDroppedDocuments(files);
+            return;
+          }
           try {
             const documents = await invoke("import_documents_from_paths", { paths: files });
             appState.pendingDocuments.push(...documents);

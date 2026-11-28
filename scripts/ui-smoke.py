@@ -548,6 +548,15 @@ async def main(port):
         assert saved[0]['truncated'] is True, saved
         await document_check.evaluate("(el) => el.scrollIntoView({block: 'start'})")
         await page.screenshot(path=str(OUTPUT / 'tools-check-partial-document.png'))
+        await page.evaluate("window.__test.emit('tauri://drag-drop', {paths:['/test/dropped-invoice.txt']})")
+        await document_check.get_by_text('dropped-invoice.txt').wait_for()
+        assert await page.locator('#attachment-chips').get_by_text('dropped-invoice.txt').count() == 0
+        assert await page.locator('#check-copy-csv').count() == 0
+        await document_check.evaluate("(el) => el.scrollIntoView({block: 'start'})")
+        await page.screenshot(path=str(OUTPUT / 'tools-check-dropped-document.png'))
+        await page.locator('#check-run').click()
+        await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='run_document_check'&&c.args.documents.some(d=>d.name==='dropped-invoice.txt'))")
+        await page.locator('#check-copy-csv').wait_for()
         await page.locator('#tool-images-open').click()
         await page.locator('#image-prompt').wait_for()
         assert await page.locator('.topbar').evaluate('(el) => el.getBoundingClientRect().top') >= 0
