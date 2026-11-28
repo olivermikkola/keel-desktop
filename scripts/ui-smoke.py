@@ -712,8 +712,41 @@ async def main(port):
         await paused.locator('#welcome-overlay').wait_for(state='hidden')
         assert not paused.errors, paused.errors
         await paused.close()
+        await document_check_actions_at_minimum_size(browser, port)
         print('PASS: first-run welcome and setup (progress, queued first question, error and skip), launch wake-up, attachments, source preview, saved preferences, projects, thread rename/pin/search, Chat/Work/Code, file approval, Library, Images, safe HTML previews; no browser errors.')
         await browser.close()
+
+async def document_check_actions_at_minimum_size(browser, port):
+    page = await new_page(browser, port)
+    await page.set_viewport_size({'width': 880, 'height': 600})
+    await page.locator('[data-view=tools]').click()
+    await page.locator('#tool-decide-open').click()
+    run = page.locator('#check-run')
+    assert await run.is_disabled()
+    await page.locator('#check-pick-files').click()
+    await page.get_by_text('brief.txt', exact=False).wait_for()
+    await page.locator('#document-check-host').evaluate("(el) => el.scrollIntoView({block: 'start'})")
+
+    run_box = await run.bounding_box()
+    assert 48 <= run_box['y'] < 160, run_box
+    await page.screenshot(path=str(OUTPUT / 'tools-run-document-check-compact.png'))
+    await page.evaluate('window.__test.holdDocumentCheck = true')
+    await run.press('Enter')
+    await page.wait_for_function('Boolean(window.__test.documentCheck)')
+    await page.wait_for_function("document.activeElement.id === 'check-stop'")
+
+    await page.locator('#view-tools').evaluate('(el) => el.scrollBy(0, 350)')
+    stop = page.locator('#check-stop')
+    stop_box = await stop.bounding_box()
+    assert 48 <= stop_box['y'] < 160, stop_box
+    print(f"Compact Check Documents: Run y={run_box['y']:.0f}, Stop y={stop_box['y']:.0f} after scrolling.")
+    await page.screenshot(path=str(OUTPUT / 'tools-stop-document-check-compact.png'))
+    await stop.press('Enter')
+    await page.get_by_text('Document check stopped.', exact=True).wait_for()
+    await page.wait_for_function("document.activeElement.id === 'check-run'")
+    assert await run.is_enabled()
+    assert not page.errors, page.errors
+    await page.close()
 
 if __name__ == '__main__':
     server = ThreadingHTTPServer(('127.0.0.1', 0), partial(SimpleHTTPRequestHandler, directory=str(ROOT / 'ui')))

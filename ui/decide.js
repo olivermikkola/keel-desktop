@@ -120,10 +120,21 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
     const resultStatus = failedCount
       ? (total === 1 ? "Couldn’t finish checking this document." : `Couldn’t finish checking ${failedCount} of ${total} documents.`)
       : `Checked ${total} document${total === 1 ? "" : "s"}.`;
+    const restoreToolbarFocus = host.querySelector(".document-check-toolbar")?.contains(document.activeElement);
     host.innerHTML = `
-      <div class="image-workspace">
+      <div class="image-workspace document-check-workspace">
+        <header class="document-check-toolbar" tabindex="-1">
+          <h2>Check Documents</h2>
+          <div class="row">
+            ${state.busy ? `
+              <span class="muted" role="status">${state.stopping ? "Stopping…" : "Checking documents…"}</span>
+              <button type="button" id="check-stop" class="btn" ${state.stopping ? "disabled" : ""}>Stop check</button>
+            ` : `
+              <button type="button" id="check-run" class="btn btn-primary" ${state.importing || !state.documents.length || !state.questions.length ? "disabled" : ""}>${state.documents.length ? `Check ${state.documents.length} document${state.documents.length === 1 ? "" : "s"}` : "Check documents"}</button>
+            `}
+          </div>
+        </header>
         <section class="image-controls card">
-          <div class="row"><h2>Check Documents</h2><span class="capability-badge">Compare files</span></div>
           <p class="muted">Drop in bills, receipts, contracts, PDFs, or photos of letters. Ask the same questions about every file and review the answers alongside quotes from the files.</p>
 
           <label style="font-weight:600;color:var(--text)">1. Add files to check (${state.documents.length})</label>
@@ -176,8 +187,6 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
             <button type="button" id="check-add-q" class="btn btn-sm" ${state.busy || state.questions.length >= 10 || !state.newQPrompt.trim() ? "disabled" : ""}>+ Add question</button>
           </div>
 
-          <button type="button" id="check-run" class="btn btn-primary" ${state.busy || state.importing || !state.documents.length || !state.questions.length ? "disabled" : ""}>${state.busy ? (state.stopping ? "Stopping…" : "Checking documents…") : `Check ${state.documents.length || ""} document${state.documents.length === 1 ? "" : "s"}`}</button>
-          ${state.busy ? `<button type="button" id="check-stop" class="btn" ${state.stopping ? "disabled" : ""}>Stop check</button>` : ""}
         </section>
 
         <section class="image-results" aria-live="polite">
@@ -211,9 +220,15 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
                   }).join("")}
                 </article>`).join("")}
             </div>
-          ` : '<div class="image-empty"><p>Your answers table will appear here.</p><p class="muted">Add one or more files on the left, pick a starter question pack, and click Check documents. Review the source quotes to verify the answers.</p></div>'}
+          ` : '<div class="image-empty"><p>Answers and source quotes appear here after a check.</p></div>'}
         </section>
       </div>`;
+
+    if (restoreToolbarFocus) {
+      const focusTarget = host.querySelector("#check-run:enabled, #check-stop:enabled")
+        ?? host.querySelector(".document-check-toolbar");
+      focusTarget.focus({ preventScroll: true });
+    }
 
     const inputsChanged = () => {
       state.results = [];
@@ -308,7 +323,7 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
       inputsChanged();
     };
 
-    host.querySelector("#check-run").onclick = async () => {
+    host.querySelector("#check-run")?.addEventListener("click", async () => {
       const runId = crypto.randomUUID();
       state.runId = runId;
       renderInto(host);
@@ -330,7 +345,7 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
         state.stopping = false;
         renderInto(mountedHost);
       }
-    };
+    });
 
     const stopBtn = host.querySelector("#check-stop");
     if (stopBtn) {
