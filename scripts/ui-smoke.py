@@ -469,6 +469,13 @@ async def main(port):
         await page.locator('#check-run').click()
         await page.locator('#document-check-host').get_by_text('94%', exact=False).first.wait_for()
         await page.screenshot(path=str(OUTPUT / 'tools-check-documents.png'))
+        await page.locator('[data-pack="contracts"]').click()
+        assert await page.locator('#check-copy-csv').count() == 0
+        await page.locator('#check-run').click()
+        await page.locator('#check-copy-csv').wait_for()
+        await page.locator('[data-remove-doc="0"]').click()
+        assert await page.locator('#check-copy-csv').count() == 0
+        assert await page.locator('#check-save-csv').count() == 0
         await page.locator('#tool-images-open').click()
         await page.locator('#image-prompt').wait_for()
         assert await page.locator('.topbar').evaluate('(el) => el.getBoundingClientRect().top') >= 0

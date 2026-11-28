@@ -69,6 +69,7 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
     newQKind: "yes_no",
     newQOptions: "",
     busy: false,
+    picking: false,
     progress: "",
   };
 
@@ -82,14 +83,14 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
 
           <label style="font-weight:600;color:var(--text)">1. Add files to check (${state.documents.length})</label>
           <div class="row" style="gap:8px;flex-wrap:wrap">
-            <button type="button" id="check-pick-files" class="btn btn-sm" ${state.busy ? "disabled" : ""}>Add PDFs, Word docs, or photos</button>
+            <button type="button" id="check-pick-files" class="btn btn-sm" ${state.busy || state.picking || state.documents.length >= 50 ? "disabled" : ""}>Add PDFs, Word docs, or photos</button>
             <button type="button" id="check-toggle-paste" class="btn btn-sm btn-ghost" ${state.busy ? "disabled" : ""}>${state.pasting ? "Hide paste box" : "Paste text"}</button>
             ${state.documents.length ? `<button type="button" id="check-clear-docs" class="btn btn-sm btn-ghost" ${state.busy ? "disabled" : ""}>Clear all</button>` : ""}
           </div>
           ${state.pasting ? `
             <div class="video-scene-card">
               <textarea id="check-paste-text" class="input" rows="4" placeholder="Paste the text of a bill, email, or contract here…">${escapeHtml(state.pasteText)}</textarea>
-              <button type="button" id="check-add-paste" class="btn btn-sm">Add pasted text</button>
+              <button type="button" id="check-add-paste" class="btn btn-sm" ${state.busy || state.documents.length >= 50 ? "disabled" : ""}>Add pasted text</button>
             </div>
           ` : ""}
           ${state.documents.length ? `<div class="video-scene-list">${state.documents.map((doc, idx) => `
@@ -130,7 +131,7 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
             <button type="button" id="check-add-q" class="btn btn-sm" ${state.busy || state.questions.length >= 10 || !state.newQPrompt.trim() ? "disabled" : ""}>+ Add question</button>
           </div>
 
-          <button type="button" id="check-run" class="btn btn-primary" ${state.busy || !state.documents.length || !state.questions.length ? "disabled" : ""}>${state.busy ? escapeHtml(state.progress || "Checking documents…") : `Check ${state.documents.length || ""} document${state.documents.length === 1 ? "" : "s"}`}</button>
+          <button type="button" id="check-run" class="btn btn-primary" ${state.busy || state.picking || !state.documents.length || !state.questions.length ? "disabled" : ""}>${state.busy ? escapeHtml(state.progress || "Checking documents…") : `Check ${state.documents.length || ""} document${state.documents.length === 1 ? "" : "s"}`}</button>
         </section>
 
         <section class="image-results" aria-live="polite">
@@ -162,17 +163,28 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
         </section>
       </div>`;
 
+    const inputsChanged = () => {
+      state.results = [];
+      renderInto(host);
+    };
+
     host.querySelector("#check-pick-files").onclick = async () => {
+      state.picking = true;
+      renderInto(host);
       try {
         const picked = await invoke("pick_documents");
-        for (const doc of picked || []) {
-          if (state.documents.length < 50) {
-            state.documents.push({ id: doc.id || crypto.randomUUID(), name: doc.name, text: doc.text });
-          }
+        const added = (picked || []).slice(0, 50 - state.documents.length);
+        if (added.length) {
+          state.documents.push(...added.map((doc) => ({
+            id: doc.id || crypto.randomUUID(), name: doc.name, text: doc.text,
+          })));
+          state.results = [];
         }
-        renderInto(host);
       } catch (err) {
         notice(String(err));
+      } finally {
+        state.picking = false;
+        renderInto(host);
       }
     };
 
@@ -185,8 +197,7 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
     if (clearDocs) {
       clearDocs.onclick = () => {
         state.documents = [];
-        state.results = [];
-        renderInto(host);
+        inputsChanged();
       };
     }
 
@@ -201,14 +212,14 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
         state.documents.push({ id: crypto.randomUUID(), name: firstLine, text: txt });
         state.pasteText = "";
         state.pasting = false;
-        renderInto(host);
+        inputsChanged();
       };
     }
 
     host.querySelectorAll("[data-remove-doc]").forEach((btn) => {
       btn.onclick = () => {
         state.documents.splice(Number(btn.dataset.removeDoc), 1);
-        renderInto(host);
+        inputsChanged();
       };
     });
 
@@ -217,14 +228,14 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
         const pack = CHECK_STARTER_PACKS.find((p) => p.id === btn.dataset.pack);
         if (!pack) return;
         state.questions = pack.questions.map((q) => ({ ...q, options: [...q.options] }));
-        renderInto(host);
+        inputsChanged();
       };
     });
 
     host.querySelectorAll("[data-remove-q]").forEach((btn) => {
       btn.onclick = () => {
         state.questions.splice(Number(btn.dataset.removeQ), 1);
-        renderInto(host);
+        inputsChanged();
       };
     });
 
@@ -259,7 +270,7 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
       state.questions.push({ id: `q-${Date.now()}`, kind: state.newQKind, prompt, options });
       state.newQPrompt = "";
       state.newQOptions = "";
-      renderInto(host);
+      inputsChanged();
     };
 
     host.querySelector("#check-run").onclick = async () => {
