@@ -79,10 +79,38 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
     runId: null,
     get busy() { return this.runId !== null; },
     stopping: false,
-    picking: false,
+    importing: false,
   };
 
   let mountedHost;
+
+  async function addDocuments(loadDocuments) {
+    if (state.busy || state.importing) {
+      notice("Wait for the current check or import before adding files.");
+      return;
+    }
+    if (state.documents.length >= 50) {
+      notice("Remove a document before adding more files.");
+      return;
+    }
+    state.importing = true;
+    if (mountedHost?.isConnected) renderInto(mountedHost);
+    try {
+      const documents = await loadDocuments();
+      const added = (documents || []).slice(0, 50 - state.documents.length);
+      if (added.length) {
+        state.documents.push(...added.map((doc) => ({
+          id: doc.id || crypto.randomUUID(), name: doc.name, text: doc.text, truncated: doc.truncated,
+        })));
+        state.results = [];
+      }
+    } catch (error) {
+      notice(String(error));
+    } finally {
+      state.importing = false;
+      if (mountedHost?.isConnected) renderInto(mountedHost);
+    }
+  }
 
   function renderInto(host) {
     if (!host) return;
@@ -95,7 +123,7 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
 
           <label style="font-weight:600;color:var(--text)">1. Add files to check (${state.documents.length})</label>
           <div class="row" style="gap:8px;flex-wrap:wrap">
-            <button type="button" id="check-pick-files" class="btn btn-sm" ${state.busy || state.picking || state.documents.length >= 50 ? "disabled" : ""}>Add PDFs, Word docs, or photos</button>
+            <button type="button" id="check-pick-files" class="btn btn-sm" ${state.busy || state.importing || state.documents.length >= 50 ? "disabled" : ""}>Add PDFs, Word docs, or photos</button>
             <button type="button" id="check-toggle-paste" class="btn btn-sm btn-ghost" ${state.busy ? "disabled" : ""}>${state.pasting ? "Hide paste box" : "Paste text"}</button>
             ${state.documents.length ? `<button type="button" id="check-clear-docs" class="btn btn-sm btn-ghost" ${state.busy ? "disabled" : ""}>Clear all</button>` : ""}
           </div>
@@ -143,7 +171,7 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
             <button type="button" id="check-add-q" class="btn btn-sm" ${state.busy || state.questions.length >= 10 || !state.newQPrompt.trim() ? "disabled" : ""}>+ Add question</button>
           </div>
 
-          <button type="button" id="check-run" class="btn btn-primary" ${state.busy || state.picking || !state.documents.length || !state.questions.length ? "disabled" : ""}>${state.busy ? (state.stopping ? "Stopping…" : "Checking documents…") : `Check ${state.documents.length || ""} document${state.documents.length === 1 ? "" : "s"}`}</button>
+          <button type="button" id="check-run" class="btn btn-primary" ${state.busy || state.importing || !state.documents.length || !state.questions.length ? "disabled" : ""}>${state.busy ? (state.stopping ? "Stopping…" : "Checking documents…") : `Check ${state.documents.length || ""} document${state.documents.length === 1 ? "" : "s"}`}</button>
           ${state.busy ? `<button type="button" id="check-stop" class="btn" ${state.stopping ? "disabled" : ""}>Stop check</button>` : ""}
         </section>
 
@@ -186,25 +214,8 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
       renderInto(host);
     };
 
-    host.querySelector("#check-pick-files").onclick = async () => {
-      state.picking = true;
-      renderInto(host);
-      try {
-        const picked = await invoke("pick_documents");
-        const added = (picked || []).slice(0, 50 - state.documents.length);
-        if (added.length) {
-          state.documents.push(...added.map((doc) => ({
-            id: doc.id || crypto.randomUUID(), name: doc.name, text: doc.text, truncated: doc.truncated,
-          })));
-          state.results = [];
-        }
-      } catch (err) {
-        notice(String(err));
-      } finally {
-        state.picking = false;
-        renderInto(host);
-      }
-    };
+    host.querySelector("#check-pick-files").onclick = () =>
+      addDocuments(() => invoke("pick_documents"));
 
     host.querySelector("#check-toggle-paste").onclick = () => {
       state.pasting = !state.pasting;
@@ -363,5 +374,8 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
     }
   }
 
-  return { renderInto };
+  return {
+    renderInto,
+    addDroppedDocuments: (paths) => addDocuments(() => invoke("import_documents_from_paths", { paths })),
+  };
 }
