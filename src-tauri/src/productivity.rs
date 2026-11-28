@@ -4,11 +4,37 @@ use keel_core::{
     projects::{self, Project},
     sessions::{self, ChatSession, SessionSummary},
 };
+use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_dialog::DialogExt;
 
+#[derive(Default, serde::Serialize)]
+pub struct DocumentImport {
+    documents: Vec<Document>,
+    errors: Vec<String>,
+}
+
+fn import_documents(paths: impl IntoIterator<Item = Result<PathBuf, String>>) -> DocumentImport {
+    let mut batch = DocumentImport::default();
+    for path in paths {
+        let imported = path.and_then(|path| {
+            keel_core::documents::import_document(&path).map_err(|error| {
+                format!(
+                    "{}: {error}",
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                )
+            })
+        });
+        match imported {
+            Ok(document) => batch.documents.push(document),
+            Err(error) => batch.errors.push(error),
+        }
+    }
+    batch
+}
+
 #[tauri::command]
-pub async fn pick_documents(app: AppHandle) -> Result<Vec<Document>, String> {
+pub async fn pick_documents(app: AppHandle) -> Result<DocumentImport, String> {
     tokio::task::spawn_blocking(move || {
         let files = app
             .dialog()
@@ -27,18 +53,9 @@ pub async fn pick_documents(app: AppHandle) -> Result<Vec<Document>, String> {
         if files.len() > 8 {
             return Err("Choose up to 8 documents at a time".to_string());
         }
-        files
-            .into_iter()
-            .map(|file| {
-                let path = file.into_path().map_err(|e| e.to_string())?;
-                keel_core::documents::import_document(&path).map_err(|e| {
-                    format!(
-                        "{}: {e}",
-                        path.file_name().unwrap_or_default().to_string_lossy()
-                    )
-                })
-            })
-            .collect()
+        Ok(import_documents(files.into_iter().map(|file| {
+            file.into_path().map_err(|error| error.to_string())
+        })))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -50,26 +67,15 @@ pub async fn is_directory(path: String) -> bool {
 }
 
 #[tauri::command]
-pub async fn import_documents_from_paths(paths: Vec<String>) -> Result<Vec<Document>, String> {
+pub async fn import_documents_from_paths(paths: Vec<String>) -> Result<DocumentImport, String> {
     if paths.len() > 8 {
         return Err("Drop up to 8 documents at a time".to_string());
     }
     tokio::task::spawn_blocking(move || {
-        paths
-            .into_iter()
-            .map(|raw| {
-                let path = std::path::PathBuf::from(raw);
-                keel_core::documents::import_document(&path).map_err(|e| {
-                    format!(
-                        "{}: {e}",
-                        path.file_name().unwrap_or_default().to_string_lossy()
-                    )
-                })
-            })
-            .collect()
+        import_documents(paths.into_iter().map(|path| Ok(path.into())))
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -571,4 +577,31 @@ pub async fn open_external_link(app: AppHandle, url: String) -> Result<(), Strin
     app.opener()
         .open_url(url, None::<&str>)
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod document_import_tests {
+    use super::*;
+
+    #[test]
+    fn imports_readable_documents_on_both_sides_of_a_failure() {
+        let dir = std::env::temp_dir().join(format!("keel-import-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let first = dir.join("first.txt");
+        let missing = dir.join("missing.txt");
+        let last = dir.join("last.txt");
+        std::fs::write(&first, "First document").unwrap();
+        std::fs::write(&last, "Last document").unwrap();
+
+        let batch = import_documents([first, missing, last].into_iter().map(Ok));
+        std::fs::remove_dir_all(dir).unwrap();
+        let imported: Vec<_> = batch
+            .documents
+            .iter()
+            .map(|doc| doc.name.as_str())
+            .collect();
+        assert_eq!(imported, ["first.txt", "last.txt"]);
+        assert_eq!(batch.errors.len(), 1);
+        assert!(batch.errors[0].starts_with("missing.txt:"));
+    }
 }

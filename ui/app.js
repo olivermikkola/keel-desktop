@@ -548,14 +548,17 @@ async function init() {
             return;
           }
           try {
-            const documents = await invoke("import_documents_from_paths", { paths: files });
-            appState.pendingDocuments.push(...documents);
-            saveDraft();
-            renderAttachmentChips();
-            if (!MODES[appState.activeView]) {
-              setActiveView(modeForPreset(appState.session?.app_preset));
-              showToast(`Attached ${documents.length === 1 ? documents[0].name : `${documents.length} files`}.`);
+            const { documents, errors } = await invoke("import_documents_from_paths", { paths: files });
+            if (documents.length) {
+              appState.pendingDocuments.push(...documents);
+              saveDraft();
+              renderAttachmentChips();
+              if (!MODES[appState.activeView]) {
+                setActiveView(modeForPreset(appState.session?.app_preset));
+                if (!errors.length) showToast(`Attached ${documents.length === 1 ? documents[0].name : `${documents.length} files`}.`);
+              }
             }
+            if (errors.length) showToast(errors.join(" · "));
           } catch (err) {
             showToast(friendlyRuntimeError(err));
           }
@@ -3898,9 +3901,10 @@ function wireUi() {
   document.getElementById("attach-docs-btn").onclick = async () => {
     if (appState.streaming) return;
     try {
-      const documents = await invoke("pick_documents");
+      const { documents, errors } = await invoke("pick_documents");
       if (appState.pendingDocuments.length + documents.length > 8) { showToast("Attach up to 8 documents per message."); return; }
       appState.pendingDocuments.push(...documents); saveDraft(); renderAttachmentChips();
+      if (errors.length) showToast(errors.join(" · "));
     } catch (err) {
       showToast(friendlyRuntimeError(err));
     }
