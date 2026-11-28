@@ -4,13 +4,16 @@
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::fs::{self, OpenOptions};
+use std::future::Future;
 use std::io::{ErrorKind, Write};
 use std::path::Path;
 
 pub const MAX_DOCUMENTS: usize = 50;
 pub const MAX_QUESTIONS: usize = 10;
 pub const MAX_CHUNK_CHARS: usize = 8_000;
+const MIN_CHUNK_CHARS: usize = 200;
 pub const UNSURE_THRESHOLD: f64 = 0.65;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,7 +124,7 @@ pub struct CheckDocumentResult {
 /// Splits a long document into bounded chunks along line breaks so small local
 /// models can read every part without silently truncating the end.
 pub fn split_document_chunks(text: &str, max_chars: usize) -> Vec<String> {
-    let limit = max_chars.max(200);
+    let limit = max_chars.max(MIN_CHUNK_CHARS);
     let normalized = text.replace("\r\n", "\n");
     let trimmed = normalized.trim();
     if trimmed.is_empty() {
@@ -192,6 +195,38 @@ EVIDENCE: <short exact quote from the excerpt supporting your answer, or leave b
         question.prompt.trim()
     );
     (system.to_string(), user)
+}
+
+/// Checks every excerpt, retrying with smaller excerpts when the runner reports
+/// that a prompt exceeds its context size.
+pub async fn check_question<F>(
+    doc_name: &str,
+    chunks: &[String],
+    question: &CheckQuestion,
+    mut complete: impl FnMut(String, String) -> F,
+) -> Result<Option<CheckAnswer>>
+where
+    F: Future<Output = Result<String>>,
+{
+    let mut pending = VecDeque::from(chunks.to_vec());
+    let mut answers = Vec::with_capacity(chunks.len());
+    while let Some(chunk) = pending.pop_front() {
+        let (system, user) = build_check_prompt(doc_name, &chunk, question);
+        match complete(system, user).await {
+            Ok(reply) => answers.push(parse_check_answer(&reply, question, &chunk)),
+            Err(error) => {
+                let size = chunk.chars().count();
+                if !error.is::<crate::agent::CompletionContextExceeded>() || size <= MIN_CHUNK_CHARS
+                {
+                    return Err(error);
+                }
+                for part in split_document_chunks(&chunk, size / 2).into_iter().rev() {
+                    pending.push_front(part);
+                }
+            }
+        }
+    }
+    Ok(combine_chunk_answers(&answers))
 }
 
 /// Requires a recognized choice, a valid score, and a quote present in the excerpt.
@@ -441,6 +476,37 @@ mod tests {
         let chunks = split_document_chunks(&text, 300);
         assert!(chunks.len() >= 3);
         assert_eq!(chunks.join("\n"), text);
+    }
+
+    #[tokio::test]
+    async fn retries_an_oversized_excerpt_and_keeps_evidence_in_order() {
+        let question = CheckQuestion {
+            id: "late-fee".into(),
+            kind: CheckQuestionKind::YesNo,
+            prompt: "Does the document mention a fee?".into(),
+            options: vec![],
+        };
+        let first = "å".repeat(MIN_CHUNK_CHARS);
+        let last = "Late fee: €20";
+        let chunks = vec![format!("{first}\n{last}")];
+        let mut attempts = Vec::new();
+        let answer = check_question("Notice", &chunks, &question, |_, user| {
+            let has_first = user.contains(&first);
+            let has_last = user.contains(last);
+            attempts.push((has_first, has_last));
+            std::future::ready(match (has_first, has_last) {
+                (true, true) => Err(crate::agent::CompletionContextExceeded.into()),
+                (false, true) => Ok(format!("ANSWER: Yes\nCONFIDENCE: 95%\nEVIDENCE: {last}")),
+                _ => Ok("ANSWER: UNSURE\nCONFIDENCE: 0%\nEVIDENCE:".into()),
+            })
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(attempts, [(true, true), (true, false), (false, true)]);
+        assert_eq!(answer.evidence.as_deref(), Some(last));
+        assert_eq!(answer.part, Some(2));
+        assert_eq!(answer.total_parts, 2);
     }
 
     #[test]

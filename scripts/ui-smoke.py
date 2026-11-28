@@ -65,15 +65,20 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
    window.__test.holdDocumentCheck = false;
    return new Promise(resolve => { window.__test.documentCheck = {id:args.runId, stop:() => resolve(null)}; });
   }
+  const failFirst = window.__test.failDocumentCheck;
+  window.__test.failDocumentCheck = false;
   const replies = {
    yes_no: {answer:'Yes', confidence:0.94, evidence:'Amount due: 68 EUR', unsure:false, part:2},
    scale: {answer:'Within a few weeks', confidence:0.58, evidence:'Due by Friday.', unsure:true, part:3},
    choice: {answer:'Unsure', confidence:0, reason:'No answer with a matching source quote was found.', unsure:true, part:null},
   };
-  result = args.documents.map(doc => ({
-   document_id:doc.id, document_name:doc.name, truncated:doc.truncated, error:null,
-   answers:args.questions.map(q => ({question_id:q.id, total_parts:3, ...replies[q.kind]})),
-  }));
+  result = args.documents.map((doc, index) => {
+   const error = failFirst && index === 0
+    ? 'This request is too large for the model’s context window. Try shortening it or increasing the context size in Models.'
+    : null;
+   return {document_id:doc.id, document_name:doc.name, truncated:doc.truncated, error,
+    answers:error ? [] : args.questions.map(q => ({question_id:q.id, total_parts:3, ...replies[q.kind]}))};
+  });
   break;
  }
  case 'stop_document_check': {
@@ -584,6 +589,14 @@ async def main(port):
         await page.locator('#check-run').click()
         await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='run_document_check'&&c.args.documents.some(d=>d.name==='dropped-invoice.txt'))")
         await page.locator('#check-copy-csv').wait_for()
+        await page.get_by_text('Saved spreadsheet to document-check-results.csv.', exact=True).wait_for(state='hidden')
+        await page.evaluate("window.__test.failDocumentCheck = true")
+        await page.locator('#check-run').click()
+        await document_check.get_by_text('Couldn’t finish checking 1 of 2 documents.', exact=True).wait_for()
+        await document_check.get_by_text('increasing the context size in Models.', exact=False).wait_for()
+        await document_check.get_by_text('Source · Part 2 of 3 · “Amount due: 68 EUR”', exact=True).first.wait_for()
+        await document_check.evaluate("(el) => el.scrollIntoView({block: 'start'})")
+        await page.screenshot(path=str(OUTPUT / 'tools-check-context-error.png'))
         await page.locator('#tool-images-open').click()
         await page.locator('#image-prompt').wait_for()
         assert await page.locator('.topbar').evaluate('(el) => el.getBoundingClientRect().top') >= 0
