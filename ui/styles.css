@@ -2025,6 +2025,13 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .advanced-disclosure-body { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
 .capability-badge { font-size: 10px; color: var(--accent); border: 1px solid var(--border); padding: 4px 7px; border-radius: 20px; white-space: nowrap; }
 .capability-card .row { justify-content: space-between; }
+#app-workspace { scroll-margin-block-start: 24px; }
+#app-workspace:focus { outline: none; }
+#app-workspace:focus-visible .image-controls h2 {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: 2px;
+}
 .image-workspace { display: grid; grid-template-columns: minmax(280px, 360px) minmax(0, 1fr); align-items: start; gap: 24px; }
 .image-controls { display: flex; flex-direction: column; gap: 12px; }
 .image-controls label { font-size: 12px; color: var(--muted); }
