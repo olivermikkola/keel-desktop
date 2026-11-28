@@ -70,7 +70,7 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
    choice: {answer:'Unsure', confidence:0, reason:'No answer with a matching source quote was found.', unsure:true, part:null},
   };
   result = args.documents.map(doc => ({
-   document_id:doc.id, document_name:doc.name, error:null,
+   document_id:doc.id, document_name:doc.name, truncated:doc.truncated, error:null,
    answers:args.questions.map(q => ({question_id:q.id, total_parts:3, ...replies[q.kind]})),
   }));
   break;
@@ -82,7 +82,14 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  }
  case 'export_document_check_csv':result='document-check-results.csv';break;
  case 'get_runtime_status':result=runtime;break;
- case 'pick_documents':result=[{id:crypto.randomUUID(),name:'brief.txt',kind:'txt',text:'Project Harbor budget is 4800 euros.',truncated:false},{id:crypto.randomUUID(),name:'receipt.png',kind:'png',text:'Total due: 480 EUR',truncated:false,image_data_url:''' + json.dumps(PNG) + r'''}];break;
+ case 'pick_documents': {
+  if (window.__test.pickPartialDocument) {
+   result=[{id:'partial-check-doc',name:'Long invoice.pdf',kind:'pdf',text:'Amount due: 68 EUR',truncated:true}];
+   break;
+  }
+  result=[{id:crypto.randomUUID(),name:'brief.txt',kind:'txt',text:'Project Harbor budget is 4800 euros.',truncated:false},{id:crypto.randomUUID(),name:'receipt.png',kind:'png',text:'Total due: 480 EUR',truncated:false,image_data_url:''' + json.dumps(PNG) + r'''}];
+  break;
+ }
  case 'save_personal_context':cfg.personal_context=args.text;result=null;break;
  case 'save_project':{const old=projects.findIndex(p=>p.id===args.project.id);if(old>=0)projects[old]=args.project;else projects.push(args.project);result=projects;break;}
  case 'get_project':result=projects.find(p=>p.id===args.id);break;
@@ -529,6 +536,18 @@ async def main(port):
         await page.locator('[data-remove-doc="0"]').click()
         assert await page.locator('#check-copy-csv').count() == 0
         assert await page.locator('#check-save-csv').count() == 0
+        await page.evaluate('window.__test.pickPartialDocument = true')
+        await page.locator('#check-pick-files').click()
+        await document_check.get_by_text('Partial import').wait_for()
+        await page.locator('#check-run').click()
+        await document_check.get_by_text('Only part of this document was imported.').wait_for()
+        sent = await page.evaluate("window.__test.calls.findLast(c => c.cmd === 'run_document_check').args.documents")
+        assert sent[0]['truncated'] is True, sent
+        await page.locator('#check-save-csv').click()
+        saved = await page.evaluate("window.__test.calls.findLast(c => c.cmd === 'export_document_check_csv').args.results")
+        assert saved[0]['truncated'] is True, saved
+        await document_check.evaluate("(el) => el.scrollIntoView({block: 'start'})")
+        await page.screenshot(path=str(OUTPUT / 'tools-check-partial-document.png'))
         await page.locator('#tool-images-open').click()
         await page.locator('#image-prompt').wait_for()
         assert await page.locator('.topbar').evaluate('(el) => el.getBoundingClientRect().top') >= 0
