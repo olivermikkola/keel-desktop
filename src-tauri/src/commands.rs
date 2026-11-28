@@ -2433,6 +2433,7 @@ pub async fn generate_video_script(
             &user,
             limit,
             api_key.as_deref(),
+            false,
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -2541,6 +2542,7 @@ pub async fn generate_photo_slides_text(
             &user,
             limit,
             api_key.as_deref(),
+            false,
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -2625,11 +2627,14 @@ pub async fn run_document_check(
                     &user,
                     160,
                     api_key.as_deref(),
+                    rt_status.state == "running",
                 )
                 .await
                 {
                     Ok(reply) => {
-                        part_answers.push(keel_core::decide::parse_check_answer(&reply, question));
+                        part_answers.push(keel_core::decide::parse_check_answer(
+                            &reply, question, chunk,
+                        ));
                     }
                     Err(err) => {
                         doc_error = Some(err.to_string());

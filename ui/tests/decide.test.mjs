@@ -26,11 +26,15 @@ test("Check Documents starter packs, confidence labels, and safe CSV export work
     [
       {
         document_name: "invoice, march.pdf",
-        answers: [{ question_id: "q1", answer: "Yes", confidence: 0.94 }],
+        answers: [{ question_id: "q1", answer: "Yes", confidence: 0.94, evidence: "Due today.", part: 2, total_parts: 3 }],
+      },
+      {
+        document_name: "receipt.pdf",
+        answers: [{ question_id: "q1", answer: "Unsure", reason: "Conflicting excerpts." }],
       },
     ],
   );
-  assert.equal(csv, 'Document,Do I owe money?\n"invoice, march.pdf",Yes (94%)');
+  assert.equal(csv, 'Document,Do I owe money?\n"invoice, march.pdf",Yes (94%) (part 2/3) - Due today.\nreceipt.pdf,Unsure - Conflicting excerpts.');
 });
 
 test("Apps hub exposes Check Documents in plain language", () => {

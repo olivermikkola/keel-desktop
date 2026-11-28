@@ -49,7 +49,12 @@ export function resultsToCsv(questions = [], results = []) {
   const rows = results.map((doc) => {
     const cells = questions.map((q) => {
       const ans = (doc.answers || []).find((a) => a.question_id === q.id);
-      if (ans) return `${ans.answer} (${formatConfidencePercent(ans.confidence)})`;
+      if (ans?.evidence) {
+        const part = ans.total_parts > 1 && ans.part ? ` (part ${ans.part}/${ans.total_parts})` : "";
+        const review = ans.unsure ? " [Review]" : "";
+        return `${ans.answer} (${formatConfidencePercent(ans.confidence)})${review}${part} - ${ans.evidence}`;
+      }
+      if (ans) return `Unsure - ${ans.reason}`;
       if (doc.error) return `Error: ${doc.error}`;
       return "";
     });
@@ -78,7 +83,7 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
       <div class="image-workspace">
         <section class="image-controls card">
           <div class="row"><h2>Check Documents</h2><span class="capability-badge">Compare files</span></div>
-          <p class="muted">Drop in bills, receipts, contracts, PDFs, or photos of letters. Ask the same questions about every file and get a clear table with reasons — privately on your computer.</p>
+          <p class="muted">Drop in bills, receipts, contracts, PDFs, or photos of letters. Ask the same questions about every file and review the answers alongside quotes from the files.</p>
 
           <label style="font-weight:600;color:var(--text)">1. Add files to check (${state.documents.length})</label>
           <div class="row" style="gap:8px;flex-wrap:wrap">
@@ -151,14 +156,18 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
                       <div style="border-top:1px solid var(--border);padding-top:8px">
                         <div class="row" style="justify-content:space-between;align-items:baseline;gap:8px">
                           <span class="muted" style="font-size:12px">${escapeHtml(q?.prompt || ans.question_id)}</span>
-                          <span><strong>${escapeHtml(ans.answer)}</strong> <span class="capability-badge" style="${ans.unsure ? "border-color:#d38f68;color:#d38f68" : ""}">${formatConfidencePercent(ans.confidence)}${ans.unsure ? " · check yourself" : ""}</span></span>
+                          <span><strong>${escapeHtml(ans.answer)}</strong> ${ans.evidence ? `<span class="capability-badge" title="Model-reported confidence">${formatConfidencePercent(ans.confidence)}${ans.unsure ? " · Review" : ""}</span>` : ""}</span>
                         </div>
+                        ${ans.evidence ? `
+                          <p class="muted" style="margin:4px 0 0;font-size:12px">
+                            Source${ans.part ? ` · Part ${ans.part} of ${ans.total_parts}` : ""} · “${escapeHtml(ans.evidence)}”
+                          </p>` : ""}
                         ${ans.reason ? `<p class="muted" style="margin:4px 0 0;font-size:12px">${escapeHtml(ans.reason)}</p>` : ""}
                       </div>`;
                   }).join("")}
                 </article>`).join("")}
             </div>
-          ` : '<div class="image-empty"><p>Your answers table will appear here.</p><p class="muted">Add one or more files on the left, pick a starter question pack, and click Check documents. Anything under 65% confidence is flagged for you to double-check.</p></div>'}
+          ` : '<div class="image-empty"><p>Your answers table will appear here.</p><p class="muted">Add one or more files on the left, pick a starter question pack, and click Check documents. Review the source quotes to verify the answers.</p></div>'}
         </section>
       </div>`;
 
