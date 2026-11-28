@@ -277,6 +277,7 @@ fn harbor_brief_attachment() -> Document {
         text: "Project Harbor. Approved budget: 4,800 euros. Launch date: 14 May 2027. The audience is local cafes.".into(),
         truncated: false,
         image_data_url: None,
+        image_only: false,
     }
 }
 

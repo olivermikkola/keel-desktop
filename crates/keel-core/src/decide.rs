@@ -108,6 +108,27 @@ pub struct CheckDocumentInput {
     pub text: String,
     #[serde(default)]
     pub truncated: bool,
+    #[serde(default)]
+    pub image_only: bool,
+}
+
+impl CheckDocumentInput {
+    pub fn into_readable(self) -> Result<Self, CheckDocumentResult> {
+        let error = if self.image_only {
+            "No text was extracted from this photo. Paste its text or add a text-based file."
+        } else if self.text.trim().is_empty() {
+            "No readable text found in this document."
+        } else {
+            return Ok(self);
+        };
+        Err(CheckDocumentResult {
+            document_id: self.id,
+            document_name: self.name,
+            truncated: self.truncated,
+            answers: Vec::new(),
+            error: Some(error.into()),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -449,6 +470,30 @@ pub fn save_csv(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blank_photo_keeps_pixels_but_its_fallback_caption_is_not_source_text() {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j5uoAAAAASUVORK5CYII=")
+            .unwrap();
+        let document = crate::documents::import_document_bytes("blank.png", &bytes).unwrap();
+        assert!(document.image_data_url.is_some());
+        assert!(document.image_only);
+        assert!(!document.text.is_empty());
+
+        let outcome = CheckDocumentInput {
+            id: document.id,
+            name: document.name,
+            text: document.text,
+            truncated: document.truncated,
+            image_only: document.image_only,
+        }
+        .into_readable()
+        .unwrap_err();
+        assert!(outcome.answers.is_empty());
+        assert!(outcome.error.unwrap().contains("No text was extracted"));
+    }
 
     #[test]
     fn validates_questions_and_splits_long_documents() {

@@ -19,6 +19,8 @@ pub struct Document {
     pub truncated: bool,
     #[serde(default)]
     pub image_data_url: Option<String>,
+    #[serde(default)]
+    pub image_only: bool,
 }
 
 pub fn is_image_extension(ext: &str) -> bool {
@@ -94,10 +96,10 @@ pub fn extract_image_ocr(path: &Path) -> Result<String> {
 const VISION_FALLBACK_CAPTION: &str =
     "(Image pixels attached for vision. No OCR text was extracted.)";
 
-fn image_text_with_optional_ocr(path: &Path, has_pixels: bool) -> Result<String> {
+fn image_text_with_optional_ocr(path: &Path, has_pixels: bool) -> Result<(String, bool)> {
     match extract_image_ocr(path) {
-        Ok(text) => Ok(text),
-        Err(_) if has_pixels => Ok(VISION_FALLBACK_CAPTION.to_string()),
+        Ok(text) => Ok((text, false)),
+        Err(_) if has_pixels => Ok((VISION_FALLBACK_CAPTION.to_string(), true)),
         Err(err) => Err(err),
     }
 }
@@ -197,6 +199,7 @@ pub fn import_document_bytes(name: &str, bytes: &[u8]) -> Result<Document> {
         .unwrap_or("")
         .to_lowercase();
     let mut image_data_url = None;
+    let mut image_only = false;
     let text = match kind.as_str() {
         "pdf" => pdf_extract::extract_text_from_mem(bytes).context("Could not read this PDF. Scanned pages need OCR; try a text-based PDF or paste its text.")?,
         "docx" => extract_docx(bytes)?,
@@ -208,7 +211,9 @@ pub fn import_document_bytes(name: &str, bytes: &[u8]) -> Result<Document> {
             let tmp = std::env::temp_dir().join(format!("keel_ocr_{}.{ext}", uuid::Uuid::new_v4()));
             write_private_temp(&tmp, bytes)?;
             let _guard = TempFileGuard(tmp.clone());
-            image_text_with_optional_ocr(&tmp, image_data_url.is_some())?
+            let (text, only_pixels) = image_text_with_optional_ocr(&tmp, image_data_url.is_some())?;
+            image_only = only_pixels;
+            text
         }
         ext if is_text_extension(ext) => {
             String::from_utf8(bytes.to_vec()).context("This file is not UTF-8 text. Export it as UTF-8 and try again.")?
@@ -227,6 +232,7 @@ pub fn import_document_bytes(name: &str, bytes: &[u8]) -> Result<Document> {
         text,
         truncated,
         image_data_url,
+        image_only,
     })
 }
 
@@ -245,6 +251,7 @@ pub fn import_document(path: &Path) -> Result<Document> {
         .unwrap_or("")
         .to_lowercase();
     let mut image_data_url = None;
+    let mut image_only = false;
     let text = match kind.as_str() {
         "pdf" => pdf_extract::extract_text_from_mem(&bytes).context("Could not read this PDF. Scanned pages need OCR; try a text-based PDF or paste its text.")?,
         "docx" => extract_docx(&bytes)?,
@@ -253,7 +260,9 @@ pub fn import_document(path: &Path) -> Result<Document> {
                 let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
                 image_data_url = Some(format!("data:{};base64,{encoded}", image_mime(ext)));
             }
-            image_text_with_optional_ocr(path, image_data_url.is_some())?
+            let (text, only_pixels) = image_text_with_optional_ocr(path, image_data_url.is_some())?;
+            image_only = only_pixels;
+            text
         }
         ext if is_text_extension(ext) => String::from_utf8(bytes).context("This file is not UTF-8 text. Export it as UTF-8 and try again.")?,
         _ => bail!("Attach a PDF, DOCX, text, Markdown, CSV, source-code file, or image (PNG, JPG, WebP, BMP, TIFF)."),
@@ -274,6 +283,7 @@ pub fn import_document(path: &Path) -> Result<Document> {
         text,
         truncated,
         image_data_url,
+        image_only,
     })
 }
 

@@ -73,7 +73,9 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
    choice: {answer:'Unsure', confidence:0, reason:'No answer with a matching source quote was found.', unsure:true, part:null},
   };
   result = args.documents.map((doc, index) => {
-   const error = failFirst && index === 0
+   const error = doc.image_only
+    ? 'No text was extracted from this photo. Paste its text or add a text-based file.'
+    : failFirst && index === 0
     ? 'This request is too large for the model’s context window. Try shortening it or increasing the context size in Models.'
     : null;
    return {document_id:doc.id, document_name:doc.name, truncated:doc.truncated, error,
@@ -89,6 +91,14 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  case 'export_document_check_csv':result='document-check-results.csv';break;
  case 'get_runtime_status':result=runtime;break;
  case 'pick_documents': {
+  if (window.__test.pickPhotosForCheck) {
+   window.__test.pickPhotosForCheck = false;
+   result=[
+    {id:'image-only',name:'blank.png',kind:'png',text:'(Image pixels attached for vision. No OCR text was extracted.)',image_only:true},
+    {id:'photo-with-text',name:'readable.png',kind:'png',text:'Amount due: 68 EUR',image_only:false}
+   ];
+   break;
+  }
   if (window.__test.pickPartialDocument) {
    result=[{id:'partial-check-doc',name:'Long invoice.pdf',kind:'pdf',text:'Amount due: 68 EUR',truncated:true}];
    break;
@@ -618,6 +628,19 @@ async def main(port):
         await document_check.get_by_text('Source · Part 2 of 3 · “Amount due: 68 EUR”', exact=True).first.wait_for()
         await document_check.evaluate("(el) => el.scrollIntoView({block: 'start'})")
         await page.screenshot(path=str(OUTPUT / 'tools-check-context-error.png'))
+        await page.locator('#check-clear-docs').click()
+        await page.evaluate('window.__test.pickPhotosForCheck = true')
+        await page.locator('#check-pick-files').click()
+        await document_check.get_by_text('· No text extracted', exact=True).wait_for()
+        await page.locator('#check-run').click()
+        await document_check.get_by_text('No text was extracted from this photo.', exact=False).wait_for()
+        await document_check.get_by_text('Source · Part 2 of 3 · “Amount due: 68 EUR”', exact=True).first.wait_for()
+        photos = await page.evaluate("window.__test.calls.findLast(c=>c.cmd==='run_document_check').args.documents")
+        assert [(photo['name'], photo['image_only'], photo['text']) for photo in photos] == [
+            ('blank.png', True, ''), ('readable.png', False, 'Amount due: 68 EUR')
+        ], photos
+        await document_check.evaluate("(el) => el.scrollIntoView({block: 'start'})")
+        await page.screenshot(path=str(OUTPUT / 'tools-check-unreadable-photo.png'))
         await page.locator('#tool-images-open').click()
         await page.locator('#image-prompt').wait_for()
         assert await page.locator('.topbar').evaluate('(el) => el.getBoundingClientRect().top') >= 0

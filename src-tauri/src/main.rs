@@ -14,6 +14,36 @@ use std::sync::Arc;
 use tauri::{Listener, Manager, RunEvent};
 use tokio::sync::Mutex;
 
+const NATIVE_SMOKE_SCRIPT: &str = r#"
+(async () => {
+    const ready = window.__KEEL_READY__;
+    const error = window.__KEEL_STARTUP_ERROR__;
+    if ((!ready && !error) || window.__KEEL_SMOKE_RUNNING__) return;
+    window.__KEEL_SMOKE_RUNNING__ = true;
+    const payload = {
+        ready: Boolean(ready),
+        composer: Boolean(document.getElementById('prompt-input')),
+        preset: ready?.preset,
+        error
+    };
+    if (ready) {
+        try {
+            const [result] = await window.__TAURI__.core.invoke('run_document_check', {
+                runId: 'native-smoke-photo',
+                documents: [{id: 'photo', name: 'blank.png', text: 'OCR fallback', image_only: true}],
+                questions: [{id: 'question', kind: 'yes_no', prompt: 'Is there an amount due?'}]
+            });
+            payload.unreadablePhoto = result?.document_id === 'photo'
+                && result.answers.length === 0
+                && result.error.startsWith('No text was extracted');
+        } catch (error) {
+            payload.error = String(error);
+        }
+    }
+    await window.__TAURI__.event.emit('keel://native-smoke-result', payload);
+})();
+"#;
+
 fn extract_workspace_arg(args: &[String]) -> Option<String> {
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
@@ -144,8 +174,8 @@ fn main() {
                 let exit_handle = app.handle().clone();
                 app.listen("keel://native-smoke-result", move |event| {
                     let payload: serde_json::Value = serde_json::from_str(event.payload()).unwrap_or_default();
-                    let passed = payload["ready"] == true && payload["composer"] == true && payload["preset"] == "chat";
-                    if passed { println!("PASS: native Tauri window bootstrapped through real IPC, created a Chat session, and rendered the composer."); }
+                    let passed = payload["ready"] == true && payload["composer"] == true && payload["preset"] == "chat" && payload["unreadablePhoto"] == true;
+                    if passed { println!("PASS: native Tauri startup, chat composer, and no-text photo handling without a configured model."); }
                     else { eprintln!("Native frontend startup failed: {payload}"); }
                     exit_handle.exit(if passed {0} else {1});
                 });
@@ -154,7 +184,7 @@ fn main() {
                     for _ in 0..30 {
                         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                         if let Some(window) = handle.get_webview_window("main") {
-                            let _ = window.eval("if (window.__KEEL_READY__ || window.__KEEL_STARTUP_ERROR__) { window.__TAURI__.event.emit('keel://native-smoke-result', {ready: Boolean(window.__KEEL_READY__), composer: Boolean(document.getElementById('prompt-input')), preset: window.__KEEL_READY__?.preset, error: window.__KEEL_STARTUP_ERROR__}); }");
+                            let _ = window.eval(NATIVE_SMOKE_SCRIPT);
                         }
                     }
                     eprintln!("Native frontend startup timed out");
