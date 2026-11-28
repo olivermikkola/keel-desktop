@@ -749,6 +749,16 @@ async def document_check_actions_at_minimum_size(browser, port):
     await run.press('Enter')
     await page.wait_for_function('Boolean(window.__test.documentCheck)')
     await page.wait_for_function("document.activeElement.id === 'check-stop'")
+    await page.evaluate("""() => window.__test.emit('keel://document-check-progress', {
+        run_id:'previous-run', document_index:1, document_total:2, question_index:1, question_total:3
+    })""")
+    assert await page.locator('#check-progress').inner_text() == 'Checking documents…'
+    await page.evaluate("""() => window.__test.emit('keel://document-check-progress', {
+        run_id:window.__test.documentCheck.id, document_index:2, document_total:2,
+        question_index:3, question_total:3
+    })""")
+    await page.get_by_text('Document 2 of 2 · Question 3 of 3', exact=True).wait_for()
+    assert await page.locator('#check-stop').evaluate('(el) => el === document.activeElement')
 
     await page.locator('#view-tools').evaluate('(el) => el.scrollBy(0, 350)')
     stop = page.locator('#check-stop')

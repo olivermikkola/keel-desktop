@@ -481,6 +481,7 @@ async function init() {
     });
     await events.listen("keel://image-job", () => images.onJob());
     await events.listen("keel://video-job", () => images.onVideoJob());
+    await events.listen("keel://document-check-progress", (ev) => images.onDocumentCheckProgress(ev.payload));
     await events.listen("keel://agent-event", (ev) => handleAgentEvent(ev.payload));
     await events.listen("tauri://drag-enter", () => {
       document.querySelector(".models-drop-zone")?.classList.add("drop-active");

@@ -77,6 +77,7 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
     newQKind: "yes_no",
     newQOptions: "",
     runId: null,
+    progress: "",
     get busy() { return this.runId !== null; },
     stopping: false,
     importing: false,
@@ -119,6 +120,7 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
     mountedHost = host;
     const total = state.results.length;
     const failedCount = state.results.filter((doc) => doc.error).length;
+    const checkLabel = state.stopping ? "Stopping…" : state.progress || "Checking documents…";
     const resultStatus = failedCount
       ? (total === 1 ? "Couldn’t finish checking this document." : `Couldn’t finish checking ${failedCount} of ${total} documents.`)
       : `Checked ${total} document${total === 1 ? "" : "s"}.`;
@@ -129,7 +131,7 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
           <h2>Check Documents</h2>
           <div class="row">
             ${state.busy ? `
-              <span class="muted" role="status">${state.stopping ? "Stopping…" : "Checking documents…"}</span>
+              <span id="check-progress" class="muted" role="status">${escapeHtml(checkLabel)}</span>
               <button type="button" id="check-stop" class="btn" ${state.stopping ? "disabled" : ""}>Stop check</button>
             ` : `
               <button type="button" id="check-run" class="btn btn-primary" ${state.importing || !state.documents.length || !state.questions.length ? "disabled" : ""}>${state.documents.length ? `Check ${state.documents.length} document${state.documents.length === 1 ? "" : "s"}` : "Check documents"}</button>
@@ -351,6 +353,7 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
         notice(String(err));
       } finally {
         state.runId = null;
+        state.progress = "";
         state.stopping = false;
         renderInto(mountedHost);
       }
@@ -406,5 +409,11 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
   return {
     renderInto,
     addDroppedDocuments: (paths) => addDocuments(() => invoke("import_documents_from_paths", { paths })),
+    onProgress(progress) {
+      if (!state.busy || state.stopping || progress.run_id !== state.runId) return;
+      state.progress = `Document ${progress.document_index} of ${progress.document_total} · Question ${progress.question_index} of ${progress.question_total}`;
+      const label = mountedHost?.querySelector("#check-progress");
+      if (label) label.textContent = state.progress;
+    },
   };
 }
