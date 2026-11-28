@@ -54,7 +54,17 @@ export function createEveryday(api) {
       const draw = () => {
         body.innerHTML = `<label for="project-name">Project name</label><input id="project-name" class="input" maxlength="80" placeholder="A book, a business, a course…" value="${safe(project.name)}"/><label for="project-instructions">What should Keel know about this project?</label><textarea id="project-instructions" class="input" rows="5" maxlength="6000" placeholder="Goals, audience, writing style, and anything to keep in mind.">${safe(project.instructions)}</textarea><label>Reference documents</label><p class="muted">Available to every conversation in this project. Long documents use selected excerpts.</p><div class="source-list">${project.documents.map((doc) => `<div class="source-row"><span>${safe(doc.name)}</span><button class="text-action" data-remove-source="${safe(doc.id)}" aria-label="Remove ${safe(doc.name)}">Remove</button></div>`).join("")}</div><button id="project-add-docs" class="btn btn-sm">Add documents</button><label>Working folder (optional)</label><div class="row"><span class="muted mono grow">${safe(project.workspace_path || "Choose a folder when you want Keel to work on files")}</span><button id="project-folder" class="btn btn-sm">Choose folder</button>${project.workspace_path ? '<button id="project-clear-folder" type="button" class="btn btn-ghost btn-sm">Clear</button>' : ""}</div><div class="row"><button id="project-save" class="btn btn-primary">Save project</button>${id ? '<button id="project-delete" class="btn btn-ghost">Remove project</button>' : ""}</div><p id="project-error" class="muted" role="status"></p>`;
         const read = () => { project.name = body.querySelector("#project-name").value; project.instructions = body.querySelector("#project-instructions").value; };
-        body.querySelector("#project-add-docs").onclick = async () => { read(); try { project.documents.push(...await invoke("pick_documents")); draw(); } catch (error) { toast(String(error)); } };
+        body.querySelector("#project-add-docs").onclick = async () => {
+          read();
+          try {
+            const { documents, errors } = await invoke("pick_documents");
+            project.documents.push(...documents);
+            draw();
+            if (errors.length) toast(errors.join(" · "));
+          } catch (error) {
+            toast(String(error));
+          }
+        };
         body.querySelectorAll("[data-remove-source]").forEach((button) => { button.onclick = () => { read(); project.documents = project.documents.filter((d) => d.id !== button.dataset.removeSource); draw(); }; });
         body.querySelector("#project-folder").onclick = async () => { read(); const folder = await invoke("pick_workspace_folder"); if (folder) project.workspace_path = folder; draw(); };
         body.querySelector("#project-clear-folder")?.addEventListener("click", () => { read(); project.workspace_path = null; draw(); });

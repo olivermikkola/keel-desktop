@@ -35,7 +35,12 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  case 'discover_models_cmd': result=[{id:'hf:prism-ml/Ternary-Bonsai-2.5-27B-GGUF',repo_id:'prism-ml/Ternary-Bonsai-2.5-27B-GGUF',name:'Ternary-Bonsai-2.5-27B',author:'prism-ml',likes:420,downloads:12000,trending_score:98.5,file_name:'Ternary-Bonsai-2.5-27B-Q2_0.gguf',resolve_url:'https://huggingface.co/prism-ml/Ternary-Bonsai-2.5-27B-GGUF/resolve/main/Ternary-Bonsai-2.5-27B-Q2_0.gguf',repo_url:'https://huggingface.co/prism-ml/Ternary-Bonsai-2.5-27B-GGUF',bytes:7670000000,quantization:'Q2_0',architecture:'qwen3',context_size:32768}];break;
  case 'scan_user_models_folder': result={folder:'/test/Models',added_ids:[],models:[]};break;
  case 'import_local_gguf': result=null;break;
- case 'import_documents_from_paths': result=(args.paths||[]).map(p=>({id:crypto.randomUUID(),name:String(p).split(/[\\/]/).pop()||'dropped.txt',kind:'txt',text:'Dropped document',truncated:false}));break;
+ case 'import_documents_from_paths': {
+  const paths = args.paths || [];
+  const errors = paths.filter(p=>p.endsWith('/unreadable.pdf')).map(()=> 'unreadable.pdf: Could not read PDF.');
+  const documents = paths.filter(p=>!p.endsWith('/unreadable.pdf')).map(p=>({id:crypto.randomUUID(),name:String(p).split(/[\\/]/).pop()||'dropped.txt',kind:'txt',text:'Dropped document',truncated:false}));
+  result={documents,errors};break;
+ }
  case 'import_document_from_bytes': result={id:crypto.randomUUID(),name:args.name || 'pasted.txt',kind:'txt',text:'Imported bytes',truncated:false};break;
  case 'create_session': result={id:crypto.randomUUID(),title:'New '+args.preset+' chat',app_preset:args.preset,workspace_path:args.workspacePath,project_id:args.projectId || null,pinned:false,messages:[],staged_edits:[],updated_at:Date.now()/1000};sessions.unshift(result);break;
  case 'load_session_cmd':result=sessions.find(s=>s.id===args.id);break;
@@ -93,17 +98,19 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  case 'pick_documents': {
   if (window.__test.pickPhotosForCheck) {
    window.__test.pickPhotosForCheck = false;
-   result=[
+   result={documents:[
     {id:'image-only',name:'blank.png',kind:'png',text:'(Image pixels attached for vision. No OCR text was extracted.)',image_only:true},
     {id:'photo-with-text',name:'readable.png',kind:'png',text:'Amount due: 68 EUR',image_only:false}
-   ];
+   ],errors:[]};
    break;
   }
+  const errors = window.__test.pickWithError ? ['broken.docx: Could not read Word document.'] : [];
+  window.__test.pickWithError = false;
   if (window.__test.pickPartialDocument) {
-   result=[{id:'partial-check-doc',name:'Long invoice.pdf',kind:'pdf',text:'Amount due: 68 EUR',truncated:true}];
+   result={documents:[{id:'partial-check-doc',name:'Long invoice.pdf',kind:'pdf',text:'Amount due: 68 EUR',truncated:true}],errors:['damaged.pdf: Could not read PDF.']};
    break;
   }
-  result=[{id:crypto.randomUUID(),name:'brief.txt',kind:'txt',text:'Project Harbor budget is 4800 euros.',truncated:false},{id:crypto.randomUUID(),name:'receipt.png',kind:'png',text:'Total due: 480 EUR',truncated:false,image_data_url:''' + json.dumps(PNG) + r'''}];
+  result={documents:[{id:crypto.randomUUID(),name:'brief.txt',kind:'txt',text:'Project Harbor budget is 4800 euros.',truncated:false},{id:crypto.randomUUID(),name:'receipt.png',kind:'png',text:'Total due: 480 EUR',truncated:false,image_data_url:''' + json.dumps(PNG) + r'''}],errors};
   break;
  }
  case 'save_personal_context':cfg.personal_context=args.text;result=null;break;
@@ -440,8 +447,10 @@ async def main(port):
         assert await page.locator('#viewer-pane').is_hidden()
         await page.screenshot(path=str(OUTPUT / 'chat.png'))
         # Attach a source, inspect it, then save explicit cross-conversation preferences.
+        await page.evaluate('window.__test.pickWithError = true')
         await page.locator('#attach-docs-btn').click()
         await page.locator('[data-pending-source]').first.wait_for()
+        await page.get_by_text('broken.docx: Could not read Word document.', exact=True).wait_for()
         await page.locator('#prompt-input').fill('Summarize the attached brief')
         await page.locator('#send-btn').click()
         await page.locator('[data-message-source]').first.wait_for()
@@ -460,8 +469,12 @@ async def main(port):
         await page.locator('#new-project-btn').click()
         await page.locator('#project-name').fill('Harbor')
         await page.locator('#project-instructions').fill('Write for local cafes.')
+        await page.evaluate('window.__test.pickWithError = true')
         await page.locator('#project-add-docs').click()
+        await page.locator('.source-list').get_by_text('brief.txt', exact=True).wait_for()
+        await page.get_by_text('broken.docx: Could not read Word document.', exact=True).wait_for()
         await page.locator('#project-save').click()
+        await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='save_project'&&c.args.project.documents.length===2)")
         await page.locator('[data-project]').filter(has_text='Harbor').wait_for()
         await page.get_by_role('heading', name='Chat', exact=True).wait_for()
         # Renaming/pinning keeps a thread manageable as history grows.
@@ -602,6 +615,7 @@ async def main(port):
         await page.evaluate('window.__test.pickPartialDocument = true')
         await page.locator('#check-pick-files').click()
         await document_check.get_by_text('Partial import').wait_for()
+        await document_check.get_by_text('damaged.pdf: Could not read PDF.').wait_for()
         await page.locator('#check-run').click()
         await document_check.get_by_text('Only part of this document was imported.').wait_for()
         sent = await page.evaluate("window.__test.calls.findLast(c => c.cmd === 'run_document_check').args.documents")
@@ -611,8 +625,10 @@ async def main(port):
         assert saved[0]['truncated'] is True, saved
         await document_check.evaluate("(el) => el.scrollIntoView({block: 'start'})")
         await page.screenshot(path=str(OUTPUT / 'tools-check-partial-document.png'))
-        await page.evaluate("window.__test.emit('tauri://drag-drop', {paths:['/test/dropped-invoice.txt']})")
+        await page.get_by_text('Saved spreadsheet to document-check-results.csv.', exact=True).wait_for(state='hidden')
+        await page.evaluate("window.__test.emit('tauri://drag-drop', {paths:['/test/unreadable.pdf','/test/dropped-invoice.txt']})")
         await document_check.get_by_text('dropped-invoice.txt').wait_for()
+        await document_check.get_by_text('unreadable.pdf: Could not read PDF.').wait_for()
         assert await page.locator('#attachment-chips').get_by_text('dropped-invoice.txt').count() == 0
         assert await page.locator('#check-copy-csv').count() == 0
         await document_check.evaluate("(el) => el.scrollIntoView({block: 'start'})")
@@ -620,7 +636,6 @@ async def main(port):
         await page.locator('#check-run').click()
         await page.wait_for_function("window.__test.calls.some(c=>c.cmd==='run_document_check'&&c.args.documents.some(d=>d.name==='dropped-invoice.txt'))")
         await page.locator('#check-copy-csv').wait_for()
-        await page.get_by_text('Saved spreadsheet to document-check-results.csv.', exact=True).wait_for(state='hidden')
         await page.evaluate("window.__test.failDocumentCheck = true")
         await page.locator('#check-run').click()
         await document_check.get_by_text('Couldn’t finish checking 1 of 2 documents.', exact=True).wait_for()
