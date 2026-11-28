@@ -74,48 +74,24 @@ export function createPhotoSlidesStudio({ invoke, getWorkspace, getWorkspaceFile
     writing: false,
   };
 
-  function syncSlidesToPhotos() {
-    const cover = state.slides.find((s) => s.kind === "cover") || {
-      kind: "cover",
-      headline: "Your big headline",
-      body: "One short sentence that makes people want to swipe.",
-    };
-    const closing = state.slides.find((s) => s.kind === "closing") || {
-      kind: "closing",
-      headline: "Wrap it up",
-      body: "Give readers one takeaway or simple next step.",
-    };
-    const existingPhotos = state.slides.filter((s) => s.kind === "photo");
-    const first = state.photos[0] || null;
-    const last = state.photos[state.photos.length - 1] || null;
-    state.slides = [
-      {
-        kind: "cover",
-        headline: cover.headline,
-        body: cover.body,
-        photo_path: first?.path || null,
-        style: first?.screenshot ? "screenshot" : "photo",
-      },
-      ...state.photos.map((p, idx) => ({
-        kind: "photo",
-        headline: existingPhotos[idx]?.headline || `Point ${idx + 1}`,
-        body: existingPhotos[idx]?.body || "One clear detail about this photo.",
-        photo_path: p.path,
-        style: p.screenshot ? "screenshot" : "photo",
-      })),
-      {
-        kind: "closing",
-        headline: closing.headline,
-        body: closing.body,
-        photo_path: last?.path || null,
-        style: last?.screenshot ? "screenshot" : "photo",
-      },
-    ];
+  function syncSlidesToPhotos(previousPhotos = state.photos) {
+    const captions = state.slides.filter((slide) => slide.kind === "photo" && slide.photo_path);
+    const captionsByPhoto = new Map(previousPhotos.map((photo, index) => [photo, captions[index]]));
+    const cover = state.slides.find((slide) => slide.kind === "cover");
+    const closing = state.slides.find((slide) => slide.kind === "closing");
+    state.slides = defaultCarouselSlides(state.photos).map((slide, index) => {
+      const previous = slide.kind === "cover" ? cover
+        : slide.kind === "closing" ? closing
+        : captionsByPhoto.get(state.photos[index - 1]);
+      if (!previous) return slide;
+      return { ...slide, headline: previous.headline, body: previous.body };
+    });
   }
 
   function renderInto(host) {
     if (!host) return;
     const workspace = getWorkspace();
+    const editingLocked = state.writing || state.busy;
     const folderPhotos = (getWorkspaceFiles ? getWorkspaceFiles() : []).filter((f) =>
       /\.(png|jpe?g|webp|gif)$/i.test(f),
     );
@@ -133,19 +109,19 @@ export function createPhotoSlidesStudio({ invoke, getWorkspace, getWorkspaceFile
           <p class="muted">Turn photos and a short sentence into ready-to-share swipeable photo slides (like the multi-photo posts you swipe through on social media). Saves an offline file you can swipe through or save as PDF.</p>
 
           <label style="font-weight:600;color:var(--text)">1. Pick your photos (${state.photos.length}/8)</label>
-          ${folderPhotos.length ? `<div class="row" style="gap:6px;flex-wrap:wrap"><span class="muted" style="font-size:12px">Add from folder:</span>${folderPhotos.slice(0, 10).map((f) => `<button type="button" class="btn btn-sm btn-ghost" data-add-slide-photo="${escapeHtml(f)}" ${state.photos.length >= 8 ? "disabled" : ""}>+ ${escapeHtml(f)}</button>`).join("")}</div>` : '<p class="muted">Choose a folder that has PNG or JPG photos, or make pictures in Apps first.</p>'}
+          ${folderPhotos.length ? `<div class="row" style="gap:6px;flex-wrap:wrap"><span class="muted" style="font-size:12px">Add from folder:</span>${folderPhotos.slice(0, 10).map((f) => `<button type="button" class="btn btn-sm btn-ghost" data-add-slide-photo="${escapeHtml(f)}" ${editingLocked || state.photos.length >= 8 ? "disabled" : ""}>+ ${escapeHtml(f)}</button>`).join("")}</div>` : '<p class="muted">Choose a folder that has PNG or JPG photos, or make pictures in Apps first.</p>'}
           ${state.photos.length ? `<div class="video-scene-list">${state.photos.map((p, idx) => `
             <div class="video-scene-card">
               <div class="row" style="justify-content:space-between;align-items:center">
                 <span class="mono" style="font-size:12px">${idx + 1}. ${escapeHtml(p.path)}</span>
                 <div class="row" style="gap:4px">
-                  <button type="button" class="btn btn-sm btn-ghost" data-move-photo="${idx}" data-dir="-1" ${idx === 0 ? "disabled" : ""}>↑</button>
-                  <button type="button" class="btn btn-sm btn-ghost" data-move-photo="${idx}" data-dir="1" ${idx === state.photos.length - 1 ? "disabled" : ""}>↓</button>
-                  <button type="button" class="btn btn-sm btn-ghost" data-remove-photo="${idx}">×</button>
+                  <button type="button" class="btn btn-sm btn-ghost" data-move-photo="${idx}" data-dir="-1" ${editingLocked || idx === 0 ? "disabled" : ""}>↑</button>
+                  <button type="button" class="btn btn-sm btn-ghost" data-move-photo="${idx}" data-dir="1" ${editingLocked || idx === state.photos.length - 1 ? "disabled" : ""}>↓</button>
+                  <button type="button" class="btn btn-sm btn-ghost" data-remove-photo="${idx}" ${editingLocked ? "disabled" : ""}>×</button>
                 </div>
               </div>
               <label class="row" style="gap:6px;align-items:center;font-size:12px">
-                <input type="checkbox" data-photo-screenshot="${idx}" ${p.screenshot ? "checked" : ""} />
+                <input type="checkbox" data-photo-screenshot="${idx}" ${editingLocked ? "disabled" : ""} ${p.screenshot ? "checked" : ""} />
                 <span>Show inside a phone frame (keeps screenshot text readable)</span>
               </label>
             </div>`).join("")}</div>` : ""}
@@ -162,8 +138,8 @@ export function createPhotoSlidesStudio({ invoke, getWorkspace, getWorkspaceFile
             ${state.slides.map((slide, idx) => `
               <div class="video-scene-card">
                 <strong style="font-size:12px">${slideLabel(slide, idx)}</strong>
-                <input class="input" data-slide-head="${idx}" value="${escapeHtml(slide.headline)}" placeholder="Short bold headline" />
-                <input class="input" data-slide-body="${idx}" value="${escapeHtml(slide.body)}" placeholder="One short sentence (optional)" />
+                <input class="input" data-slide-head="${idx}" ${editingLocked ? "disabled" : ""} value="${escapeHtml(slide.headline)}" placeholder="Short bold headline" />
+                <input class="input" data-slide-body="${idx}" ${editingLocked ? "disabled" : ""} value="${escapeHtml(slide.body)}" placeholder="One short sentence (optional)" />
               </div>`).join("")}
           </div>
 
@@ -205,7 +181,7 @@ export function createPhotoSlidesStudio({ invoke, getWorkspace, getWorkspaceFile
                   <span class="muted mono" style="font-size:12px">${escapeHtml(deck.html_path)}</span>
                   <div class="row" style="gap:8px">
                     <button type="button" class="btn btn-sm" data-open-deck="${escapeHtml(deck.html_path)}">Preview</button>
-                    <button type="button" class="btn btn-sm btn-ghost" data-edit-deck="${escapeHtml(deck.id)}">Load into editor</button>
+                    <button type="button" class="btn btn-sm btn-ghost" data-edit-deck="${escapeHtml(deck.id)}" ${editingLocked ? "disabled" : ""}>Load into editor</button>
                   </div>
                 </article>`).join("")}
             </div>
@@ -224,24 +200,27 @@ export function createPhotoSlidesStudio({ invoke, getWorkspace, getWorkspaceFile
       btn.onclick = () => {
         if (state.photos.length >= 8) return;
         const path = btn.dataset.addSlidePhoto;
-        state.photos.push({ path, screenshot: isScreenshotPath(path) });
-        syncSlidesToPhotos();
+        const previousPhotos = state.photos;
+        state.photos = [...previousPhotos, { path, screenshot: isScreenshotPath(path) }];
+        syncSlidesToPhotos(previousPhotos);
         renderInto(host);
       };
     });
 
     host.querySelectorAll("[data-move-photo]").forEach((btn) => {
       btn.onclick = () => {
-        state.photos = moveSlidePhoto(state.photos, Number(btn.dataset.movePhoto), Number(btn.dataset.dir));
-        syncSlidesToPhotos();
+        const previousPhotos = state.photos;
+        state.photos = moveSlidePhoto(previousPhotos, Number(btn.dataset.movePhoto), Number(btn.dataset.dir));
+        syncSlidesToPhotos(previousPhotos);
         renderInto(host);
       };
     });
 
     host.querySelectorAll("[data-remove-photo]").forEach((btn) => {
       btn.onclick = () => {
-        state.photos.splice(Number(btn.dataset.removePhoto), 1);
-        syncSlidesToPhotos();
+        const previousPhotos = state.photos;
+        state.photos = previousPhotos.filter((_, index) => index !== Number(btn.dataset.removePhoto));
+        syncSlidesToPhotos(previousPhotos);
         renderInto(host);
       };
     });

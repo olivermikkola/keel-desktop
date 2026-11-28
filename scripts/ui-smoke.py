@@ -38,7 +38,7 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  case 'import_document_from_bytes': result={id:crypto.randomUUID(),name:args.name || 'pasted.txt',kind:'txt',text:'Imported bytes',truncated:false};break;
  case 'create_session': result={id:crypto.randomUUID(),title:'New '+args.preset+' chat',app_preset:args.preset,workspace_path:args.workspacePath,project_id:args.projectId || null,pinned:false,messages:[],staged_edits:[],updated_at:Date.now()/1000};sessions.unshift(result);break;
  case 'load_session_cmd':result=sessions.find(s=>s.id===args.id);break;
- case 'list_workspace_files_cmd':result=files;break;
+ case 'list_workspace_files_cmd':result=window.__test.includeSlidePhotos ? [...files,'lake.jpg','screenshot.png'] : files;break;
  case 'list_image_jobs':result=jobs;break;
  case 'list_video_jobs':result=window.__videoJobs || (window.__videoJobs=[]);break;
  case 'detect_video_tools':result={ffmpeg:'/usr/bin/ffmpeg'};break;
@@ -447,6 +447,7 @@ async def main(port):
         await page.locator('#image-connect').click()
         await page.get_by_text('Image server connected. Choose a checkpoint and output folder.',exact=True).wait_for()
         await page.locator('#image-prompt').fill('A lakeside cabin')
+        await page.evaluate('window.__test.includeSlidePhotos = true')
         await page.locator('#image-generate').click()
         await page.get_by_text('succeeded',exact=True).wait_for()
         await page.wait_for_function("document.querySelector('.generated-image')?.naturalWidth > 0")
@@ -459,9 +460,26 @@ async def main(port):
         await page.screenshot(path=str(OUTPUT / 'tools-video.png'))
         await page.locator('#tool-carousels-open').click()
         await page.locator('#slides-about').fill('Weekend trip to Porvoo')
+        await page.locator('[data-add-slide-photo="lake.jpg"]').click()
+        await page.locator('[data-add-slide-photo="screenshot.png"]').click()
+        await page.locator('[data-slide-head="1"]').fill('Lake outside town')
+        await page.locator('[data-slide-body="1"]').fill('')
+        await page.locator('[data-slide-head="2"]').fill('Walking directions')
+        await page.locator('[data-slide-body="2"]').fill('Follow the riverside path.')
+        await page.locator('[data-move-photo="1"][data-dir="-1"]').click()
+        assert await page.locator('[data-slide-head="1"]').input_value() == 'Walking directions'
+        assert await page.locator('[data-slide-body="1"]').input_value() == 'Follow the riverside path.'
+        assert await page.locator('[data-slide-body="2"]').input_value() == ''
         await page.locator('#slides-build').click()
         await page.locator('#slides-preview-frame').wait_for()
+        slides = await page.evaluate("window.__test.calls.find(c => c.cmd === 'build_photo_slides').args.request.slides")
+        assert [(s['photo_path'], s['headline'], s['style']) for s in slides[1:3]] == [
+            ('screenshot.png', 'Walking directions', 'screenshot'), ('lake.jpg', 'Lake outside town', 'photo')
+        ], slides
         await page.screenshot(path=str(OUTPUT / 'tools-photo-slides.png'))
+        await page.locator('[data-remove-photo="0"]').click()
+        assert await page.locator('[data-slide-head="1"]').input_value() == 'Lake outside town'
+        assert await page.locator('[data-slide-body="1"]').input_value() == ''
         await page.locator('#tool-decide-open').click()
         await page.locator('#check-toggle-paste').click()
         await page.locator('#check-paste-text').fill('Electricity Bill\nAmount due: 68 EUR\nDue by Friday.')
