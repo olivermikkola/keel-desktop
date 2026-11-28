@@ -154,6 +154,26 @@ pub fn default_catalog() -> Vec<CatalogModel> {
             damaged: false,
             damage_reason: None,
         },
+        CatalogModel {
+            id: "inkling-2-mini".to_string(),
+            name: "Inkling 2 Mini".to_string(),
+            repository: "unsloth/Inkling-2-Mini-GGUF".to_string(),
+            file_name: "Inkling-2-Mini-UD-Q4_K_M.gguf".to_string(),
+            revision: "8078d149286eec7193795413b9e0643da6d11fa1".to_string(),
+            bytes: 16_610_544_608,
+            sha256: Some(
+                "78fcedcf93c5d1bfe83e225513b71392bb52259be0eaa5f8899c856a2e5834ae".to_string(),
+            ),
+            quantization: "Q4_K_M".to_string(),
+            context_size: 32_768,
+            tier: "desktop".to_string(),
+            detail: "26.4B Looped MoE (3.4B active) for everyday assistant and coding work. Needs 24 GB+ memory."
+                .to_string(),
+            local_path: None,
+            installed: false,
+            damaged: false,
+            damage_reason: None,
+        },
     ]
 }
 
@@ -1193,8 +1213,20 @@ mod tests {
             .map(|m| m.id)
             .collect();
         assert!(!order.contains(&"bonsai-9b".to_string()));
-        assert_eq!(order.last().map(String::as_str), Some("bonsai-2.5-27b"));
+        assert_eq!(order.last().map(String::as_str), Some("inkling-2-mini"));
         assert_eq!(order.first().map(String::as_str), Some("lfm3-1.7b"));
+    }
+
+    #[test]
+    fn catalog_includes_inkling_2_mini() {
+        let models = default_catalog();
+        let inkling = models
+            .iter()
+            .find(|m| m.id == "inkling-2-mini")
+            .expect("inkling-2-mini in catalog");
+        assert_eq!(inkling.repository, "unsloth/Inkling-2-Mini-GGUF");
+        assert_eq!(inkling.file_name, "Inkling-2-Mini-UD-Q4_K_M.gguf");
+        assert!(inkling.sha256.is_some());
     }
 
     #[test]

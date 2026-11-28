@@ -426,12 +426,12 @@ mod tests {
         let catalog = catalog();
         let cpu = &catalog.assets["linux-x86_64"];
         let graphics = &catalog.assets["linux-x86_64-vulkan"];
-        assert!(graphics.url.contains("b12428") && graphics.url.contains("vulkan-x64"));
+        assert!(graphics.url.contains("b12835") && graphics.url.contains("vulkan-x64"));
         assert_ne!(graphics.sha256, cpu.sha256);
-        assert_eq!(graphics.bytes, 36_387_242);
+        assert_eq!(graphics.bytes, 37_323_413);
         assert_eq!(
             graphics.sha256,
-            "7694190faaaef1d66c692c21f43fd4305374d7a8156274e6a1a7ee7637d3efdc"
+            "e4f9d201b20b3063e237ceade27d79a49d8644a2494947cd407cf114c807e320"
         );
     }
 

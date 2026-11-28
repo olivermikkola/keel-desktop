@@ -1,47 +1,47 @@
 {
-  "version": "b12428",
+  "version": "b12835",
   "assets": {
     "macos-aarch64": {
-      "name": "llama-b12428-bin-macos-arm64.tar.gz",
-      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12428/llama-b12428-bin-macos-arm64.tar.gz",
-      "sha256": "7d72477a2a375cc1d93e308b34e26fb9a608c2f93750517d2bafc59af578d3e2",
-      "bytes": 17004150
+      "name": "llama-b12835-bin-macos-arm64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12835/llama-b12835-bin-macos-arm64.tar.gz",
+      "sha256": "57ea866a49c7e549d250955764b084cc93d19d46fef13ecd53aa389310a129c7",
+      "bytes": 16932348
     },
     "macos-x86_64": {
-      "name": "llama-b12428-bin-macos-x64.tar.gz",
-      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12428/llama-b12428-bin-macos-x64.tar.gz",
-      "sha256": "27e4277bdbabcc9a4925cac77d99cd792abe0600c71bc33f265c43b8ea379d87",
-      "bytes": 12760709
+      "name": "llama-b12835-bin-macos-x64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12835/llama-b12835-bin-macos-x64.tar.gz",
+      "sha256": "08ae2dafd993c7ca6920f3c9863bbcfd96525b3b61905af533354eaedb4d40dd",
+      "bytes": 12657173
     },
     "linux-aarch64": {
-      "name": "llama-b12428-bin-ubuntu-arm64.tar.gz",
-      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12428/llama-b12428-bin-ubuntu-arm64.tar.gz",
-      "sha256": "68fdee3e3086de8d1b6b3ef3bb791ff03ec4a6f2a8e7e199130fb70167d33d6d",
-      "bytes": 19090408
+      "name": "llama-b12835-bin-ubuntu-arm64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12835/llama-b12835-bin-ubuntu-arm64.tar.gz",
+      "sha256": "af55db953492beea4e21b5b3f394ab07ee435091f4e8b562ee84fb85fccba179",
+      "bytes": 19074291
     },
     "linux-x86_64": {
-      "name": "llama-b12428-bin-ubuntu-x64.tar.gz",
-      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12428/llama-b12428-bin-ubuntu-x64.tar.gz",
-      "sha256": "a9b243a3bc4ca172010e96c64062fc02afd1dc4f8b699716f813ae6845ada4c6",
-      "bytes": 23457554
+      "name": "llama-b12835-bin-ubuntu-x64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12835/llama-b12835-bin-ubuntu-x64.tar.gz",
+      "sha256": "8837fe8133ed9da785b83d694ebec67cee71bb7ccbfb507440c70d5694b6eff1",
+      "bytes": 23525705
     },
     "linux-x86_64-vulkan": {
-      "name": "llama-b12428-bin-ubuntu-vulkan-x64.tar.gz",
-      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12428/llama-b12428-bin-ubuntu-vulkan-x64.tar.gz",
-      "sha256": "7694190faaaef1d66c692c21f43fd4305374d7a8156274e6a1a7ee7637d3efdc",
-      "bytes": 36387242
+      "name": "llama-b12835-bin-ubuntu-vulkan-x64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12835/llama-b12835-bin-ubuntu-vulkan-x64.tar.gz",
+      "sha256": "e4f9d201b20b3063e237ceade27d79a49d8644a2494947cd407cf114c807e320",
+      "bytes": 37323413
     },
     "windows-aarch64": {
-      "name": "llama-b12428-bin-win-cpu-arm64.zip",
-      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12428/llama-b12428-bin-win-cpu-arm64.zip",
-      "sha256": "ea2770a224400f69842135710a1c110d65bbfb7cd94584fdfd2f4caadb2b1c66",
-      "bytes": 13553634
+      "name": "llama-b12835-bin-win-cpu-arm64.zip",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12835/llama-b12835-bin-win-cpu-arm64.zip",
+      "sha256": "9a842c358749645a18935773843f2f3a81efa4a25b0768b71bda998410190460",
+      "bytes": 13395433
     },
     "windows-x86_64": {
-      "name": "llama-b12428-bin-win-cpu-x64.zip",
-      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12428/llama-b12428-bin-win-cpu-x64.zip",
-      "sha256": "4ebc7fb961cf707e3b61396806e62c9e4065e42990cfc31f238eb48264a465b2",
-      "bytes": 25212756
+      "name": "llama-b12835-bin-win-cpu-x64.zip",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12835/llama-b12835-bin-win-cpu-x64.zip",
+      "sha256": "be1493ce6ea53672105edf5a821ea2dc7c812a8e596e1aa31347313699afb3e7",
+      "bytes": 25372411
     }
   }
 }
