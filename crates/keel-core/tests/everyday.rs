@@ -50,6 +50,7 @@ fn document(text: &str) -> Document {
         text: text.into(),
         truncated: false,
         image_data_url: None,
+        image_only: false,
     }
 }
 
@@ -209,6 +210,7 @@ fn chat_history_attaches_image_pixels_for_vision() {
         text: "(Image pixels attached for vision. No OCR text was extracted.)".into(),
         truncated: false,
         image_data_url: Some("data:image/png;base64,aaa".into()),
+        image_only: false,
     }];
     session.messages.push(message);
     let text_only = keel_core::context::history(&session, None, 8192);

@@ -2580,6 +2580,15 @@ pub async fn run_document_check(
     }
 
     let mut batch = state.document_check.begin(run_id)?;
+    let documents: Vec<_> = documents
+        .into_iter()
+        .map(keel_core::decide::CheckDocumentInput::into_readable)
+        .collect();
+    if documents.iter().all(Result::is_err) {
+        return Ok(
+            (!batch.is_stopped()).then(|| documents.into_iter().filter_map(Result::err).collect())
+        );
+    }
     let cfg = state.config.lock().await.clone();
     let mut rt_status = state.runtime.lock().await.status();
     if !matches!(rt_status.state.as_str(), "running" | "external") {
@@ -2604,19 +2613,16 @@ pub async fn run_document_check(
     };
 
     let mut results = Vec::with_capacity(documents.len());
-    for doc in documents {
+    for document in documents {
+        let doc = match document {
+            Ok(doc) => doc,
+            Err(result) => {
+                results.push(result);
+                continue;
+            }
+        };
         let chunks =
             keel_core::decide::split_document_chunks(&doc.text, keel_core::decide::MAX_CHUNK_CHARS);
-        if chunks.is_empty() {
-            results.push(keel_core::decide::CheckDocumentResult {
-                document_id: doc.id,
-                document_name: doc.name,
-                truncated: doc.truncated,
-                answers: Vec::new(),
-                error: Some("No readable text found in this document.".into()),
-            });
-            continue;
-        }
         let mut answers = Vec::with_capacity(questions.len());
         let mut doc_error = None;
         for question in &questions {

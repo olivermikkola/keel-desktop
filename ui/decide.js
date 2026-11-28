@@ -102,7 +102,7 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
       const added = documents.slice(0, 50 - state.documents.length);
       if (added.length) {
         state.documents.push(...added.map((doc) => ({
-          id: doc.id || crypto.randomUUID(), name: doc.name, text: doc.text, truncated: doc.truncated,
+          id: doc.id || crypto.randomUUID(), name: doc.name, text: doc.image_only ? "" : doc.text, truncated: doc.truncated, image_only: doc.image_only,
         })));
         state.results = [];
       }
@@ -159,7 +159,7 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
           ` : ""}
           ${state.documents.length ? `<div class="video-scene-list">${state.documents.map((doc, idx) => `
             <div class="row" style="justify-content:space-between;align-items:center;padding:6px 10px;border:1px solid var(--border);border-radius:8px">
-              <span style="font-size:13px">${escapeHtml(doc.name)} <span class="muted">(${doc.text.trim().split(/\s+/).filter(Boolean).length} words)${doc.truncated ? " · Partial import" : ""}</span></span>
+              <span style="font-size:13px">${escapeHtml(doc.name)} <span class="muted">${doc.image_only ? "· No text extracted" : `(${doc.text.trim().split(/\s+/).filter(Boolean).length} words)${doc.truncated ? " · Partial import" : ""}`}</span></span>
               <button type="button" class="btn btn-sm btn-ghost" data-remove-doc="${idx}" ${state.busy ? "disabled" : ""}>Remove</button>
             </div>`).join("")}</div>` : '<p class="muted">No files added yet.</p>'}
 
