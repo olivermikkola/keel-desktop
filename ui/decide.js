@@ -45,7 +45,9 @@ export function sanitizeCsvCell(text = "") {
 }
 
 export function resultsToCsv(questions = [], results = []) {
-  const header = ["Document", ...questions.map((q) => q.prompt)].map(sanitizeCsvCell).join(",");
+  const hasPartialImport = results.some((doc) => doc.truncated);
+  const header = ["Document", ...questions.map((q) => q.prompt)];
+  if (hasPartialImport) header.push("Source coverage");
   const rows = results.map((doc) => {
     const cells = questions.map((q) => {
       const ans = (doc.answers || []).find((a) => a.question_id === q.id);
@@ -58,14 +60,15 @@ export function resultsToCsv(questions = [], results = []) {
       if (doc.error) return `Error: ${doc.error}`;
       return "";
     });
+    if (hasPartialImport) cells.push(doc.truncated ? "Partial import" : "");
     return [doc.document_name, ...cells].map(sanitizeCsvCell).join(",");
   });
-  return [header, ...rows].join("\n");
+  return [header.map(sanitizeCsvCell).join(","), ...rows].join("\n");
 }
 
 export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
   const state = {
-    documents: [], // { id, name, text }
+    documents: [], // { id, name, text, truncated? }
     questions: CHECK_STARTER_PACKS[0].questions.map((q) => ({ ...q, options: [...q.options] })),
     results: [],
     pasting: false,
@@ -104,7 +107,7 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
           ` : ""}
           ${state.documents.length ? `<div class="video-scene-list">${state.documents.map((doc, idx) => `
             <div class="row" style="justify-content:space-between;align-items:center;padding:6px 10px;border:1px solid var(--border);border-radius:8px">
-              <span style="font-size:13px">${escapeHtml(doc.name)} <span class="muted">(${doc.text.trim().split(/\s+/).filter(Boolean).length} words)</span></span>
+              <span style="font-size:13px">${escapeHtml(doc.name)} <span class="muted">(${doc.text.trim().split(/\s+/).filter(Boolean).length} words)${doc.truncated ? " · Partial import" : ""}</span></span>
               <button type="button" class="btn btn-sm btn-ghost" data-remove-doc="${idx}" ${state.busy ? "disabled" : ""}>Remove</button>
             </div>`).join("")}</div>` : '<p class="muted">No files added yet.</p>'}
 
@@ -155,6 +158,7 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
               ${state.results.map((doc) => `
                 <article class="card" style="display:flex;flex-direction:column;gap:8px">
                   <strong>${escapeHtml(doc.document_name)}</strong>
+                  ${doc.truncated ? '<p class="muted">Only part of this document was imported. Answers use the extracted text.</p>' : ""}
                   ${doc.error ? `<p class="muted">${escapeHtml(doc.error)}</p>` : ""}
                   ${(doc.answers || []).map((ans) => {
                     const q = state.questions.find((item) => item.id === ans.question_id);
@@ -190,7 +194,7 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
         const added = (picked || []).slice(0, 50 - state.documents.length);
         if (added.length) {
           state.documents.push(...added.map((doc) => ({
-            id: doc.id || crypto.randomUUID(), name: doc.name, text: doc.text,
+            id: doc.id || crypto.randomUUID(), name: doc.name, text: doc.text, truncated: doc.truncated,
           })));
           state.results = [];
         }

@@ -37,6 +37,14 @@ test("Check Documents starter packs, confidence labels, and safe CSV export work
   assert.equal(csv, 'Document,Do I owe money?\n"invoice, march.pdf",Yes (94%) (part 2/3) - Due today.\nreceipt.pdf,Unsure - Conflicting excerpts.');
 });
 
+test("CSV adds source coverage when part of a file was left out", () => {
+  const csv = resultsToCsv([], [
+    { document_name: "complete.pdf" },
+    { document_name: "partial.pdf", truncated: true },
+  ]);
+  assert.equal(csv, "Document,Source coverage\ncomplete.pdf,\npartial.pdf,Partial import");
+});
+
 test("Apps hub exposes Check Documents in plain language", () => {
   const card = CAPABILITIES.find((c) => c.id === "decide");
   assert.ok(card, "Check Documents card missing from CAPABILITIES");

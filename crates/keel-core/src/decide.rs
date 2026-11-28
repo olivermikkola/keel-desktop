@@ -103,12 +103,16 @@ pub struct CheckDocumentInput {
     pub id: String,
     pub name: String,
     pub text: String,
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CheckDocumentResult {
     pub document_id: String,
     pub document_name: String,
+    #[serde(default)]
+    pub truncated: bool,
     pub answers: Vec<CheckAnswer>,
     #[serde(default)]
     pub error: Option<String>,
@@ -326,10 +330,14 @@ pub fn csv_cell(text: &str) -> String {
 }
 
 pub fn export_csv(questions: &[CheckQuestion], results: &[CheckDocumentResult]) -> String {
+    let has_partial_import = results.iter().any(|doc| doc.truncated);
     let mut lines = Vec::with_capacity(results.len() + 1);
     let mut header = vec![csv_cell("Document")];
     for q in questions {
         header.push(csv_cell(&q.prompt));
+    }
+    if has_partial_import {
+        header.push("Source coverage".into());
     }
     lines.push(header.join(","));
 
@@ -355,6 +363,13 @@ pub fn export_csv(questions: &[CheckQuestion], results: &[CheckDocumentResult]) 
                 String::new()
             };
             row.push(csv_cell(&cell));
+        }
+        if has_partial_import {
+            row.push(if doc.truncated {
+                "Partial import".into()
+            } else {
+                String::new()
+            });
         }
         lines.push(row.join(","));
     }
@@ -501,6 +516,7 @@ mod tests {
                 &[CheckDocumentResult {
                     document_id: name.to_string(),
                     document_name: name.to_string(),
+                    truncated: false,
                     answers: vec![],
                     error: None,
                 }],
@@ -527,6 +543,31 @@ mod tests {
     }
 
     #[test]
+    fn csv_flags_partial_imports_without_changing_complete_batches() {
+        let complete = CheckDocumentResult {
+            document_id: "1".into(),
+            document_name: "complete.pdf".into(),
+            truncated: false,
+            answers: vec![],
+            error: None,
+        };
+        let partial = CheckDocumentResult {
+            document_id: "2".into(),
+            document_name: "partial.pdf".into(),
+            truncated: true,
+            ..complete.clone()
+        };
+        assert_eq!(
+            export_csv(&[], std::slice::from_ref(&complete)),
+            "Document\ncomplete.pdf"
+        );
+        assert_eq!(
+            export_csv(&[], &[complete, partial]),
+            "Document,Source coverage\ncomplete.pdf,\npartial.pdf,Partial import"
+        );
+    }
+
+    #[test]
     fn csv_export_neutralizes_formulas_and_line_breaks() {
         assert_eq!(csv_cell("=CMD|' /C calc'!A0"), "'=CMD|' /C calc'!A0");
         assert_eq!(csv_cell("+SUM(A1,B1)"), "\"'+SUM(A1,B1)\"");
@@ -542,6 +583,7 @@ mod tests {
             &[CheckDocumentResult {
                 document_id: "d1".into(),
                 document_name: "bill, 2026.pdf".into(),
+                truncated: false,
                 answers: vec![CheckAnswer {
                     question_id: "q1".into(),
                     answer: "Yes".into(),

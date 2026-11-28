@@ -2611,6 +2611,7 @@ pub async fn run_document_check(
             results.push(keel_core::decide::CheckDocumentResult {
                 document_id: doc.id,
                 document_name: doc.name,
+                truncated: doc.truncated,
                 answers: Vec::new(),
                 error: Some("No readable text found in this document.".into()),
             });
@@ -2657,6 +2658,7 @@ pub async fn run_document_check(
         results.push(keel_core::decide::CheckDocumentResult {
             document_id: doc.id,
             document_name: doc.name,
+            truncated: doc.truncated,
             answers,
             error: doc_error,
         });
