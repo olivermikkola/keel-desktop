@@ -255,6 +255,27 @@ async def new_page(browser, port, **options):
     await page.goto(f'http://127.0.0.1:{port}')
     return page
 
+async def open_apps_at_minimum_size(browser, port):
+    page = await new_page(browser, port)
+    await page.set_viewport_size({'width': 880, 'height': 600})
+    await page.locator('[data-view=tools]').click()
+    for tool, title in [
+        ('decide', 'Check Documents'),
+        ('video', 'Short Videos'),
+        ('carousels', 'Photo Slides'),
+        ('images', 'Make Pictures'),
+    ]:
+        await page.locator(f'#tool-{tool}-open').press('Enter')
+        workspace = page.get_by_role('region', name=title, exact=True)
+        await workspace.wait_for()
+        await page.wait_for_function("document.activeElement.id === 'app-workspace'")
+        heading = await workspace.get_by_role('heading', name=title, exact=True).bounding_box()
+        assert 48 <= heading['y'] < 180, (title, heading)
+        if tool == 'decide':
+            await page.screenshot(path=str(OUTPUT / 'apps-open-documents-compact.png'))
+    assert not page.errors, page.errors
+    await page.close()
+
 async def first_run(browser, port):
     """A brand-new person: welcome, one-click setup, live progress, a question asked while waiting, and a failed download."""
     page = await new_page(browser, port, first_run=True)
@@ -653,6 +674,7 @@ async def main(port):
         assert not errors,errors
         await first_run(browser, port)
         await second_launch(browser, port)
+        await open_apps_at_minimum_size(browser, port)
         sample = await new_page(browser, port)
         await sample.locator('[data-view=work]').click()
         await sample.get_by_role('button', name='Try with sample files').click()
