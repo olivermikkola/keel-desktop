@@ -1,5 +1,6 @@
 import { capabilityBadgeLabel } from "./audio.js";
 import { createPhotoSlidesStudio } from "./carousels.js";
+import { createDocumentCheckStudio } from "./decide.js";
 import { escapeHtml } from "./markdown.js";
 import { createVideoStudio } from "./video.js";
 
@@ -22,6 +23,12 @@ export const CAPABILITIES = [
     id: "carousels",
     title: "Photo Slides",
     detail: "Turn your photos and one short sentence into swipeable photo slides (like multi-photo social posts) with headlines and captions.",
+    state: "available",
+  },
+  {
+    id: "decide",
+    title: "Check Documents",
+    detail: "Drop in bills, contracts, letters, or PDFs and ask the same questions across all of them — get a clear Yes/No, category, or rating table privately.",
     state: "available",
   },
   {
@@ -127,6 +134,11 @@ export function createImageWorkspace({
     refresh,
     notice,
   });
+  const documentCheckStudio = createDocumentCheckStudio({
+    invoke,
+    getWorkspace,
+    notice,
+  });
   let container;
   let requestVersion = 0;
 
@@ -157,7 +169,7 @@ export function createImageWorkspace({
       <div class="capability-grid">${CAPABILITIES.map((cap) => `
         <article class="capability-card ${cap.id === state.activeTool ? "selected" : ""}">
           <div class="row"><h3>${escapeHtml(cap.title)}</h3><span class="capability-badge">${capabilityBadgeLabel(cap)}</span></div>
-          <p>${escapeHtml(cap.detail)}</p>${cap.id === "text" ? '<button class="btn btn-sm" id="tool-models">Choose AI model</button>' : cap.id === "audio" && openSettings ? '<button class="btn btn-sm" id="tool-audio-settings">Open audio settings</button>' : cap.id === "images" ? '<button class="btn btn-sm" id="tool-images-open">Open Pictures</button>' : cap.id === "video" ? '<button class="btn btn-sm" id="tool-video-open">Open Short Videos</button>' : cap.id === "carousels" ? '<button class="btn btn-sm" id="tool-carousels-open">Open Photo Slides</button>' : ""}
+          <p>${escapeHtml(cap.detail)}</p>${cap.id === "text" ? '<button class="btn btn-sm" id="tool-models">Choose AI model</button>' : cap.id === "audio" && openSettings ? '<button class="btn btn-sm" id="tool-audio-settings">Open audio settings</button>' : cap.id === "images" ? '<button class="btn btn-sm" id="tool-images-open">Open Pictures</button>' : cap.id === "video" ? '<button class="btn btn-sm" id="tool-video-open">Open Short Videos</button>' : cap.id === "carousels" ? '<button class="btn btn-sm" id="tool-carousels-open">Open Photo Slides</button>' : cap.id === "decide" ? '<button class="btn btn-sm" id="tool-decide-open">Open Check Documents</button>' : ""}
         </article>`).join("")}</div>
       <div class="apps-section-head"><h2>Write, plan &amp; study</h2><p class="muted">Each app opens a focused workspace ready for that job.</p></div>
       <div class="apps-preset-grid">${everydayCards.map((app) => `
@@ -167,7 +179,7 @@ export function createImageWorkspace({
           <p class="muted app-example">${escapeHtml(app.example)}</p>
           <button class="btn btn-sm" data-open-preset="${escapeHtml(app.id)}">Start</button>
         </article>`).join("")}</div>
-      ${state.activeTool === "video" ? '<div id="video-studio-host"></div>' : state.activeTool === "carousels" ? '<div id="photo-slides-host"></div>' : `
+      ${state.activeTool === "video" ? '<div id="video-studio-host"></div>' : state.activeTool === "carousels" ? '<div id="photo-slides-host"></div>' : state.activeTool === "decide" ? '<div id="document-check-host"></div>' : `
       <div class="image-workspace">
         <section class="image-controls card">
           <div class="row"><h2>Make Pictures</h2><span class="capability-badge">${state.backend === "stable_diffusion_cpp" ? "Direct file engine" : "Local picture app"}</span></div>
@@ -258,6 +270,13 @@ export function createImageWorkspace({
         await carouselsStudio.reload(host);
       };
     }
+    const decideOpenBtn = container.querySelector("#tool-decide-open");
+    if (decideOpenBtn) {
+      decideOpenBtn.onclick = () => {
+        state.activeTool = "decide";
+        render();
+      };
+    }
     if (state.activeTool === "video") {
       const host = container.querySelector("#video-studio-host");
       videoStudio.renderInto(host);
@@ -266,6 +285,11 @@ export function createImageWorkspace({
     if (state.activeTool === "carousels") {
       const host = container.querySelector("#photo-slides-host");
       carouselsStudio.renderInto(host);
+      return;
+    }
+    if (state.activeTool === "decide") {
+      const host = container.querySelector("#document-check-host");
+      documentCheckStudio.renderInto(host);
       return;
     }
     container.querySelector("#image-backend").onchange = (event) => {

@@ -59,6 +59,8 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  }
  case 'read_photo_slides_html':result=fileContent[args.relPath] || '<!doctype html><html><body><h1>Photo Slides</h1></body></html>';break;
  case 'generate_photo_slides_text':result=[{kind:'cover',headline:'Weekend in Porvoo',body:'Four stops worth the trip.'},{kind:'photo',headline:'Old town bridge',body:'Morning coffee by the river.'},{kind:'closing',headline:'Save for later',body:'Easy day trip from Helsinki.'}];break;
+ case 'run_document_check':result=(args.documents||[]).map(doc=>({document_id:doc.id,document_name:doc.name,answers:(args.questions||[]).map(q=>({question_id:q.id,answer:q.kind==='yes_no'?'Yes':(q.options?.[0]||'Bill'),confidence:0.94,reason:'Document states amount due 68 EUR.',unsure:false,part:null,total_parts:1})),error:null}));break;
+ case 'export_document_check_csv':result='document-check-results.csv';break;
  case 'get_runtime_status':result=runtime;break;
  case 'pick_documents':result=[{id:crypto.randomUUID(),name:'brief.txt',kind:'txt',text:'Project Harbor budget is 4800 euros.',truncated:false},{id:crypto.randomUUID(),name:'receipt.png',kind:'png',text:'Total due: 480 EUR',truncated:false,image_data_url:''' + json.dumps(PNG) + r'''}];break;
  case 'save_personal_context':cfg.personal_context=args.text;result=null;break;
@@ -460,6 +462,13 @@ async def main(port):
         await page.locator('#slides-build').click()
         await page.locator('#slides-preview-frame').wait_for()
         await page.screenshot(path=str(OUTPUT / 'tools-photo-slides.png'))
+        await page.locator('#tool-decide-open').click()
+        await page.locator('#check-toggle-paste').click()
+        await page.locator('#check-paste-text').fill('Electricity Bill\nAmount due: 68 EUR\nDue by Friday.')
+        await page.locator('#check-add-paste').click()
+        await page.locator('#check-run').click()
+        await page.locator('#document-check-host').get_by_text('94%', exact=False).first.wait_for()
+        await page.screenshot(path=str(OUTPUT / 'tools-check-documents.png'))
         await page.locator('#tool-images-open').click()
         await page.locator('#image-prompt').wait_for()
         assert await page.locator('.topbar').evaluate('(el) => el.getBoundingClientRect().top') >= 0

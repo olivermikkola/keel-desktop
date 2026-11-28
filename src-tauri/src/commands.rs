@@ -2553,6 +2553,122 @@ pub async fn generate_photo_slides_text(
 }
 
 #[tauri::command]
+pub async fn run_document_check(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    documents: Vec<keel_core::decide::CheckDocumentInput>,
+    questions: Vec<keel_core::decide::CheckQuestion>,
+) -> Result<Vec<keel_core::decide::CheckDocumentResult>, String> {
+    if documents.is_empty() || documents.len() > keel_core::decide::MAX_DOCUMENTS {
+        return Err(format!(
+            "Add between 1 and {} documents to check.",
+            keel_core::decide::MAX_DOCUMENTS
+        ));
+    }
+    if questions.is_empty() || questions.len() > keel_core::decide::MAX_QUESTIONS {
+        return Err(format!(
+            "Add between 1 and {} questions.",
+            keel_core::decide::MAX_QUESTIONS
+        ));
+    }
+    for question in &questions {
+        question.validate().map_err(|e| e.to_string())?;
+    }
+
+    let cfg = state.config.lock().await.clone();
+    let mut rt_status = state.runtime.lock().await.status();
+    if !matches!(rt_status.state.as_str(), "running" | "external") {
+        if cfg.external_base_url.is_none() {
+            rt_status = auto_start_local_model(&app, &state).await?;
+        } else {
+            return Err("Choose a model in Models first so Keel can check your documents.".into());
+        }
+    }
+    let base_url = rt_status.base_url.clone();
+    let model_name = rt_status
+        .active_model_id
+        .clone()
+        .or(cfg.external_model_name.clone())
+        .ok_or_else(|| {
+            "Choose a model in Models first so Keel can check your documents.".to_string()
+        })?;
+    let api_key = if rt_status.state == "external" {
+        keel_core::remote::load_external_api_key(&state.data_dir, &base_url)
+    } else {
+        None
+    };
+
+    let mut results = Vec::with_capacity(documents.len());
+    for doc in documents {
+        let chunks =
+            keel_core::decide::split_document_chunks(&doc.text, keel_core::decide::MAX_CHUNK_CHARS);
+        if chunks.is_empty() {
+            results.push(keel_core::decide::CheckDocumentResult {
+                document_id: doc.id,
+                document_name: doc.name,
+                answers: Vec::new(),
+                error: Some("No readable text found in this document.".into()),
+            });
+            continue;
+        }
+        let mut answers = Vec::with_capacity(questions.len());
+        let mut doc_error = None;
+        for question in &questions {
+            let mut part_answers = Vec::with_capacity(chunks.len());
+            for chunk in &chunks {
+                let (system, user) =
+                    keel_core::decide::build_check_prompt(&doc.name, chunk, question);
+                match keel_core::agent::complete_plain_text(
+                    &base_url,
+                    &model_name,
+                    &system,
+                    &user,
+                    160,
+                    api_key.as_deref(),
+                )
+                .await
+                {
+                    Ok(reply) => {
+                        part_answers.push(keel_core::decide::parse_check_answer(&reply, question));
+                    }
+                    Err(err) => {
+                        doc_error = Some(err.to_string());
+                        break;
+                    }
+                }
+            }
+            if doc_error.is_some() {
+                break;
+            }
+            if let Some(combined) = keel_core::decide::combine_chunk_answers(&part_answers) {
+                answers.push(combined);
+            }
+        }
+        results.push(keel_core::decide::CheckDocumentResult {
+            document_id: doc.id,
+            document_name: doc.name,
+            answers,
+            error: doc_error,
+        });
+    }
+    Ok(results)
+}
+
+#[tauri::command]
+pub async fn export_document_check_csv(
+    workspace_path: String,
+    questions: Vec<keel_core::decide::CheckQuestion>,
+    results: Vec<keel_core::decide::CheckDocumentResult>,
+) -> Result<String, String> {
+    let rel_path = "document-check-results.csv";
+    let root = Path::new(&workspace_path);
+    let target = keel_core::tools::confine_path(root, rel_path).map_err(|e| e.to_string())?;
+    let csv = keel_core::decide::export_csv(&questions, &results);
+    std::fs::write(&target, csv).map_err(|e| e.to_string())?;
+    Ok(rel_path.to_string())
+}
+
+#[tauri::command]
 pub async fn get_runtime_status(state: State<'_, AppState>) -> Result<RuntimeStatus, String> {
     Ok(state.runtime.lock().await.status())
 }

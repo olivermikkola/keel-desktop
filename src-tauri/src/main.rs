@@ -209,6 +209,8 @@ fn main() {
             commands::list_photo_slides,
             commands::read_photo_slides_html,
             commands::generate_photo_slides_text,
+            commands::run_document_check,
+            commands::export_document_check_csv,
             commands::pick_workspace_folder,
             commands::prepare_sample_workspace,
             commands::set_workspace_folder,
