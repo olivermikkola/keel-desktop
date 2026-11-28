@@ -73,13 +73,17 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
     newQPrompt: "",
     newQKind: "yes_no",
     newQOptions: "",
-    busy: false,
+    runId: null,
+    get busy() { return this.runId !== null; },
+    stopping: false,
     picking: false,
-    progress: "",
   };
+
+  let mountedHost;
 
   function renderInto(host) {
     if (!host) return;
+    mountedHost = host;
     host.innerHTML = `
       <div class="image-workspace">
         <section class="image-controls card">
@@ -136,7 +140,8 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
             <button type="button" id="check-add-q" class="btn btn-sm" ${state.busy || state.questions.length >= 10 || !state.newQPrompt.trim() ? "disabled" : ""}>+ Add question</button>
           </div>
 
-          <button type="button" id="check-run" class="btn btn-primary" ${state.busy || state.picking || !state.documents.length || !state.questions.length ? "disabled" : ""}>${state.busy ? escapeHtml(state.progress || "Checking documents…") : `Check ${state.documents.length || ""} document${state.documents.length === 1 ? "" : "s"}`}</button>
+          <button type="button" id="check-run" class="btn btn-primary" ${state.busy || state.picking || !state.documents.length || !state.questions.length ? "disabled" : ""}>${state.busy ? (state.stopping ? "Stopping…" : "Checking documents…") : `Check ${state.documents.length || ""} document${state.documents.length === 1 ? "" : "s"}`}</button>
+          ${state.busy ? `<button type="button" id="check-stop" class="btn" ${state.stopping ? "disabled" : ""}>Stop check</button>` : ""}
         </section>
 
         <section class="image-results" aria-live="polite">
@@ -283,23 +288,47 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
     };
 
     host.querySelector("#check-run").onclick = async () => {
-      state.busy = true;
-      state.progress = "Checking documents…";
+      const runId = crypto.randomUUID();
+      state.runId = runId;
       renderInto(host);
       try {
-        state.results = await invoke("run_document_check", {
+        const results = await invoke("run_document_check", {
+          runId,
           documents: state.documents,
           questions: state.questions,
         });
-        notice(`Checked ${state.results.length} document${state.results.length === 1 ? "" : "s"}.`);
+        if (results === null) {
+          notice("Document check stopped.");
+          return;
+        }
+        state.results = results;
+        notice(`Checked ${results.length} document${results.length === 1 ? "" : "s"}.`);
       } catch (err) {
         notice(String(err));
       } finally {
-        state.busy = false;
-        state.progress = "";
-        renderInto(host);
+        state.runId = null;
+        state.stopping = false;
+        renderInto(mountedHost);
       }
     };
+
+    const stopBtn = host.querySelector("#check-stop");
+    if (stopBtn) {
+      stopBtn.onclick = async () => {
+        const runId = state.runId;
+        state.stopping = true;
+        renderInto(host);
+        try {
+          if (await invoke("stop_document_check", { runId })) return;
+        } catch (err) {
+          notice(String(err));
+        }
+        if (state.runId === runId) {
+          state.stopping = false;
+          renderInto(mountedHost);
+        }
+      };
+    }
 
     const copyBtn = host.querySelector("#check-copy-csv");
     if (copyBtn) {

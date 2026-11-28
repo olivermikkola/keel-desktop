@@ -2,6 +2,7 @@
 
 mod arena;
 mod commands;
+mod document_check;
 mod productivity;
 mod updater;
 
@@ -128,6 +129,7 @@ fn main() {
         download_lock: Mutex::new(()),
         setup_pause: Mutex::new(None),
         active_cli_stop: Mutex::new(None),
+        document_check: Default::default(),
         placement_cache: Mutex::new(None),
         mcp_cache: Mutex::new(None),
     };
@@ -210,6 +212,7 @@ fn main() {
             commands::read_photo_slides_html,
             commands::generate_photo_slides_text,
             commands::run_document_check,
+            commands::stop_document_check,
             commands::export_document_check_csv,
             commands::pick_workspace_folder,
             commands::prepare_sample_workspace,
