@@ -2675,12 +2675,8 @@ pub async fn export_document_check_csv(
     questions: Vec<keel_core::decide::CheckQuestion>,
     results: Vec<keel_core::decide::CheckDocumentResult>,
 ) -> Result<String, String> {
-    let rel_path = "document-check-results.csv";
-    let root = Path::new(&workspace_path);
-    let target = keel_core::tools::confine_path(root, rel_path).map_err(|e| e.to_string())?;
-    let csv = keel_core::decide::export_csv(&questions, &results);
-    std::fs::write(&target, csv).map_err(|e| e.to_string())?;
-    Ok(rel_path.to_string())
+    keel_core::decide::save_csv(Path::new(&workspace_path), &questions, &results)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
