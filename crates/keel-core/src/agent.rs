@@ -18,6 +18,17 @@ fn shared_http_client() -> Result<&'static reqwest::Client> {
     Ok(CLIENT.get_or_init(|| built))
 }
 
+#[derive(Debug)]
+pub struct CompletionContextExceeded;
+
+impl std::fmt::Display for CompletionContextExceeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("This request is too large for the model’s context window. Try shortening it or increasing the context size in Models.")
+    }
+}
+
+impl std::error::Error for CompletionContextExceeded {}
+
 /// Sends a single non-streaming chat completion request to the active local (or
 /// explicitly configured) OpenAI-compatible server and returns the plain text
 /// reply with any `<think>...</think>` reasoning block stripped.
@@ -63,6 +74,16 @@ pub async fn complete_plain_text(
     })?;
     if !resp.status().is_success() {
         let status = resp.status();
+        if status == reqwest::StatusCode::BAD_REQUEST {
+            let error: Value = resp.json().await.unwrap_or(Value::Null);
+            if error.pointer("/error/type").and_then(Value::as_str)
+                == Some("exceed_context_size_error")
+                || error.pointer("/error/code").and_then(Value::as_str)
+                    == Some("context_length_exceeded")
+            {
+                return Err(CompletionContextExceeded.into());
+            }
+        }
         bail!("Your AI model returned an error (HTTP {status}). Try again or pick another model.");
     }
     let body: Value = resp

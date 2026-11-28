@@ -2620,39 +2620,35 @@ pub async fn run_document_check(
         let mut answers = Vec::with_capacity(questions.len());
         let mut doc_error = None;
         for question in &questions {
-            let mut part_answers = Vec::with_capacity(chunks.len());
-            for chunk in &chunks {
-                let (system, user) =
-                    keel_core::decide::build_check_prompt(&doc.name, chunk, question);
-                let reply = keel_core::agent::complete_plain_text(
-                    &base_url,
-                    &model_name,
-                    &system,
-                    &user,
-                    160,
-                    api_key.as_deref(),
-                    rt_status.state == "running",
-                );
-                let Some(reply) = batch.request(reply).await else {
-                    return Ok(None);
-                };
-                match reply {
-                    Ok(reply) => {
-                        part_answers.push(keel_core::decide::parse_check_answer(
-                            &reply, question, chunk,
-                        ));
-                    }
-                    Err(err) => {
-                        doc_error = Some(err.to_string());
-                        break;
-                    }
+            let base_url = base_url.as_str();
+            let model_name = model_name.as_str();
+            let api_key = api_key.as_deref();
+            let direct_reply = rt_status.state == "running";
+            let check = keel_core::decide::check_question(
+                &doc.name,
+                &chunks,
+                question,
+                |system, user| async move {
+                    keel_core::agent::complete_plain_text(
+                        base_url,
+                        model_name,
+                        &system,
+                        &user,
+                        160,
+                        api_key,
+                        direct_reply,
+                    )
+                    .await
+                },
+            );
+            match batch.request(check).await {
+                Some(Ok(Some(answer))) => answers.push(answer),
+                Some(Ok(None)) => {}
+                Some(Err(err)) => {
+                    doc_error = Some(err.to_string());
+                    break;
                 }
-            }
-            if doc_error.is_some() {
-                break;
-            }
-            if let Some(combined) = keel_core::decide::combine_chunk_answers(&part_answers) {
-                answers.push(combined);
+                None => return Ok(None),
             }
         }
         results.push(keel_core::decide::CheckDocumentResult {

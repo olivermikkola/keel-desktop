@@ -115,6 +115,11 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
   function renderInto(host) {
     if (!host) return;
     mountedHost = host;
+    const total = state.results.length;
+    const failedCount = state.results.filter((doc) => doc.error).length;
+    const resultStatus = failedCount
+      ? (total === 1 ? "Couldn’t finish checking this document." : `Couldn’t finish checking ${failedCount} of ${total} documents.`)
+      : `Checked ${total} document${total === 1 ? "" : "s"}.`;
     host.innerHTML = `
       <div class="image-workspace">
         <section class="image-controls card">
@@ -178,6 +183,7 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
         <section class="image-results" aria-live="polite">
           <h2>Results</h2>
           ${state.results.length ? `
+            <p class="muted">${resultStatus}</p>
             <div class="row" style="gap:8px;margin-bottom:12px;flex-wrap:wrap">
               <button type="button" id="check-copy-csv" class="btn btn-sm">Copy table for spreadsheets</button>
               ${getWorkspace() ? '<button type="button" id="check-save-csv" class="btn btn-sm btn-ghost">Save spreadsheet to folder</button>' : ""}
@@ -317,7 +323,6 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
           return;
         }
         state.results = results;
-        notice(`Checked ${results.length} document${results.length === 1 ? "" : "s"}.`);
       } catch (err) {
         notice(String(err));
       } finally {
