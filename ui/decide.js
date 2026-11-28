@@ -80,6 +80,7 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
     get busy() { return this.runId !== null; },
     stopping: false,
     importing: false,
+    importErrors: [],
   };
 
   let mountedHost;
@@ -96,8 +97,9 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
     state.importing = true;
     if (mountedHost?.isConnected) renderInto(mountedHost);
     try {
-      const documents = await loadDocuments();
-      const added = (documents || []).slice(0, 50 - state.documents.length);
+      const { documents, errors } = await loadDocuments();
+      if (documents.length || errors.length) state.importErrors = errors;
+      const added = documents.slice(0, 50 - state.documents.length);
       if (added.length) {
         state.documents.push(...added.map((doc) => ({
           id: doc.id || crypto.randomUUID(), name: doc.name, text: doc.text, truncated: doc.truncated,
@@ -132,6 +134,12 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
             <button type="button" id="check-toggle-paste" class="btn btn-sm btn-ghost" ${state.busy ? "disabled" : ""}>${state.pasting ? "Hide paste box" : "Paste text"}</button>
             ${state.documents.length ? `<button type="button" id="check-clear-docs" class="btn btn-sm btn-ghost" ${state.busy ? "disabled" : ""}>Clear all</button>` : ""}
           </div>
+          ${state.importErrors.length ? `
+            <div role="status" class="muted">
+              <strong>Couldn’t import ${state.importErrors.length === 1 ? "this file" : "these files"}</strong>
+              <ul>${state.importErrors.map((error) => `<li>${escapeHtml(error)}</li>`).join("")}</ul>
+            </div>
+          ` : ""}
           ${state.pasting ? `
             <div class="video-scene-card">
               <textarea id="check-paste-text" class="input" rows="4" placeholder="Paste the text of a bill, email, or contract here…">${escapeHtml(state.pasteText)}</textarea>
@@ -232,6 +240,7 @@ export function createDocumentCheckStudio({ invoke, getWorkspace, notice }) {
     if (clearDocs) {
       clearDocs.onclick = () => {
         state.documents = [];
+        state.importErrors = [];
         inputsChanged();
       };
     }
