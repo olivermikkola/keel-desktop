@@ -2005,7 +2005,7 @@ body {
 button:disabled { opacity: .5; cursor: not-allowed; }
 
 /* Optional capabilities share the shell, without making media a prerequisite. */
-.tools-workspace { flex: 1; min-height: 0; overflow: auto; padding: 40px; }
+.tools-workspace { --tools-padding: 40px; flex: 1; min-height: 0; overflow: auto; padding: var(--tools-padding); }
 .hub-heading { max-width: 650px; margin-bottom: 28px; }
 .eyebrow { color: var(--accent); font-size: 10px; letter-spacing: .16em; font-weight: 700; }
 .hub-heading h1 { font-size: 32px; letter-spacing: -.04em; margin: 10px 0; }
@@ -2027,7 +2027,7 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .capability-card .row { justify-content: space-between; }
 #app-workspace { scroll-margin-block-start: 24px; }
 #app-workspace:focus { outline: none; }
-#app-workspace:focus-visible .image-controls h2 {
+#app-workspace:focus-visible :is(.image-controls, .document-check-toolbar) h2 {
   outline: 2px solid var(--accent);
   outline-offset: 4px;
   border-radius: 2px;
@@ -2040,13 +2040,30 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .image-options { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .image-options label { display: flex; flex-direction: column; gap: 6px; }
 .image-results > h2 { margin: 4px 0 16px; }
+.document-check-workspace { row-gap: 12px; }
+.document-check-toolbar {
+  grid-column: 1 / -1;
+  position: sticky;
+  top: calc(-1 * var(--tools-padding));
+  z-index: 2;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 10px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.document-check-toolbar .row { margin: 0; flex-wrap: wrap; gap: 8px; }
 .image-job p { overflow-wrap: anywhere; font-size: 13px; line-height: 1.6; }
 .generated-image { width: 100%; height: auto; max-height: 560px; object-fit: contain; border-radius: 8px; background: #101818; }
 .image-empty { min-height: 260px; border: 1px dashed var(--border); border-radius: 12px; padding: 32px; display: flex; flex-direction: column; justify-content: center; text-align: center; }
 .global-notice { pointer-events: none; position: fixed; top: 64px; left: 50%; transform: translateX(-50%); max-width: min(580px, calc(100% - 48px)); z-index: 100; background: var(--surface); color: var(--text); border: 1px solid var(--accent); border-radius: 12px; padding: 14px 20px; font-size: 13px; box-shadow: 0 12px 40px #0005; }
 .global-notice > button { pointer-events: auto; }
 .recent-mode { font-size: 9px; color: var(--muted); min-width: 27px; }
-@media (max-width: 1100px) { .capability-grid, .apps-preset-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .tools-workspace { padding: 24px; } }
+@media (max-width: 1100px) { .capability-grid, .apps-preset-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .tools-workspace { --tools-padding: 24px; } }
 @media (max-width: 760px) { .image-workspace { grid-template-columns: 1fr; } }
 
 /* Arena offline compare — host chrome; Arena HTML loads in the iframe. */
