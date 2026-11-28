@@ -28,10 +28,11 @@ pub async fn complete_plain_text(
     user: &str,
     max_tokens: usize,
     api_key: Option<&str>,
+    direct_reply: bool,
 ) -> Result<String> {
     let client = shared_http_client()?;
     let endpoint = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let payload = json!({
+    let mut payload = json!({
         "model": model,
         "messages": [
             { "role": "system", "content": system },
@@ -41,6 +42,10 @@ pub async fn complete_plain_text(
         "temperature": 0.6,
         "stream": false
     });
+    if direct_reply {
+        payload["chat_template_kwargs"] = json!({"enable_thinking": false});
+        payload["reasoning_effort"] = json!("none");
+    }
     let mut req = client.post(&endpoint).json(&payload);
     if let Some(key) = api_key.filter(|k| !k.trim().is_empty()) {
         req = req.bearer_auth(key.trim());

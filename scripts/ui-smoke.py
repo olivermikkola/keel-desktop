@@ -59,7 +59,18 @@ window.__TAURI__ = {event:{listen:async (event,fn) => { (listeners[event] ||= []
  }
  case 'read_photo_slides_html':result=fileContent[args.relPath] || '<!doctype html><html><body><h1>Photo Slides</h1></body></html>';break;
  case 'generate_photo_slides_text':result=[{kind:'cover',headline:'Weekend in Porvoo',body:'Four stops worth the trip.'},{kind:'photo',headline:'Old town bridge',body:'Morning coffee by the river.'},{kind:'closing',headline:'Save for later',body:'Easy day trip from Helsinki.'}];break;
- case 'run_document_check':result=(args.documents||[]).map(doc=>({document_id:doc.id,document_name:doc.name,answers:(args.questions||[]).map(q=>({question_id:q.id,answer:q.kind==='yes_no'?'Yes':(q.options?.[0]||'Bill'),confidence:0.94,reason:'Document states amount due 68 EUR.',unsure:false,part:null,total_parts:1})),error:null}));break;
+ case 'run_document_check': {
+  const replies = {
+   yes_no: {answer:'Yes', confidence:0.94, evidence:'Amount due: 68 EUR', unsure:false, part:2},
+   scale: {answer:'Within a few weeks', confidence:0.58, evidence:'Due by Friday.', unsure:true, part:3},
+   choice: {answer:'Unsure', confidence:0, reason:'No answer with a matching source quote was found.', unsure:true, part:null},
+  };
+  result = args.documents.map(doc => ({
+   document_id:doc.id, document_name:doc.name, error:null,
+   answers:args.questions.map(q => ({question_id:q.id, total_parts:3, ...replies[q.kind]})),
+  }));
+  break;
+ }
  case 'export_document_check_csv':result='document-check-results.csv';break;
  case 'get_runtime_status':result=runtime;break;
  case 'pick_documents':result=[{id:crypto.randomUUID(),name:'brief.txt',kind:'txt',text:'Project Harbor budget is 4800 euros.',truncated:false},{id:crypto.randomUUID(),name:'receipt.png',kind:'png',text:'Total due: 480 EUR',truncated:false,image_data_url:''' + json.dumps(PNG) + r'''}];break;
@@ -468,6 +479,12 @@ async def main(port):
         await page.locator('#check-add-paste').click()
         await page.locator('#check-run').click()
         await page.locator('#document-check-host').get_by_text('94%', exact=False).first.wait_for()
+        document_check = page.locator('#document-check-host')
+        await document_check.get_by_text('Source · Part 2 of 3 · “Amount due: 68 EUR”', exact=True).wait_for()
+        await document_check.get_by_text('Unsure', exact=True).wait_for()
+        await document_check.get_by_text('58% · Review', exact=True).wait_for()
+        assert await document_check.get_by_text('0%', exact=True).count() == 0
+        await document_check.evaluate("(el) => el.scrollIntoView({block: 'start'})")
         await page.screenshot(path=str(OUTPUT / 'tools-check-documents.png'))
         await page.locator('#tool-images-open').click()
         await page.locator('#image-prompt').wait_for()
